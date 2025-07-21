@@ -1,6 +1,6 @@
 {
-    "pageTitle": "Azure OpenAI + AI Search",
-    "headerTitle": "Azure OpenAI + AI Search",
+    "pageTitle": "Azure OpenAI Search",
+    "headerTitle": "Search",
     "chat": "Chat",
     "qa": "Ask a question",
     "login": "Login",
@@ -24,7 +24,7 @@
         "uploadedFilesLabel": "Previously uploaded files:",
         "noFilesUploaded": "No files uploaded yet",
         "loading": "Loading...",
-        "manageFileUploads": "Manage file uploads",
+        "manageFileUploads": "Upload file",
         "uploadingFiles": "Uploading files...",
         "uploadedFileError": "Error uploading file - please try again or contact admin.",
         "deleteFile": "Delete file",
@@ -32,7 +32,7 @@
         "errorDeleting": "Error deleting.",
         "fileDeleted": "File deleted"
     },
-    "developerSettings": "Developer settings",
+    "developerSettings": "Configuretion",
 
     "chatEmptyStateTitle": "Chat with your data",
     "chatEmptyStateSubtitle": "Ask anything or try an example",

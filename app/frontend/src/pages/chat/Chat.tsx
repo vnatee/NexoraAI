@@ -1,10 +1,10 @@
 import { useRef, useState, useEffect, useContext } from "react";
 import { useTranslation } from "react-i18next";
 import { Helmet } from "react-helmet-async";
-import { Panel, DefaultButton } from "@fluentui/react";
+import { Panel, DefaultButton, IconButton } from "@fluentui/react";
 import readNDJSONStream from "ndjson-readablestream";
 
-import appLogo from "../../assets/applogo.svg";
+import appLogo from "../../assets/classic_icon-bg.png";
 import styles from "./Chat.module.css";
 
 import {
@@ -36,6 +36,7 @@ import { TokenClaimsDisplay } from "../../components/TokenClaimsDisplay";
 import { LoginContext } from "../../loginContext";
 import { LanguagePicker } from "../../i18n/LanguagePicker";
 import { Settings } from "../../components/Settings/Settings";
+import { Dialog, DialogTitle, DialogContent, DialogActions, Button } from "@mui/material";
 
 const Chat = () => {
     const [isConfigPanelOpen, setIsConfigPanelOpen] = useState(false);
@@ -93,9 +94,11 @@ const Chat = () => {
     const [showChatHistoryCosmos, setShowChatHistoryCosmos] = useState<boolean>(false);
     const [showAgenticRetrievalOption, setShowAgenticRetrievalOption] = useState<boolean>(false);
     const [useAgenticRetrieval, setUseAgenticRetrieval] = useState<boolean>(false);
+    const [menuOpen, setMenuOpen] = useState(false);
 
     const audio = useRef(new Audio()).current;
     const [isPlaying, setIsPlaying] = useState(false);
+    const [confirmOpen, setConfirmOpen] = useState(false);
 
     const speechConfig: SpeechConfig = {
         speechUrls,
@@ -395,6 +398,10 @@ const Chat = () => {
 
     const { t, i18n } = useTranslation();
 
+    const toggleMenu = () => {
+        setMenuOpen(!menuOpen);
+    };
+
     return (
         <div className={styles.container}>
             {/* Setting the page title using react-helmet-async */}
@@ -408,11 +415,54 @@ const Chat = () => {
                     )}
                 </div>
                 <div className={styles.commandsContainer}>
-                    <ClearChatButton className={styles.commandButton} onClick={clearChat} disabled={!lastQuestionRef.current || isLoading} />
-                    {showUserUpload && <UploadFile className={styles.commandButton} disabled={!loggedIn} />}
-                    <SettingsButton className={styles.commandButton} onClick={() => setIsConfigPanelOpen(!isConfigPanelOpen)} />
+                    <div className={styles.commandsContainer}>
+                        <div className={styles.loginMenuContainer} style={{ position: "relative" }}>
+                            <IconButton
+                                iconProps={{ iconName: "Settings" }}
+                                className={styles.menuToggle}
+                                onClick={toggleMenu}
+                                ariaLabel={t("labels.toggleMenu")}
+                            />
+                            {menuOpen && (
+                                <div className={styles.menuDropdown}>
+                                    <ClearChatButton
+                                        className={styles.commandButton}
+                                        onClick={() => setConfirmOpen(true)}
+                                        disabled={!lastQuestionRef.current || isLoading}
+                                    />
+                                    {showUserUpload && <UploadFile className={styles.commandButton} disabled={!loggedIn} />}
+                                    {/* <UploadFile className={styles.commandButton} /> */}
+                                    <SettingsButton className={styles.commandButton} onClick={() => setIsConfigPanelOpen(!isConfigPanelOpen)} />
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                    {/* <ClearChatButton className={styles.commandButton} onClick={clearChat} disabled={!lastQuestionRef.current || isLoading} /> */}
+                    {/* {showUserUpload && <UploadFile className={styles.commandButton} disabled={!loggedIn} />} */}
+                    {/* <UploadFile className={styles.commandButton} disabled={!loggedIn} />
+                    <SettingsButton className={styles.commandButton} onClick={() => setIsConfigPanelOpen(!isConfigPanelOpen)} /> */}
                 </div>
             </div>
+            {/* Popup Confirm */}
+            <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)}>
+                <DialogTitle>Confirm Clear Chat</DialogTitle>
+                <DialogContent>Do you want to clear all chat history?</DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setConfirmOpen(false)} color="primary">
+                        Cancel
+                    </Button>
+                    <Button
+                        onClick={() => {
+                            setConfirmOpen(false);
+                            clearChat();
+                        }}
+                        color="error"
+                        variant="contained"
+                    >
+                        Clear Chat
+                    </Button>
+                </DialogActions>
+            </Dialog>
             <div className={styles.chatRoot} style={{ marginLeft: isHistoryPanelOpen ? "300px" : "0" }}>
                 <div className={styles.chatContainer}>
                     {!lastQuestionRef.current ? (
@@ -420,10 +470,10 @@ const Chat = () => {
                             <img src={appLogo} alt="App logo" width="120" height="120" />
 
                             <h1 className={styles.chatEmptyStateTitle}>{t("chatEmptyStateTitle")}</h1>
-                            <h2 className={styles.chatEmptyStateSubtitle}>{t("chatEmptyStateSubtitle")}</h2>
+                            {/* <h2 className={styles.chatEmptyStateSubtitle}>{t("chatEmptyStateSubtitle")}</h2> */}
                             {showLanguagePicker && <LanguagePicker onLanguageChange={newLang => i18n.changeLanguage(newLang)} />}
 
-                            <ExampleList onExampleClicked={onExampleClicked} useGPT4V={useGPT4V} />
+                            {/* <ExampleList onExampleClicked={onExampleClicked} useGPT4V={useGPT4V} /> */}
                         </div>
                     ) : (
                         <div className={styles.chatMessageStream}>

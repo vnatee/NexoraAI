@@ -5,8 +5,9 @@
 }
 
 .header {
-    background-color: #222222;
+    background-image: linear-gradient(180deg, #000 0%, #1D252D 100%);
     color: #f2f2f2;
+    
 }
 
 .headerContainer {
@@ -39,7 +40,7 @@
     z-index: 100;
     display: none;
     flex-direction: column;
-    background-color: #222222;
+    background-color: transparent;
     position: absolute;
     top: 2.7rem;
     right: 0;

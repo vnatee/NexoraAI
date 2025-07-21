@@ -85,3 +85,32 @@
         margin-bottom: 1.25rem;
     }
 }
+
+.menuDropdown {
+    position: absolute;
+    top: 2.5rem;
+    /* ปรับตามตำแหน่งที่ต้องการ */
+    right: 0;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 0.5rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    min-width: 160px;
+    padding: 0.5rem 0;
+}
+
+.loginMenuContainer {
+    position: absolute;
+    /* right: 4px; */
+    /* ชิดขวาสำหรับจอเล็ก */
+}
+
+@media (min-width: 600px) {
+    .loginMenuContainer {
+        right: 24px;
+        /* ขยับเข้ามา 24px สำหรับจอกว้าง */
+    }
+}
