@@ -18,6 +18,7 @@ import { useMsal } from "@azure/msal-react";
 import { TokenClaimsDisplay } from "../../components/TokenClaimsDisplay";
 import { LoginContext } from "../../loginContext";
 import { LanguagePicker } from "../../i18n/LanguagePicker";
+import { IconButton } from "@fluentui/react";
 
 export function Component(): JSX.Element {
     const [isConfigPanelOpen, setIsConfigPanelOpen] = useState(false);
@@ -80,6 +81,8 @@ export function Component(): JSX.Element {
 
     const client = useLogin ? useMsal().instance : undefined;
     const { loggedIn } = useContext(LoginContext);
+
+    const [menuOpen, setMenuOpen] = useState(false);
 
     const getConfig = async () => {
         configApi().then(config => {
@@ -277,6 +280,10 @@ export function Component(): JSX.Element {
 
     const { t, i18n } = useTranslation();
 
+    const toggleMenu = () => {
+        setMenuOpen(!menuOpen);
+    };
+
     return (
         <div className={styles.askContainer}>
             {/* Setting the page title using react-helmet-async */}
@@ -284,9 +291,32 @@ export function Component(): JSX.Element {
                 <title>{t("pageTitle")}</title>
             </Helmet>
             <div className={styles.askTopSection}>
-                <div className={styles.commandsContainer}>
+                {/* <div className={styles.commandsContainer}>
                     {showUserUpload && <UploadFile className={styles.commandButton} disabled={!loggedIn} />}
                     <SettingsButton className={styles.commandButton} onClick={() => setIsConfigPanelOpen(!isConfigPanelOpen)} />
+                </div> */}
+                <div className={styles.commandsContainer}>
+                    <div className={styles.commandsContainer}>
+                        <div className={styles.loginMenuContainer} style={{ position: "relative" }}>
+                            <IconButton
+                                iconProps={{ iconName: "Settings" }}
+                                className={styles.menuToggle}
+                                onClick={toggleMenu}
+                                ariaLabel={t("labels.toggleMenu")}
+                            />
+                            {menuOpen && (
+                                <div className={styles.menuDropdown}>
+                                    {showUserUpload && <UploadFile className={styles.commandButton} disabled={!loggedIn} />}
+                                    {/* <UploadFile className={styles.commandButton} /> */}
+                                    <SettingsButton className={styles.commandButton} onClick={() => setIsConfigPanelOpen(!isConfigPanelOpen)} />
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                    {/* <ClearChatButton className={styles.commandButton} onClick={clearChat} disabled={!lastQuestionRef.current || isLoading} /> */}
+                    {/* {showUserUpload && <UploadFile className={styles.commandButton} disabled={!loggedIn} />} */}
+                    {/* <UploadFile className={styles.commandButton} disabled={!loggedIn} />
+                    <SettingsButton className={styles.commandButton} onClick={() => setIsConfigPanelOpen(!isConfigPanelOpen)} /> */}
                 </div>
                 <h1 className={styles.askTitle}>{t("askTitle")}</h1>
                 <div className={styles.askQuestionInput}>
@@ -304,7 +334,7 @@ export function Component(): JSX.Element {
                 {!lastQuestionRef.current && (
                     <div className={styles.askTopSection}>
                         {showLanguagePicker && <LanguagePicker onLanguageChange={newLang => i18n.changeLanguage(newLang)} />}
-                        <ExampleList onExampleClicked={onExampleClicked} useGPT4V={useGPT4V} />
+                        {/* <ExampleList onExampleClicked={onExampleClicked} useGPT4V={useGPT4V} /> */}
                     </div>
                 )}
                 {!isLoading && answer && !error && (

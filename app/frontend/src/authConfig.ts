@@ -1,6 +1,6 @@
 // Refactored from https://github.com/Azure-Samples/ms-identity-javascript-react-tutorial/blob/main/1-Authentication/1-sign-in/SPA/src/authConfig.js
 
-import { IPublicClientApplication } from "@azure/msal-browser";
+import { AccountInfo, IPublicClientApplication } from "@azure/msal-browser";
 
 const appServicesAuthTokenUrl = ".auth/me";
 const appServicesAuthTokenRefreshUrl = ".auth/refresh";
@@ -52,13 +52,44 @@ interface AuthSetup {
     };
 }
 
+// Default config for no-auth mode
+const defaultAuthSetup: AuthSetup = {
+    useLogin: true,
+    requireAccessControl: false,
+    enableUnauthenticatedAccess: true,
+    msalConfig: {
+        auth: {
+            clientId: "",
+            authority: "",
+            redirectUri: "/",
+            postLogoutRedirectUri: "/",
+            navigateToLoginRequestUrl: false
+        },
+        cache: {
+            cacheLocation: "sessionStorage",
+            storeAuthStateInCookie: false
+        }
+    },
+    loginRequest: {
+        scopes: []
+    },
+    tokenRequest: {
+        scopes: []
+    }
+};
+
 // Fetch the auth setup JSON data from the API if not already cached
 async function fetchAuthSetup(): Promise<AuthSetup> {
-    const response = await fetch("/auth_setup");
-    if (!response.ok) {
-        throw new Error(`auth setup response was not ok: ${response.status}`);
+    
+    try {
+        const response = await fetch("/auth_setup");
+        if (!response.ok) {
+            throw new Error(`auth setup response was not ok: ${response.status}`);
+        }
+        return await response.json();
+    } catch {
+        return defaultAuthSetup;
     }
-    return await response.json();
 }
 
 const authSetup = await fetchAuthSetup();
@@ -230,7 +261,19 @@ export const getUsername = async (client: IPublicClientApplication): Promise<str
 
     return null;
 };
+export const getUsernameTest = async (client: IPublicClientApplication): Promise<AccountInfo | null> => {
+    const activeAccount = client.getActiveAccount();
+    if (activeAccount) {
+        return activeAccount;
+    }
 
+    const appServicesToken = await getAppServicesToken();
+    if (appServicesToken?.user_claims) {
+        return appServicesToken.user_claims.preferred_username;
+    }
+
+    return null;
+};
 /**
  * Retrieves the token claims of the active account.
  * If no active account is found, attempts to retrieve the token claims from the app services login token if available.
