@@ -1,5 +1,5 @@
 {
-    "name": "Azure Search OpenAI Demo",
+    "name": "InsightSphere Agentic AI",
     "image": "mcr.microsoft.com/devcontainers/python:3.11-bookworm",
     "features": {
         "ghcr.io/devcontainers/features/node:1": {
