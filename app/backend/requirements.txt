@@ -414,7 +414,7 @@ typing-extensions==4.13.2
     #   pydantic-core
 urllib3==2.2.2
     # via requests
-uvicorn==0.30.6
+uvicorn==0.52.3
     # via -r requirements.in
 werkzeug==3.0.6
     # via
