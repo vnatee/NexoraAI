@@ -1,0 +1,215 @@
+.answerContainer {
+    padding: 1.25em;
+    background: rgb(249, 249, 249);
+    border-radius: 0.5em;
+    box-shadow:
+        0em 0.125em 0.25em rgba(0, 0, 0, 0.14),
+        0em 0em 0.125em rgba(0, 0, 0, 0.12);
+    outline: transparent solid 0.0625em;
+}
+
+.answerLogo {
+    font-size: 1.75em;
+}
+
+.answerText {
+    font-size: 1rem;
+    font-weight: 400;
+    line-height: 1.375em;
+    padding-top: 1em;
+    padding-bottom: 1em;
+}
+
+.answerText h1,
+h2,
+h2 {
+    font-size: 1rem;
+    font-weight: bold;
+}
+
+.answerText table {
+    border-collapse: collapse;
+}
+
+.answerText td,
+.answerText th {
+    border: 1px solid;
+    padding: 0.3125em;
+}
+
+.selected {
+    outline: 0.125em solid rgba(115, 118, 225, 1);
+}
+
+.citationLearnMore {
+    margin-right: 0.3125em;
+    font-weight: 600;
+    line-height: 1.5em;
+}
+
+.citation {
+    font-weight: 500;
+    line-height: 1.5em;
+    text-align: center;
+    border-radius: 0.25em;
+    padding: 0em 0.5em;
+    background: #d1dbfa;
+    color: #123bb6;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.citation:hover {
+    text-decoration: underline;
+}
+
+.followupQuestionsList {
+    margin-top: 0.625em;
+}
+
+.followupQuestionLearnMore {
+    margin-right: 0.3125em;
+    font-weight: 600;
+    line-height: 1.5em;
+}
+
+.followupQuestion {
+    font-weight: 600;
+    line-height: 1.5em;
+    text-align: center;
+    border-radius: 0.25em;
+    padding: 0em 0.5em;
+    background: #e8ebfa;
+    color: black;
+    font-style: italic;
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.supContainer {
+    text-decoration: none;
+    cursor: pointer;
+}
+
+.supContainer:hover {
+    text-decoration: underline;
+}
+
+sup {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.625em;
+    font-weight: 600;
+    vertical-align: top;
+    top: -1;
+    margin: 0em 0.125em;
+    min-width: 0.875em;
+    height: 0.875em;
+    border-radius: 0.1875em;
+    background: #d1dbfa;
+    color: #123bb6;
+    text-decoration-color: transparent;
+    outline: transparent solid 0.0625em;
+    cursor: pointer;
+}
+
+.retryButton {
+    width: fit-content;
+}
+
+@keyframes loading {
+    0% {
+        content: "";
+    }
+    25% {
+        content: ".";
+    }
+    50% {
+        content: "..";
+    }
+    75% {
+        content: "...";
+    }
+    100% {
+        content: "";
+    }
+}
+
+.loadingdots::after {
+    content: "";
+    animation: loading 1s infinite;
+}
+
+/* === Minimal feedback row (right aligned) === */
+.feedbackRow {
+    display: flex;
+    justify-content: flex-end; /* ชิดขวา */
+    margin-top: 8px;
+}
+
+.feedbackRight {
+    display: flex;
+    align-items: center;
+}
+
+.feedbackButtons {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    opacity: 0.6; /* มินิมอล: โปร่งตอนปกติ */
+    transition: opacity 120ms ease;
+}
+
+.feedbackButtons:hover {
+    opacity: 1; /* ชัดเมื่อ hover */
+}
+
+/* ปุ่มขนาดเล็ก โปร่ง */
+.feedbackBtn {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--fg-muted, #9aa3af); /* เทาอ่อน */
+    transition:
+        background 120ms ease,
+        color 120ms ease,
+        transform 80ms ease;
+}
+
+.feedbackBtn:hover {
+    background: rgba(0, 0, 0, 0.06); /* hover เบา ๆ (ถ้าเป็นธีมมืดปรับเป็น rgba(255,255,255,0.06)) */
+    color: var(--fg, #111827); /* เข้มขึ้น */
+}
+
+.feedbackBtn:active {
+    transform: scale(0.98);
+}
+
+/* สถานะเลือกแล้ว */
+.activeLike {
+    color: #10b981; /* เขียวมิ้นท์ */
+    background: rgba(16, 185, 129, 0.12);
+}
+
+.activeDislike {
+    color: #ef4444; /* แดงซอฟต์ */
+    background: rgba(239, 68, 68, 0.12);
+}
+
+/* ตัวโหลดขนาดเล็กก่อนปุ่ม */
+.feedbackLoader {
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 4px;
+    visibility: hidden;
+}
+
+.feedbackLoader:has(> *) {
+    visibility: visible;
+}
