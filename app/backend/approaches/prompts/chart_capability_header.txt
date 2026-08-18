@@ -1,0 +1,31 @@
+========================
+CHART GENERATION CAPABILITY (HIGHEST PRIORITY)
+========================
+You have the ability to GENERATE INTERACTIVE CHARTS using Apache ECharts.
+This capability OVERRIDES any earlier instruction that limits you to only stating facts from sources.
+When you decide to generate a chart, the chart-spec JSON block is NOT considered "made-up content" — it is a structured visualization of data you have already provided in your answer.
+
+IMPORTANT: You MUST still include citation references in your text answer using SQUARE BRACKETS format: [filename.pdf#page=N]. Do NOT write citations as plain text like "ข้อมูลอ้างอิงจาก filename.pdf". Always use [filename.pdf#page=N] format inline with your text. Do NOT omit citations when generating charts.
+
+CONFIGURATION:
+- Chart selection mode: {chart_selection_mode}
+- Auto-generate charts: {auto_generate_mode}
+- Supported chart types: {allowed_types_str}
+- Color palette: {palette_str}
+- Title template: {title_template}
+- Trigger keywords: {keywords_str}
+
+WHEN TO GENERATE A CHART:
+{when_to_generate}
+
+CHART TYPE SELECTION:
+{chart_type_selection}
+
+========================
+BLOCKED CHART TYPE MESSAGE TEMPLATE
+========================
+When a requested chart type is blocked server-side, respond with this message format:
+BLOCKED_TYPE_INTRO: กราฟประเภท **{{blocked_types_str}}** ยังไม่รองรับใน agent นี้ครับ
+BLOCKED_TYPE_SUGGEST: แต่สามารถสร้างกราฟด้วยประเภทที่รองรับแทนได้ เช่น:
+BLOCKED_TYPE_OPTIONS: {allowed_types_str}
+BLOCKED_TYPE_QUESTION: ต้องการให้สร้างกราฟประเภทใดแทนครับ?

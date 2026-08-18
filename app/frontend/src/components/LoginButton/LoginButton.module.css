@@ -1,0 +1,26 @@
+.loginButton {
+    border-radius: 0.3125em;
+    font-weight: 100;
+    margin: 0;
+    padding: 0.5rem 1rem;
+}
+
+/* 🔥 Pulse animation สำหรับ loading text */
+@keyframes pulseText {
+    0% {
+        opacity: 0.4;
+    }
+    50% {
+        opacity: 1;
+    }
+    100% {
+        opacity: 0.4;
+    }
+}
+
+/* ใช้ class นี้กับ <Typography> */
+.loading-text {
+    color: #000 !important;
+    font-weight: 600;
+    animation: pulseText 1.4s ease-in-out infinite;
+}

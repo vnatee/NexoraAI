@@ -1,0 +1,1785 @@
+const BACKEND_URI = "";
+
+import {
+    ChatAppResponse,
+    ChatAppResponseOrError,
+    ChatAppRequest,
+    Config,
+    SimpleAPIResponse,
+    HistoryListApiResponse,
+    HistoryApiResponse,
+    UserProfile,
+    RoleDetail,
+    GroupDetail,
+    GroupPrompt,
+    FeedbackPayload,
+    AgentConfig,
+    User,
+    RegisterUserPayload,
+    Prompt,
+    DatabaseConnection,
+    MailEmailConfig
+} from "./models";
+import { useLogin, getToken, isUsingAppServicesLogin } from "../authConfig";
+
+export async function getHeaders(idToken: string | undefined): Promise<Record<string, string>> {
+    // If using login and not using app services, add the id token of the logged in account as the authorization
+    if (useLogin && !isUsingAppServicesLogin) {
+        if (idToken) {
+            return { Authorization: `Bearer ${idToken}` };
+        }
+    }
+
+    return {};
+}
+
+export async function configApi(): Promise<Config> {
+    const response = await fetch(`${BACKEND_URI}/config`, {
+        method: "GET"
+    });
+
+    return (await response.json()) as Config;
+}
+
+export async function askApi(request: ChatAppRequest, idToken: string | undefined): Promise<ChatAppResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`${BACKEND_URI}/ask`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(request)
+    });
+
+    if (response.status > 299 || !response.ok) {
+        throw Error(`Request failed with status ${response.status}`);
+    }
+    const parsedResponse: ChatAppResponseOrError = await response.json();
+    if (parsedResponse.error) {
+        throw Error(parsedResponse.error);
+    }
+
+    return parsedResponse as ChatAppResponse;
+}
+
+export async function chatApi(request: ChatAppRequest, shouldStream: boolean, idToken: string | undefined): Promise<Response> {
+    let url = `${BACKEND_URI}/chat`;
+    if (shouldStream) {
+        url += "/stream";
+    }
+    const headers = await getHeaders(idToken);
+    return await fetch(url, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(request)
+    });
+}
+
+export async function getSpeechApi(text: string): Promise<string | null> {
+    return await fetch("/speech", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            text: text
+        })
+    })
+        .then(response => {
+            if (response.status == 200) {
+                return response.blob();
+            } else if (response.status == 400) {
+                console.log("Speech synthesis is not enabled.");
+                return null;
+            } else {
+                console.error("Unable to get speech synthesis.");
+                return null;
+            }
+        })
+        .then(blob => (blob ? URL.createObjectURL(blob) : null));
+}
+
+export function getCitationFilePath(citation: string): string {
+    return `${BACKEND_URI}/content/${citation}`;
+}
+
+export async function uploadFileApi(request: FormData, idToken: string): Promise<SimpleAPIResponse> {
+    const response = await fetch("/upload", {
+        method: "POST",
+        headers: await getHeaders(idToken),
+        body: request
+    });
+
+    if (!response.ok) {
+        throw new Error(`Uploading files failed: ${response.statusText}`);
+    }
+
+    const dataResponse: SimpleAPIResponse = await response.json();
+    return dataResponse;
+}
+
+export async function uploadGlobalFileApi(request: FormData, idToken: string): Promise<SimpleAPIResponse> {
+    const response = await fetch("/global_upload", {
+        method: "POST",
+        headers: await getHeaders(idToken),
+        body: request
+    });
+
+    if (!response.ok) {
+        throw new Error(`Uploading files failed: ${response.statusText}`);
+    }
+
+    const dataResponse: SimpleAPIResponse = await response.json();
+    return dataResponse;
+}
+
+export type ScrapingAPIResponse = {
+    message?: string;
+    [key: string]: any; // รองรับ fields อื่นๆ จาก backend
+};
+
+export type ErrorResponse = {
+    error?: string;
+    status?: string;
+    message?: string;
+};
+
+export async function scrapingApi(url: string, idToken: string, team_id?: string | null, data_groups_id?: string[]): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    // ✨ เตรียม body แบบ dynamic
+    const body: any = { url };
+    if (team_id) {
+        body.team_id = team_id; // เพิ่ม team_id เฉพาะถ้ามีค่า
+        if (data_groups_id && data_groups_id.length > 0) {
+            body.data_groups_id = data_groups_id; // เพิ่ม data_group_id เฉพาะถ้ามีค่า
+        }
+    }
+
+    const response = await fetch("/scrape", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+        // พยายาม parse error response จาก backend
+        try {
+            const errorData: ErrorResponse = await response.json();
+
+            // ใช้ error message จาก backend ถ้ามี
+            let errorMessage = `Scraping data failed: ${response.statusText}`;
+
+            if (errorData.error) {
+                errorMessage = errorData.error;
+            } else if (errorData.message) {
+                errorMessage = errorData.message;
+            }
+
+            throw new Error(errorMessage);
+        } catch (parseError) {
+            // ถ้า parse JSON ไม่ได้ (response ไม่ใช่ JSON)
+            throw new Error(`Scraping data failed: ${response.statusText}`);
+        }
+    }
+
+    const dataResponse: ScrapingAPIResponse = await response.json();
+    return dataResponse;
+}
+
+export async function deleteUploadedFileApi(filename: string, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/delete_uploaded", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ filename })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Deleting file failed: ${response.statusText}`);
+    }
+
+    const dataResponse: SimpleAPIResponse = await response.json();
+    return dataResponse;
+}
+
+export async function deleteGlobalUploadedFileApi(filename: string, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/global_delete_uploaded", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ filename })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Deleting file failed: ${response.statusText}`);
+    }
+
+    const dataResponse: SimpleAPIResponse = await response.json();
+    return dataResponse;
+}
+
+export async function listUploadedFilesApi(idToken: string): Promise<string[]> {
+    const response = await fetch(`/list_uploaded`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Listing files failed: ${response.statusText}`);
+    }
+
+    const dataResponse: string[] = await response.json();
+    return dataResponse;
+}
+
+export async function listUploadedGlobalFilesApi(idToken: string): Promise<string[]> {
+    const response = await fetch(`/list_global_uploaded`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Listing files failed: ${response.statusText}`);
+    }
+
+    const dataResponse: string[] = await response.json();
+    return dataResponse;
+}
+
+export async function listWebApi(idToken: string, team_id?: string | null): Promise<string[]> {
+    const url = team_id ? `/list_web_contents?team_id=${team_id}` : `/list_web_contents`;
+    const response = await fetch(url, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Listing webs failed: ${response.statusText}`);
+    }
+
+    const dataResponse: string[] = await response.json();
+    return dataResponse;
+}
+
+export async function deleteWebContentApi(url: string, idToken: string, team_id?: string | null): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const body: any = { url };
+    if (team_id) {
+        body.team_id = team_id; // เพิ่ม gid เฉพาะถ้ามีค่า
+    }
+    const response = await fetch("/delete_web_content", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Deleting web content failed: ${response.statusText}`);
+    }
+
+    const dataResponse: SimpleAPIResponse = await response.json();
+    return dataResponse;
+}
+
+export async function createUserApi(username: string, idToken: string, groups?: GroupDetail[] | null, role_id?: string | null): Promise<string> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/create_user", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ username, groups, role_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Create user failed: ${response.statusText}`);
+    }
+
+    const dataResponse: string = await response.json();
+    return dataResponse;
+}
+
+export async function userDetailsApi(username: string, idToken: string): Promise<UserProfile> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/user_details", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ username })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Get user details failed: ${response.statusText}`);
+    }
+
+    const dataResponse: UserProfile = await response.json();
+    return dataResponse;
+}
+
+export async function listRolesApi(idToken: string): Promise<RoleDetail[]> {
+    const response = await fetch(`/list_roles`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Listing webs failed: ${response.statusText}`);
+    }
+
+    const dataResponse: RoleDetail[] = await response.json();
+    return dataResponse;
+}
+
+export async function listGroupsApi(idToken: string): Promise<GroupDetail[]> {
+    const response = await fetch(`/list_groups`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Listing webs failed: ${response.statusText}`);
+    }
+
+    const dataResponse: GroupDetail[] = await response.json();
+    return dataResponse;
+}
+
+export async function createGroupApi(group_name: string, idToken: string, agent_name?: string, group_promt?: GroupPrompt): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/create_group", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ group_name, agent_name, group_promt })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Create group failed: ${response.statusText}`);
+    }
+
+    const dataResponse: SimpleAPIResponse = await response.json();
+    return dataResponse;
+}
+
+export async function updateGroupApi(
+    group_id: string,
+    group_name: string,
+    idToken: string,
+    group_promt?: GroupPrompt,
+    agent_name?: string
+): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/update_group", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ group_id, group_name, group_promt, agent_name })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Update group failed: ${response.statusText}`);
+    }
+
+    const dataResponse: SimpleAPIResponse = await response.json();
+    return dataResponse;
+}
+
+export async function deleteGroupApi(group_id: string, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/delete_group", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ group_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Delete group failed: ${response.statusText}`);
+    }
+
+    const dataResponse: SimpleAPIResponse = await response.json();
+    return dataResponse;
+}
+
+export async function uploadGroupFileApi(request: FormData, idToken: string, gid: string): Promise<SimpleAPIResponse> {
+    request.append("gid", gid);
+
+    const headers = await getHeaders(idToken);
+    if ("Content-Type" in headers) {
+        delete (headers as any)["Content-Type"];
+    }
+
+    const response = await fetch("/groups_upload", {
+        method: "POST",
+        headers,
+        body: request
+    });
+
+    if (!response.ok) {
+        throw new Error(`Uploading files failed: ${response.statusText}`);
+    }
+
+    return await response.json();
+}
+
+export async function uploadTeamFileApi(request: FormData, data_groups_id: string[], team_id: string, idToken: string): Promise<SimpleAPIResponse> {
+    request.append("data_groups_id", JSON.stringify(data_groups_id));
+    request.append("team_id", team_id);
+
+    const headers = await getHeaders(idToken);
+    if ("Content-Type" in headers) {
+        delete (headers as any)["Content-Type"];
+    }
+
+    const response = await fetch("/team_upload", {
+        method: "POST",
+        headers,
+        body: request
+    });
+
+    if (!response.ok) {
+        throw new Error(`Uploading files failed: ${response.statusText}`);
+    }
+
+    return await response.json();
+}
+
+export async function deleteTeamUploadedFileApi(filename: string, idToken: string, team_id: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/team_delete_uploaded", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ filename, team_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Deleting file failed: ${response.statusText}`);
+    }
+
+    const dataResponse: SimpleAPIResponse = await response.json();
+    return dataResponse;
+}
+
+export async function listUploadedteamFilesApi(team_id: string, idToken: string): Promise<string[]> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch(`/list_team_uploaded`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Listing files failed: ${response.statusText}`);
+    }
+
+    const dataResponse: string[] = await response.json();
+    return dataResponse;
+}
+
+export async function listUsersApi(idToken: string): Promise<UserProfile[]> {
+    const response = await fetch(`/list_users`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Listing webs failed: ${response.statusText}`);
+    }
+
+    const dataResponse: UserProfile[] = await response.json();
+    return dataResponse;
+}
+
+export async function getFixedPromptsApi(idToken: string | undefined): Promise<any> {
+    const response = await fetch(`/fixed_prompt`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Getting fixed prompts failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function listUsageApi(idToken: string): Promise<any> {
+    const response = await fetch(`/get_usage`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Listing usage failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function updateUserApi(
+    user_id: string,
+    username: string,
+    idToken: string,
+    groups?: GroupDetail[] | null,
+    role_id?: string | null
+): Promise<UserProfile> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/update_user", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id, username, groups, role_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Update user failed: ${response.statusText}`);
+    }
+
+    const dataResponse: UserProfile = await response.json();
+    return dataResponse;
+}
+
+export async function deleteUserApi(user_id: string, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/delete_user", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Delete user failed: ${response.statusText}`);
+    }
+
+    const dataResponse: SimpleAPIResponse = await response.json();
+    return dataResponse;
+}
+
+export async function postChatHistoryApi(item: any, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/chat_history", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(item)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Posting chat history failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function getChatHistoryListApi(count: number, continuationToken: string | undefined, idToken: string): Promise<HistoryListApiResponse> {
+    const headers = await getHeaders(idToken);
+    let url = `${BACKEND_URI}/chat_history/sessions?count=${count}`;
+    if (continuationToken) {
+        url += `&continuationToken=${continuationToken}`;
+    }
+
+    const response = await fetch(url.toString(), {
+        method: "GET",
+        headers: { ...headers, "Content-Type": "application/json" }
+    });
+
+    if (!response.ok) {
+        throw new Error(`Getting chat histories failed: ${response.statusText}`);
+    }
+
+    const dataResponse: HistoryListApiResponse = await response.json();
+    return dataResponse;
+}
+
+export async function getChatHistoryApi(id: string, idToken: string): Promise<HistoryApiResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/chat_history/sessions/${id}`, {
+        method: "GET",
+        headers: { ...headers, "Content-Type": "application/json" }
+    });
+
+    if (!response.ok) {
+        throw new Error(`Getting chat history failed: ${response.statusText}`);
+    }
+
+    const dataResponse: HistoryApiResponse = await response.json();
+    return dataResponse;
+}
+
+export async function deleteChatHistoryApi(id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/chat_history/sessions/${id}`, {
+        method: "DELETE",
+        headers: { ...headers, "Content-Type": "application/json" }
+    });
+
+    if (!response.ok) {
+        throw new Error(`Deleting chat history failed: ${response.statusText}`);
+    }
+}
+
+export async function createFeedbackApi(payload: FeedbackPayload, idToken: string): Promise<void> {
+    try {
+        const headers = await getHeaders(idToken);
+
+        fetch(`/feedbacks`, {
+            method: "POST",
+            headers: { ...headers, "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        }).catch(err => console.error("feedback send error:", err));
+    } catch (err) {
+        console.error("feedback setup error:", err);
+    }
+}
+
+export async function deleteFeedbackApi(session_state: string, answer_index: number, idToken: string): Promise<void> {
+    try {
+        const headers = await getHeaders(idToken);
+        const query = new URLSearchParams({
+            session_state,
+            answer_index: String(answer_index)
+        });
+
+        fetch(`/feedbacks?${query.toString()}`, {
+            method: "DELETE",
+            headers
+        }).catch(err => console.error("feedback delete error:", err));
+    } catch (err) {
+        console.error("delete setup error:", err);
+    }
+}
+
+export async function listAgentsApi(idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/list_agent`, {
+        method: "GET",
+        headers: { ...headers, "Content-Type": "application/json" }
+    });
+
+    if (!response.ok) {
+        throw new Error(`Getting agent list failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function deleteAgentApi(agent_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/deleteAgentApi`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Deleting agent failed: ${response.statusText}`);
+    }
+}
+
+export async function createAgentApi(payload: AgentConfig, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/createAgentApi`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+        let err = {};
+        try {
+            err = await response.json(); // <--- ดึง JSON error จริง
+        } catch (_) {}
+
+        throw {
+            status: response.status,
+            ...err
+        };
+    }
+
+    return response.json();
+}
+
+export async function updateAgentApi(payload: AgentConfig, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/updateAgentApi`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+        let err = {};
+        try {
+            err = await response.json(); // <--- ดึง JSON error จริง
+        } catch (_) {}
+
+        throw {
+            status: response.status,
+            ...err
+        };
+    }
+
+    return response.json();
+}
+
+export async function currentAgentConfig(group_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/current_agent_config`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ group_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Current agent config failed: ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    return data;
+}
+
+export async function feedBackPageApi(request: FormData, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/add_feedback_page", {
+        method: "POST",
+        headers,
+        body: request
+    });
+
+    if (!response.ok) {
+        throw new Error(`Feedback submission failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function listFeedback(idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/get_all_feedback_page`, {
+        method: "GET",
+        headers: { ...headers, "Content-Type": "application/json" }
+    });
+
+    if (!response.ok) {
+        throw new Error(`get feedback list failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function limit_size(idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/limit_size_conf`, {
+        method: "GET",
+        headers: { ...headers, "Content-Type": "application/json" }
+    });
+
+    if (!response.ok) {
+        throw new Error(`get limit size conf failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function list_doc_ai(idToken: string): Promise<any> {
+    const response = await fetch(`/get_docintel_usage`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Listing usage failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function check_user_login(idToken: string): Promise<any> {
+    const response = await fetch(`/check_user_login`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        const error: any = new Error("check_user_login failed");
+        error.status = response.status; // ⭐ สำคัญมาก
+        throw error;
+    }
+
+    return await response.json();
+}
+
+export async function get_teams(idToken: string): Promise<any> {
+    const response = await fetch(`/get_all_teams`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Error: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function create_team(team_name: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/create_team", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_name })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Create team failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function delete_team(team_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/delete_team", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Create team failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function team_detail(team_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/get_team_detail", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Get team detail failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function edit_team_name(team_id: string, team_name: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/edit_team_name", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id, team_name })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Get team detail failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function insert_team_users(team_id: string, user_id: string[], idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/insert_team_users", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id, user_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Insert user failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function delete_team_user(team_id: string, user_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/delete_team_user", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id, user_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Delete user failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function get_all_users(idToken: string): Promise<any> {
+    const response = await fetch(`/get_all_users`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Error: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function get_team_users(team_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/get_team_users", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`get team user failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function add_users(user: User, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    let ad_email = user.ad_email;
+    let email = user.email;
+    let first_name = user.first_name;
+    let last_name = user.last_name;
+    let tel = user.tel;
+    let employee_id = user.employee_id;
+
+    const response = await fetch("/insert_user", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ ad_email, email, first_name, last_name, tel, employee_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`get team user failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function update_user(user: User, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    let user_id = user._id;
+    let ad_email = user.ad_email;
+    let email = user.email;
+    let first_name = user.first_name;
+    let last_name = user.last_name;
+    let tel = user.tel;
+    let employee_id = user.employee_id;
+    let active = user.active;
+
+    const response = await fetch("/update_user", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ ad_email, email, first_name, last_name, tel, employee_id, active, user_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`get team user failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function delete_user(user_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/delete_user", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`get team user failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function get_all_permission(idToken: string): Promise<any> {
+    const response = await fetch(`/get_all_permissions`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Error: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return dataResponse.permissions;
+}
+
+export async function get_user_permissions(user_id: string, team_id: string | null, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/get_user_permissions", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id, team_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`get user permission failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse.user_permissions;
+}
+
+export async function create_edit_user_permissions(
+    user_id: string,
+    team_id: string | null,
+    permission_id: string[] | null,
+    is_sys_admin: boolean,
+    idToken: string
+): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/create_edit_user_permissions", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id, team_id, permission_id, is_sys_admin })
+    });
+
+    if (!response.ok) {
+        throw new Error(`get user permission failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse.user_permissions;
+}
+
+export async function get_users_by_team_id(team_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/get_users_by_team_id", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`get user permission failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function register(team_id: string[], user: RegisterUserPayload, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    let email = user.email;
+    let first_name = user.first_name;
+    let last_name = user.last_name;
+    let tel = user.tel;
+    let employee_id = user.employee_id;
+
+    const response = await fetch("/register", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id, email, first_name, last_name, tel, employee_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`register failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+export async function approve_users(team_id: string, users: User[], idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/approve_users", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id, users })
+    });
+
+    if (!response.ok) {
+        throw new Error(`approve users failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function reject_users(team_id: string, users: User[], idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/reject_users", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id, users })
+    });
+
+    if (!response.ok) {
+        throw new Error(`reject users failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function check_waiting_approve(idToken: string): Promise<any> {
+    const response = await fetch(`/check_waiting_approve`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+
+    if (!response.ok) {
+        throw new Error(`Error: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function create_agent(team_id: string, agent_name: string, config: AgentConfig, prompt: Prompt, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/create_agent", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id, agent_name, config, prompt })
+    });
+
+    if (!response.ok) {
+        throw new Error(`create agent failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function get_agent_by_team(team_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/get_agent_by_team", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`get agent by team failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse.result;
+}
+
+export async function edit_agent(agent_id: string, agent_name: string, config: AgentConfig, prompt: Prompt, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/edit_agent", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_id, agent_name, config, prompt })
+    });
+
+    if (!response.ok) {
+        throw new Error(`create agent failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function delete_agent(team_id: string, agent_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/delete_agent", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id, agent_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`get agent by team failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function get_data_group_by_team(team_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/get_data_group_by_team", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`get data group by team failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse.result;
+}
+
+export async function create_data_group(team_id: string, data_group_name: string, users_id: string[], idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/create_data_group", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id, data_group_name, users_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`create data group failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function edit_data_group(data_group_id: string, data_group_name: string, users_id: string[], idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/edit_data_group", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ data_group_id, data_group_name, users_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`edit data group failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function delete_data_group(team_id: string, data_group_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/delete_data_group", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id, data_group_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`delete data group failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function create_role(team_id: string, name: string, permissions_id: string[], idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/create_role", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id, name, permissions_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`create role failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function edit_role(team_id: string, role_id: string, name: string, permissions_id: string[], idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/edit_role", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ role_id, team_id, name, permissions_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`edit role failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function delete_role(role_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/delete_role", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ role_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`delete role failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse;
+}
+
+export async function get_roles_by_team(team_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+
+    const response = await fetch("/get_roles_by_team", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id })
+    });
+
+    if (!response.ok) {
+        throw new Error(`get roles by team failed: ${response.statusText}`);
+    }
+
+    const dataResponse: any = await response.json();
+    return await dataResponse.roles;
+}
+
+export async function get_external_apis_by_team(team_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/get_external_apis_by_team", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id })
+    });
+    if (!response.ok) {
+        throw new Error(`get external apis failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function insert_external_api(payload: any, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/insert_external_api", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+        throw new Error(`insert external api failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function edit_external_api(payload: any, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/edit_external_api", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+        throw new Error(`edit external api failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function delete_external_api(api_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/delete_external_api", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ api_id })
+    });
+    if (!response.ok) {
+        throw new Error(`delete external api failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function insert_agent_binding(payload: any, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/insert_agent_binding", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+        throw new Error(`insert agent binding failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+// TODO: เปลี่ยน endpoint เมื่อได้ API จริง
+export async function insert_database_binding(payload: any, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/insert_database_binding", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+        throw new Error(`insert database binding failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+// TODO: เปลี่ยน endpoint เมื่อได้ API จริง
+export async function get_database_bindings_by_agent(agent_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/get_database_bindings_by_agent", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_id })
+    });
+    if (!response.ok) {
+        throw new Error(`get database bindings failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+// TODO: เปลี่ยน endpoint เมื่อได้ API จริง
+export async function delete_database_binding_by_id(database_binding_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/delete_database_binding_by_id", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ database_binding_id })
+    });
+    if (!response.ok) {
+        throw new Error(`delete database binding failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+// TODO: เปลี่ยน endpoint เมื่อได้ API จริง
+export async function toggle_database_binding_by_id(database_binding_id: string, enabled: boolean, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/toggle_database_binding_by_id", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ database_binding_id, enabled })
+    });
+    if (!response.ok) {
+        throw new Error(`toggle database binding failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function delete_agent_binding_by_id(agent_binding_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/delete_agent_binding_by_id", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_binding_id })
+    });
+    if (!response.ok) {
+        throw new Error(`delete agent binding failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function toggle_agent_binding_by_id(agent_bindin_id: string, enabled: boolean, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/toggle_agent_binding_by_id", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_bindin_id, enabled })
+    });
+    if (!response.ok) {
+        throw new Error(`toggle agent binding failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function get_agent_bindings_by_agent(agent_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/get_agent_bindings_by_agent", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ agent_id })
+    });
+    if (!response.ok) {
+        throw new Error(`get agent bindings failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function get_integrations_by_team(team_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/get_integrations_by_team", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id })
+    });
+    if (!response.ok) {
+        throw new Error(`get integrations failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function get_db_connections(team_id: string, _idToken: string): Promise<DatabaseConnection[]> {
+    const headers = await getHeaders(_idToken);
+    const response = await fetch("/get_database_connection_by_team", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id })
+    });
+    if (!response.ok) {
+        throw new Error(`get database connections failed: ${response.statusText}`);
+    }
+    const dataResponse: { result?: DatabaseConnection[]; data?: DatabaseConnection[] } | DatabaseConnection[] = await response.json();
+
+    if (Array.isArray(dataResponse)) {
+        return dataResponse;
+    }
+
+    return dataResponse.result || dataResponse.data || [];
+}
+
+export async function insert_db_connection(payload: any, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/insert_database_connection", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+        throw new Error(`insert database connection failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function edit_db_connection(payload: any, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const normalizedPayload = {
+        ...payload,
+        database_id: payload.database_id ?? payload.connection_id
+    };
+    delete normalizedPayload.connection_id;
+
+    const response = await fetch("/edit_database_connection", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(normalizedPayload)
+    });
+    if (!response.ok) {
+        throw new Error(`edit database connection failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function delete_db_connection(connection_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/delete_database_connection", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ database_id: connection_id })
+    });
+    if (!response.ok) {
+        throw new Error(`delete database connection failed: ${response.statusText}`);
+    }
+    const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function get_mail_configs(team_id: string, idToken: string): Promise<MailEmailConfig[]> {
+    const response = await fetch(`/mail_configs?team_id=${team_id}`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+    if (!response.ok) {
+        throw new Error(`get mail configs failed: ${response.statusText}`);
+    }
+    const dataResponse: MailEmailConfig[] = await response.json();
+    return dataResponse;
+}
+
+export async function insert_mail_config(payload: any, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/insert_mail_config", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+        throw new Error(`insert mail config failed: ${response.statusText}`);
+    }
+    const dataResponse: SimpleAPIResponse = await response.json();
+    return dataResponse;
+}
+
+export async function edit_mail_config(payload: any, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/edit_mail_config", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+        throw new Error(`edit mail config failed: ${response.statusText}`);
+    }
+    const dataResponse: SimpleAPIResponse = await response.json();
+    return dataResponse;
+}
+
+export async function delete_mail_config(config_id: string, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/delete_mail_config", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ config_id })
+    });
+    if (!response.ok) {
+        throw new Error(`delete mail config failed: ${response.statusText}`);
+    }
+    const dataResponse: SimpleAPIResponse = await response.json();
+    return dataResponse;
+}
+
+// ─── Mail Binding ────────────────────────────────────────────────────────────
+
+import { MailBindingData } from "./models";
+
+export async function get_mail_bindings_by_agent(agent_id: string, idToken: string): Promise<MailBindingData[]> {
+    const response = await fetch(`/mail_bindings?agent_id=${agent_id}`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+    if (!response.ok) throw new Error(`get mail bindings failed: ${response.statusText}`);
+    return response.json();
+}
+
+export async function insert_mail_binding(payload: Omit<MailBindingData, "_id">, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/insert_mail_binding", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error(`insert mail binding failed: ${response.statusText}`);
+    return response.json();
+}
+
+export async function delete_mail_binding_by_id(binding_id: string, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/delete_mail_binding", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ binding_id })
+    });
+    if (!response.ok) throw new Error(`delete mail binding failed: ${response.statusText}`);
+    return response.json();
+}
+
+export async function toggle_mail_binding_by_id(binding_id: string, enabled: boolean, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/toggle_mail_binding", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ binding_id, enabled })
+    });
+    if (!response.ok) throw new Error(`toggle mail binding failed: ${response.statusText}`);
+    return response.json();
+}
+
+// ─── Chart Capability Binding ────────────────────────────────────────────────
+// ⭐ CHART CAPABILITY: CRUD สำหรับผูก "ความสามารถสร้างกราฟ" เข้ากับ agent
+//    ใช้ pattern เดียวกับ mail binding (GET /chart_bindings + POST insert/delete/toggle)
+import { ChartBindingData } from "./models";
+
+export async function get_chart_bindings_by_agent(agent_id: string, idToken: string): Promise<ChartBindingData[]> {
+    const response = await fetch(`/chart_bindings?agent_id=${agent_id}`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+    if (!response.ok) throw new Error(`get chart bindings failed: ${response.statusText}`);
+    return response.json();
+}
+
+export async function insert_chart_binding(payload: Omit<ChartBindingData, "_id">, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/insert_chart_binding", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error(`insert chart binding failed: ${response.statusText}`);
+    return response.json();
+}
+
+export async function delete_chart_binding_by_id(binding_id: string, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/delete_chart_binding", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ binding_id })
+    });
+    if (!response.ok) throw new Error(`delete chart binding failed: ${response.statusText}`);
+    return response.json();
+}
+
+export async function toggle_chart_binding_by_id(binding_id: string, enabled: boolean, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/toggle_chart_binding", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ binding_id, enabled })
+    });
+    if (!response.ok) throw new Error(`toggle chart binding failed: ${response.statusText}`);
+    return response.json();
+}
+
+export async function update_chart_binding(payload: ChartBindingData, idToken: string): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/update_chart_binding", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+            binding_id: payload._id,
+            chart_selection_mode: payload.chart_selection_mode ?? "auto",
+            auto_generate: payload.auto_generate ?? false,
+            color_palette: payload.color_palette,
+            title_template: payload.title_template,
+            trigger_keywords: payload.trigger_keywords,
+            enabled: payload.enabled
+        })
+    });
+    if (!response.ok) throw new Error(`update chart binding failed: ${response.statusText}`);
+    return response.json();
+}

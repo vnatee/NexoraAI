@@ -1,0 +1,320 @@
+.askContainer {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    margin-top: 1rem;
+}
+
+.askTopSection {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+}
+
+.askBottomSection {
+    display: flex;
+    flex: 1;
+    flex-wrap: wrap;
+    justify-content: center;
+    align-content: flex-start;
+    width: 100%;
+    margin-top: 1.25rem;
+}
+
+.askTitle {
+    font-size: 2.75rem;
+    font-weight: 600;
+    margin-top: 0;
+}
+
+.askQuestionInput {
+    padding: 1rem;
+    width: 100%;
+    max-width: 64.25rem;
+}
+
+.askAnswerContainer {
+    max-width: 50rem;
+    width: 100%;
+    padding-left: 1rem;
+    padding-right: 1rem;
+}
+
+.askAnalysisPanel {
+    width: 37.5rem;
+    margin-left: 1.25rem;
+}
+
+.askSettingsSeparator {
+    display: flex;
+    flex-direction: column;
+    margin-top: 0.9375rem;
+}
+
+.settingsButton {
+    align-self: flex-end;
+    margin-right: 1.25rem;
+    margin-top: 1.25rem;
+}
+
+.commandsContainer {
+    display: flex;
+    padding-left: 2rem !important;
+    /* padding-right: 1rem; */
+    align-self: flex-start;
+}
+
+.commandButton {
+    margin-bottom: 1.25rem;
+}
+
+@media (min-width: 992px) {
+    .askTitle {
+        font-size: 4rem;
+        /* margin-top: 8.125rem; */
+    }
+
+    .commandsContainer {
+        padding-left: 0;
+        padding-right: 0;
+    }
+
+    .commandButton {
+        margin-right: 1.25rem;
+        margin-bottom: 1.25rem;
+    }
+}
+
+.menuDropdown {
+    position: absolute;
+    top: 2.5rem;
+    /* ปรับตามตำแหน่งที่ต้องการ */
+    right: 0;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 0.5rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    min-width: 160px;
+    padding: 0.5rem 0;
+}
+
+.loginMenuContainer {
+    position: absolute;
+    /* right: 4px; */
+    /* ชิดขวาสำหรับจอเล็ก */
+}
+
+.menuDropdownEnhanced {
+    position: absolute;
+    top: 40px;
+    right: 0;
+    background-color: white;
+    border-radius: 10px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+    padding: 12px 0;
+    min-width: 180px;
+    z-index: 100;
+
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+@media (min-width: 600px) {
+    .loginMenuContainer {
+        right: 24px;
+        /* ขยับเข้ามา 24px สำหรับจอกว้าง */
+    }
+}
+
+.menuItem {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    font-size: 15px;
+    color: #333;
+    background-color: transparent;
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+
+    &:hover {
+        background-color: #f2f2f2;
+    }
+
+    &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    svg {
+        width: 18px;
+        height: 18px;
+    }
+}
+
+.sparkleLogo {
+    position: relative;
+    font-size: 90px;
+    font-weight: bold;
+    background: linear-gradient(120deg, #ffcc33, #ff6a00, #ff00a6, #a960ff);
+    background-size: 300% 300%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation:
+        glowPulse 4s ease-in-out infinite,
+        gradientShift 10s linear infinite;
+    filter: drop-shadow(0 0 14px rgba(255, 170, 0, 0.5));
+    display: inline-block;
+    transform-origin: center;
+}
+
+/* เพิ่ม glow soft รอบดาว */
+.sparkleLogo::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 160px;
+    height: 160px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(255, 200, 100, 0.25) 0%, transparent 70%);
+    filter: blur(12px);
+    z-index: 0;
+}
+
+/* 🪐 เพิ่มหมอกหมุนรอบหลัง Glow */
+.sparkleLogo::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 220px;
+    height: 220px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, rgba(255, 220, 180, 0.06), rgba(255, 160, 255, 0.07), rgba(180, 120, 255, 0.08), rgba(255, 220, 180, 0.06));
+    animation: spinHalo 20s linear infinite;
+    z-index: -1; /* อยู่หลัง glow */
+    filter: blur(10px);
+    mix-blend-mode: screen;
+    pointer-events: none;
+    opacity: 0.5; /* เบามาก ไม่แย่ง glow */
+}
+
+@keyframes spinHalo {
+    from {
+        transform: translate(-50%, -50%) rotate(0deg);
+    }
+    to {
+        transform: translate(-50%, -50%) rotate(360deg);
+    }
+}
+
+/* ----- ดาวเล็ก 3 ดวง ----- */
+.sparkleLogo span {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    opacity: 0.8;
+    transform-origin: center;
+    pointer-events: none;
+    z-index: 2;
+}
+
+/* ดวงที่ 1 — วงรีเฉียงซ้ายบน */
+.orb1 {
+    background: radial-gradient(circle, #ffd580 0%, transparent 70%);
+    animation: orbitTopLeft 5s linear infinite;
+}
+
+/* ดวงที่ 2 — วงรีเฉียงขวาบน */
+.orb2 {
+    background: radial-gradient(circle, #ffaaff 0%, transparent 70%);
+    animation: orbitTopRight 6s linear infinite;
+}
+
+/* ดวงที่ 3 — โคจรด้านบนสุดนิด ๆ */
+.orb3 {
+    background: radial-gradient(circle, #aaffff 0%, transparent 70%);
+    animation: orbitTop 7s linear infinite;
+}
+
+/* ----- Keyframes ----- */
+
+/* ทะแยงซ้ายบน */
+@keyframes orbitTopLeft {
+    0% {
+        transform: rotate(0deg) translate(32px, -14px) rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg) translate(32px, -14px) rotate(-360deg);
+    }
+}
+
+/* ทะแยงขวาบน */
+@keyframes orbitTopRight {
+    0% {
+        transform: rotate(0deg) translate(-32px, -14px) rotate(0deg);
+    }
+    100% {
+        transform: rotate(-360deg) translate(-32px, -14px) rotate(360deg);
+    }
+}
+
+/* วงรีเหนือศูนย์กลาง */
+@keyframes orbitTop {
+    0% {
+        transform: rotate(0deg) translateY(-26px) rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg) translateY(-26px) rotate(-360deg);
+    }
+}
+
+/* เอฟเฟกต์เรืองแสงดาวกลาง ✦ */
+@keyframes glowPulse {
+    0%,
+    100% {
+        transform: scale(1);
+        filter: drop-shadow(0 0 8px rgba(255, 180, 0, 0.6));
+        opacity: 0.9;
+    }
+    50% {
+        transform: scale(1.08);
+        filter: drop-shadow(0 0 20px rgba(255, 90, 180, 0.9));
+        opacity: 1;
+    }
+}
+
+/* Gradient shift */
+@keyframes gradientShift {
+    0% {
+        background-position: 0% 50%;
+    }
+    50% {
+        background-position: 100% 50%;
+    }
+    100% {
+        background-position: 0% 50%;
+    }
+}
+
+.chatEmptyState {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    max-height: 64rem;
+    padding-top: 1rem;
+}

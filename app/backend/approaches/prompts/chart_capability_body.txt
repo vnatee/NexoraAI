@@ -1,0 +1,861 @@
+
+HOW TO GENERATE A CHART:
+After your natural-language explanation, append a chart spec in EXACTLY this format:
+
+```chart-spec
+{
+  "option": { ...Apache ECharts option object... },
+  "height": 400
+}
+```
+
+CRITICAL FORMAT RULES:
+- You MUST wrap the JSON in ```chart-spec ... ``` code fence EVERY TIME. Do NOT output raw JSON without the fence.
+- The opening fence must be exactly: ```chart-spec (three backticks followed by chart-spec)
+- The closing fence must be exactly: ``` (three backticks alone on a line)
+- Do NOT output the JSON outside of this fence under any circumstances.
+
+EXAMPLE - Bar Chart:
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Monthly Sales", "left": "center", "textStyle": { "fontSize": 16 } },
+    "tooltip": { "trigger": "axis" },
+    "legend": { "bottom": 0 },
+    "grid": { "left": "3%", "right": "4%", "bottom": "15%", "containLabel": true },
+    "xAxis": { "type": "category", "data": ["Jan", "Feb", "Mar", "Apr"] },
+    "yAxis": { "type": "value" },
+    "series": [
+      { "name": "Sales", "type": "bar", "data": [120, 200, 150, 80], "itemStyle": { "color": "#5470c6", "borderRadius": [6, 6, 0, 0] } },
+      { "name": "Target", "type": "bar", "data": [100, 180, 160, 90], "itemStyle": { "color": "#91cc75", "borderRadius": [6, 6, 0, 0] } }
+    ]
+  },
+  "height": 400
+}
+```
+
+EXAMPLE - Pie / Donut Chart:
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Market Share", "left": "center" },
+    "tooltip": { "trigger": "item", "formatter": "{b}: {c} ({d}%)" },
+    "legend": { "bottom": 0 },
+    "series": [{
+      "type": "pie",
+      "radius": ["40%", "70%"],
+      "itemStyle": { "borderRadius": 8, "borderColor": "#fff", "borderWidth": 2 },
+      "data": [
+        { "value": 40, "name": "Product A", "itemStyle": { "color": "#5470c6" } },
+        { "value": 30, "name": "Product B", "itemStyle": { "color": "#91cc75" } },
+        { "value": 20, "name": "Product C", "itemStyle": { "color": "#fac858" } }
+      ]
+    }]
+  },
+  "height": 400
+}
+```
+
+EXAMPLE - Pie Comparison (2 pie charts stacked VERTICALLY for comparing two datasets):
+IMPORTANT: When comparing 2+ pie/donut charts, ALWAYS stack them VERTICALLY (top/bottom), NEVER side by side (left/right). This prevents labels from overlapping and ensures each chart has enough space.
+- Use `top` positions like "5%", "55%" for two charts
+- Set `center` to `["50%", "28%"]` and `["50%", "75%"]` (vertical stacking)
+- Set `radius` small enough: `["30%", "48%"]` so charts don't overlap
+- Give each chart its own `title` using `top` offset
+- Use a SINGLE shared `legend` at the very bottom
+- height should be at least 700 for 2 charts, 1000 for 3 charts
+```chart-spec
+{
+  "option": {
+    "title": [
+      { "text": "Market Share 2024", "left": "center", "top": "2%" },
+      { "text": "Market Share 2025", "left": "center", "top": "51%" }
+    ],
+    "tooltip": { "trigger": "item", "formatter": "{b}: {c} ({d}%" },
+    "legend": { "bottom": 10, "left": "center" },
+    "series": [
+      {
+        "name": "2024",
+        "type": "pie",
+        "center": ["50%", "28%"],
+        "radius": ["28%", "44%"],
+        "itemStyle": { "borderRadius": 6, "borderColor": "#fff", "borderWidth": 2 },
+        "label": { "formatter": "{b}: {d}%" },
+        "data": [
+          { "value": 40, "name": "Product A", "itemStyle": { "color": "#5470c6" } },
+          { "value": 30, "name": "Product B", "itemStyle": { "color": "#91cc75" } },
+          { "value": 20, "name": "Product C", "itemStyle": { "color": "#fac858" } },
+          { "value": 10, "name": "Product D", "itemStyle": { "color": "#ee6666" } }
+        ]
+      },
+      {
+        "name": "2025",
+        "type": "pie",
+        "center": ["50%", "75%"],
+        "radius": ["28%", "44%"],
+        "itemStyle": { "borderRadius": 6, "borderColor": "#fff", "borderWidth": 2 },
+        "label": { "formatter": "{b}: {d}%" },
+        "data": [
+          { "value": 50, "name": "Product A", "itemStyle": { "color": "#5470c6" } },
+          { "value": 25, "name": "Product B", "itemStyle": { "color": "#91cc75" } },
+          { "value": 15, "name": "Product C", "itemStyle": { "color": "#fac858" } },
+          { "value": 10, "name": "Product D", "itemStyle": { "color": "#ee6666" } }
+        ]
+      }
+    ]
+  },
+  "height": 750
+}
+```
+
+EXAMPLE - Line Chart (เส้น — ไม่มี area fill):
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Trend Analysis", "left": "center" },
+    "tooltip": { "trigger": "axis" },
+    "legend": { "bottom": 0 },
+    "xAxis": { "type": "category", "data": ["Q1", "Q2", "Q3", "Q4"] },
+    "yAxis": { "type": "value" },
+    "series": [
+      { "name": "Revenue", "type": "line", "data": [300, 400, 350, 500], "smooth": true, "lineStyle": { "width": 3 }, "itemStyle": { "color": "#5470c6" } }
+    ]
+  },
+  "height": 400
+}
+```
+
+EXAMPLE - Area Chart (พื้นที่ — มี areaStyle):
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Revenue Area", "left": "center" },
+    "tooltip": { "trigger": "axis" },
+    "legend": { "bottom": 0 },
+    "xAxis": { "type": "category", "data": ["Q1", "Q2", "Q3", "Q4"] },
+    "yAxis": { "type": "value" },
+    "series": [
+      { "name": "Revenue", "type": "line", "data": [300, 400, 350, 500], "smooth": true, "areaStyle": { "opacity": 0.3 }, "lineStyle": { "width": 3 }, "itemStyle": { "color": "#5470c6" } }
+    ]
+  },
+  "height": 400
+}
+```
+
+IMPORTANT - LINE vs AREA distinction:
+- "line" chart (กราฟเส้น): series type="line", NO areaStyle property at all.
+- "area" chart (กราฟพื้นที่): series type="line" WITH areaStyle: { "opacity": 0.3 }.
+- When user asks for "กราฟเส้น", "line chart", or "เส้น" → use type="line" WITHOUT areaStyle.
+- When user asks for "กราฟพื้นที่", "area chart", or "พื้นที่" → use type="line" WITH areaStyle.
+
+EXAMPLE - Scatter Chart (กราฟกระจาย):
+- Use series type "scatter" — suitable for showing correlation or distribution between two variables.
+- Each data point is [x, y] or [x, y, size].
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Sales vs Quantity", "left": "center" },
+    "tooltip": { "trigger": "item", "formatter": "{b}: ({c})" },
+    "legend": { "bottom": 0 },
+    "xAxis": { "type": "value", "name": "Quantity", "splitLine": { "show": true, "lineStyle": { "type": "dashed" } } },
+    "yAxis": { "type": "value", "name": "Revenue", "splitLine": { "show": true, "lineStyle": { "type": "dashed" } } },
+    "series": [
+      {
+        "name": "2024", "type": "scatter",
+        "data": [[10, 8320], [20, 15400], [35, 22100], [50, 31000], [65, 41500], [80, 53000]],
+        "symbolSize": 12, "itemStyle": { "color": "#5470c6", "opacity": 0.8 }
+      },
+      {
+        "name": "2025", "type": "scatter",
+        "data": [[12, 9500], [25, 18200], [40, 27000], [55, 36500], [70, 48000], [85, 60000]],
+        "symbolSize": 12, "itemStyle": { "color": "#ee6666", "opacity": 0.8 }
+      }
+    ]
+  },
+  "height": 420
+}
+```
+
+EXAMPLE - Radar Chart (กราฟเรดาร์):
+- Use series type "radar" — suitable for comparing multiple metrics across categories.
+- Requires "radar" config at root level with "indicator" array defining each axis.
+- Data value array length MUST match the number of indicators.
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Product Performance", "left": "center" },
+    "tooltip": { "trigger": "item" },
+    "legend": { "bottom": 0 },
+    "radar": {
+      "indicator": [
+        { "name": "Sales", "max": 100 },
+        { "name": "Quality", "max": 100 },
+        { "name": "Support", "max": 100 },
+        { "name": "Delivery", "max": 100 },
+        { "name": "Price", "max": 100 }
+      ]
+    },
+    "series": [{
+      "type": "radar",
+      "data": [
+        { "name": "Product A", "value": [80, 72, 90, 68, 85], "lineStyle": { "color": "#5470c6" }, "areaStyle": { "color": "#5470c633" } },
+        { "name": "Product B", "value": [65, 88, 75, 92, 70], "lineStyle": { "color": "#ee6666" }, "areaStyle": { "color": "#ee666633" } }
+      ]
+    }]
+  },
+  "height": 420
+}
+```
+
+EXAMPLE - Heatmap Chart (กราฟความร้อน):
+- Use series type "heatmap" — suitable for showing intensity or density across two dimensions.
+- Requires xAxis, yAxis (both category), and visualMap.
+- Data format: each item is [xIndex, yIndex, value].
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Sales Heatmap by Month × Product", "left": "center" },
+    "tooltip": { "position": "top", "formatter": "{b0} {a0}: {c}" },
+    "visualMap": {
+      "min": 0, "max": 30000, "show": true, "orient": "horizontal", "left": "center", "bottom": 0,
+      "inRange": { "color": ["#e0f3f8", "#74add1", "#4575b4", "#313695"] }
+    },
+    "xAxis": { "type": "category", "data": ["Jan", "Feb", "Mar", "Apr", "May", "Jun"] },
+    "yAxis": { "type": "category", "data": ["Product-A", "Product-B", "Product-C"] },
+    "series": [{
+      "type": "heatmap",
+      "data": [
+        [0,0,12000],[1,0,18000],[2,0,22000],[3,0,15000],[4,0,28000],[5,0,20000],
+        [0,1,8000], [1,1,11000],[2,1,14000],[3,1,9000], [4,1,17000],[5,1,13000],
+        [0,2,5000], [1,2,7000], [2,2,9500], [3,2,6000], [4,2,11000],[5,2,8500]
+      ],
+      "label": { "show": true, "fontSize": 10 },
+      "itemStyle": { "borderColor": "#fff", "borderWidth": 1 }
+    }]
+  },
+  "height": 380
+}
+```
+
+EXAMPLE - Treemap Chart (กราฟต้นไม้):
+- Use series type "treemap" — suitable for showing proportions of hierarchical or flat data using nested rectangles.
+- Data format: array of { name, value } or nested { name, value, children: [...] }.
+```chart-spec
+{
+  "option": {
+    "title": { "text": "ยอดขายตามสินค้า", "left": "center" },
+    "tooltip": { "formatter": "{b}: {c}" },
+    "series": [{
+      "type": "treemap",
+      "data": [
+        { "name": "Product-01", "value": 22518 },
+        { "name": "Product-02", "value": 17836 },
+        { "name": "Product-03", "value": 16218 },
+        { "name": "Product-04", "value": 15457 },
+        { "name": "Product-05", "value": 14094 },
+        { "name": "Product-06", "value": 9712 },
+        { "name": "Product-07", "value": 8030 },
+        { "name": "Product-08", "value": 7268 }
+      ],
+      "label": { "show": true, "formatter": "{b}\n{c}" },
+      "itemStyle": { "borderColor": "#fff", "borderWidth": 2, "gapWidth": 2 },
+      "levels": [{ "itemStyle": { "borderWidth": 3, "gapWidth": 3 } }]
+    }]
+  },
+  "height": 450
+}
+```
+
+EXAMPLE - Funnel Chart (กราฟกรวย):
+- Use series type "funnel" — suitable for showing stages of a process or conversion rates.
+- Data format: array of { name, value } — values should be descending (largest at top).
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Sales Funnel", "left": "center" },
+    "tooltip": { "trigger": "item", "formatter": "{b}: {c} ({d}%)" },
+    "legend": { "bottom": 0 },
+    "series": [{
+      "type": "funnel",
+      "left": "10%", "right": "10%",
+      "top": "10%", "bottom": "10%",
+      "sort": "descending",
+      "data": [
+        { "value": 100, "name": "Impressions", "itemStyle": { "color": "#5470c6" } },
+        { "value": 60, "name": "Clicks", "itemStyle": { "color": "#91cc75" } },
+        { "value": 40, "name": "Leads", "itemStyle": { "color": "#fac858" } },
+        { "value": 20, "name": "Proposals", "itemStyle": { "color": "#ee6666" } },
+        { "value": 8, "name": "Closed", "itemStyle": { "color": "#73c0de" } }
+      ],
+      "label": { "show": true, "position": "inside", "formatter": "{b}: {c}%" }
+    }]
+  },
+  "height": 420
+}
+```
+
+EXAMPLE - Candlestick Chart (กราฟแท่งเทียน):
+- Use series type "candlestick" — suitable for financial OHLC (Open, High, Low, Close) data.
+- Data format: each item is [open, close, low, high].
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Stock Price", "left": "center" },
+    "tooltip": { "trigger": "axis", "axisPointer": { "type": "cross" } },
+    "xAxis": { "type": "category", "data": ["Mon", "Tue", "Wed", "Thu", "Fri"] },
+    "yAxis": { "type": "value", "scale": true },
+    "series": [{
+      "type": "candlestick",
+      "data": [
+        [20, 34, 10, 38],
+        [40, 35, 30, 50],
+        [31, 38, 33, 44],
+        [38, 15, 5, 42],
+        [15, 35, 5, 40]
+      ],
+      "itemStyle": {
+        "color": "#ee6666",
+        "color0": "#91cc75",
+        "borderColor": "#ee6666",
+        "borderColor0": "#91cc75"
+      }
+    }]
+  },
+  "height": 400
+}
+```
+
+EXAMPLE - Sankey Chart (กราฟการไหล):
+- Use series type "sankey" — suitable for showing flows or transfers between nodes.
+- Requires "nodes" array (each with name) and "links" array (each with source, target, value).
+- Node names in links MUST exactly match names in nodes array.
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Budget Flow", "left": "center" },
+    "tooltip": { "trigger": "item", "triggerOn": "mousemove" },
+    "series": [{
+      "type": "sankey",
+      "layout": "none",
+      "emphasis": { "focus": "adjacency" },
+      "nodes": [
+        { "name": "Revenue" },
+        { "name": "COGS" },
+        { "name": "Gross Profit" },
+        { "name": "Operating Expenses" },
+        { "name": "Net Profit" }
+      ],
+      "links": [
+        { "source": "Revenue", "target": "COGS", "value": 60 },
+        { "source": "Revenue", "target": "Gross Profit", "value": 40 },
+        { "source": "Gross Profit", "target": "Operating Expenses", "value": 25 },
+        { "source": "Gross Profit", "target": "Net Profit", "value": 15 }
+      ],
+      "lineStyle": { "color": "gradient", "curveness": 0.5 }
+    }]
+  },
+  "height": 420
+}
+```
+
+EXAMPLE - Graph / Network Chart (กราฟเครือข่าย):
+- Use series type "graph" — suitable for showing relationships or connections between entities.
+- Requires "nodes" (each with id, name, value, symbolSize) and "links" (each with source, target).
+- symbolSize controls node size — scale by value/importance.
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Product Relations", "left": "center" },
+    "tooltip": { "trigger": "item" },
+    "series": [{
+      "type": "graph",
+      "layout": "force",
+      "roam": true,
+      "force": { "repulsion": 200, "edgeLength": 100 },
+      "nodes": [
+        { "id": "0", "name": "Product A", "value": 100, "symbolSize": 40, "itemStyle": { "color": "#5470c6" } },
+        { "id": "1", "name": "Product B", "value": 80, "symbolSize": 32, "itemStyle": { "color": "#91cc75" } },
+        { "id": "2", "name": "Product C", "value": 60, "symbolSize": 24, "itemStyle": { "color": "#fac858" } },
+        { "id": "3", "name": "Product D", "value": 40, "symbolSize": 18, "itemStyle": { "color": "#ee6666" } }
+      ],
+      "links": [
+        { "source": "0", "target": "1", "lineStyle": { "width": 3 } },
+        { "source": "0", "target": "2", "lineStyle": { "width": 2 } },
+        { "source": "1", "target": "3", "lineStyle": { "width": 1 } },
+        { "source": "2", "target": "3", "lineStyle": { "width": 1 } }
+      ],
+      "label": { "show": true, "position": "right" },
+      "lineStyle": { "color": "#aaa", "curveness": 0.2 }
+    }]
+  },
+  "height": 450
+}
+```
+
+CRITICAL 3D CHART FORMATTER RULE (applies to ALL ECharts-GL series: bar3D, line3D, scatter3D, surface):
+- The string template parser in ECharts-GL (formatTpl) uses plain string `.replace()`. It only supports the plain tokens `{a}`, `{b}`, `{c}` where `{c}` expands to the FULL value array (e.g. `"0,0,18563"`). It does NOT support array indexing.
+- Therefore NEVER use `"{c[0]}"`, `"{c[1]}"`, `"{c[2]}"`, `"{@[0]}"`, `"{@[1]}"`, `"{@[2]}"` in any 3D series `tooltip.formatter` or `label.formatter`. echarts-gl will render the literal text (e.g. users will see the string `{c[2]}` on screen) instead of the value.
+- The ONLY safe options in a pure-JSON spec are:
+  1. OMIT the `formatter` entirely — let echarts-gl use its built-in default tooltip, which automatically lists all dimensions (e.g. `- x: ... \n- y: ... \n- z: ...`). RECOMMENDED.
+  2. Use a plain `"{a}"` or `"{b}"` token only (these work because they are single-value).
+- This limitation does NOT apply to regular 2D ECharts charts (bar, line, pie, ...) — there `{c[2]}` / `{@[2]}` work fine via the core dataFormat mixin.
+
+EXAMPLE - Line3D Chart (กราฟเส้น 3D, Requires ECharts GL):
+- Use series type "line3D" with grid3D, xAxis3D, yAxis3D, zAxis3D.
+- Data format: each item is [xIndex, yIndex, zValue] where xIndex/yIndex are indices into xAxis3D/yAxis3D category arrays.
+- TOOLTIP: omit `formatter` — echarts-gl will show series name + all 3 dimension values automatically.
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Sales Trend 3D", "left": "center" },
+    "tooltip": {},
+    "legend": { "bottom": 0 },
+    "xAxis3D": { "type": "category", "data": ["Q1", "Q2", "Q3", "Q4"] },
+    "yAxis3D": { "type": "category", "data": ["2023", "2024", "2025"] },
+    "zAxis3D": { "type": "value", "name": "Sales" },
+    "grid3D": {
+      "boxWidth": 160, "boxHeight": 80, "boxDepth": 80,
+      "viewControl": { "projection": "perspective", "alpha": 25, "beta": 40, "distance": 280 },
+      "light": { "main": { "intensity": 1.5 }, "ambient": { "intensity": 0.4 } }
+    },
+    "series": [
+      {
+        "type": "line3D", "name": "2023",
+        "data": [[0,0,12000],[1,0,15000],[2,0,18000],[3,0,22000]],
+        "lineStyle": { "width": 4, "color": "#5470c6" }
+      },
+      {
+        "type": "line3D", "name": "2024",
+        "data": [[0,1,14000],[1,1,18000],[2,1,21000],[3,1,26000]],
+        "lineStyle": { "width": 4, "color": "#ee6666" }
+      }
+    ]
+  },
+  "height": 500
+}
+```
+
+EXAMPLE - Scatter3D Chart (กราฟกระจาย 3D, Requires ECharts GL):
+- Use series type "scatter3D" with grid3D, xAxis3D, yAxis3D, zAxis3D.
+- Data format: each item is [x_value, y_value, z_value] — actual numeric values, NOT indices.
+- TOOLTIP: omit `formatter` — echarts-gl will show all 3 dimensions automatically. Setting axis `name` (e.g. "Price", "Quantity", "Revenue") makes the default tooltip self-explanatory.
+```chart-spec
+{
+  "option": {
+    "title": { "text": "3D Sales Distribution", "left": "center" },
+    "tooltip": {},
+    "visualMap": {
+      "show": false, "min": 0, "max": 60000,
+      "inRange": { "color": ["#2196f3", "#4caf50", "#ff9800", "#e91e63"] }
+    },
+    "xAxis3D": { "type": "value", "name": "Price" },
+    "yAxis3D": { "type": "value", "name": "Quantity" },
+    "zAxis3D": { "type": "value", "name": "Revenue" },
+    "grid3D": {
+      "boxWidth": 160, "boxHeight": 100, "boxDepth": 160,
+      "viewControl": { "projection": "perspective", "alpha": 20, "beta": 35, "distance": 300 },
+      "light": { "main": { "intensity": 1.5 }, "ambient": { "intensity": 0.4 } }
+    },
+    "series": [{
+      "type": "scatter3D",
+      "data": [
+        [120, 50, 6000], [250, 80, 20000], [180, 30, 5400],
+        [300, 120, 36000], [90, 200, 18000], [450, 60, 27000],
+        [200, 150, 30000], [350, 90, 31500], [150, 40, 6000]
+      ],
+      "symbolSize": 10,
+      "itemStyle": { "opacity": 0.8 }
+    }]
+  },
+  "height": 500
+}
+```
+- TOOLTIP for bar3D: OMIT `formatter` — echarts-gl will show all 3 dimensions automatically. NEVER use `"{c[2]}"` or `"{@[2]}"` (see CRITICAL rule above).
+- LABEL for bar3D: Do NOT set a `"formatter"` at all — just set `"label": { "show": true, "textStyle": { ... } }`. The bar3D series has a built-in fallback that automatically shows the z-value when no formatter is given.
+```chart-spec
+{
+  "option": {
+    "title": { "text": "ยอดขาย 3D", "left": "center" },
+    "tooltip": {},
+    "visualMap": {
+      "show": false,
+      "min": 0, "max": 25000,
+      "inRange": { "color": ["#2196f3", "#4caf50", "#ff9800", "#e91e63", "#9c27b0"] }
+    },
+    "xAxis3D": { "type": "category", "data": ["Product-A", "Product-B", "Product-C"] },
+    "yAxis3D": { "type": "category", "data": ["2024"] },
+    "zAxis3D": { "type": "value", "name": "ยอดขาย" },
+    "grid3D": {
+      "boxWidth": 120, "boxHeight": 80, "boxDepth": 40,
+      "viewControl": { "projection": "perspective", "alpha": 25, "beta": 30, "distance": 250 },
+      "light": { "main": { "intensity": 1.5, "shadow": true }, "ambient": { "intensity": 0.4 } }
+    },
+    "series": [{
+      "type": "bar3D",
+      "data": [[0, 0, 18563], [1, 0, 9072], [2, 0, 5004]],
+      "shading": "color",
+      "label": { "show": true, "textStyle": { "fontSize": 12, "color": "#fff" } },
+      "itemStyle": { "opacity": 0.9 }
+    }]
+  },
+  "height": 500
+}
+```
+CRITICAL bar3D rules:
+- LABEL: omit `"formatter"` entirely — bar3D auto-falls-back to the z-value. NEVER use `"{c[2]}"` or `"{@[2]}"`.
+- TOOLTIP: omit `formatter` entirely — echarts-gl shows all 3 dimensions automatically.
+- boxWidth: scale with data — for N products use boxWidth = N * 15 (min 80)
+- If user requests bar3D with >15 items → warn that it may be hard to read and suggest regular horizontal bar chart instead
+
+EXAMPLE - Surface Chart (Requires ECharts GL):
+- Surface chart requires TRUE 2D grid data: z = f(x, y) — e.g. sales by product × time period.
+- If the user's data is a simple 1D list (only one dimension), do NOT use surface. Use bar or line instead and explain why.
+- Minimum data: 4×4 = 16 points covering all combinations of x and y values.
+- Each data point: [x_value, y_value, z_value]
+```chart-spec
+{
+  "option": {
+    "title": { "text": "ยอดขายตาม Product × ปี", "left": "center" },
+    "tooltip": {},
+    "visualMap": {
+      "show": true, "dimension": 2, "min": 0, "max": 10000,
+      "inRange": { "color": ["#313695", "#4575b4", "#74add1", "#fee090", "#fdae61", "#f46d43", "#d73027"] }
+    },
+    "xAxis3D": { "type": "value", "name": "Product Index" },
+    "yAxis3D": { "type": "value", "name": "Year" },
+    "zAxis3D": { "type": "value", "name": "ยอดขาย" },
+    "grid3D": {
+      "boxWidth": 200, "boxHeight": 100, "boxDepth": 200,
+      "viewControl": { "projection": "perspective", "alpha": 30, "beta": 30, "distance": 300 },
+      "light": { "main": { "intensity": 1.5 }, "ambient": { "intensity": 0.5 } }
+    },
+    "series": [{
+      "type": "surface",
+      "wireframe": { "show": true },
+      "data": [
+        [0,2024,1618],[1,2024,3080],[2,2024,5004],[3,2024,322],[4,2024,9072],
+        [0,2025,2000],[1,2025,4000],[2,2025,6000],[3,2025,500],[4,2025,11000],
+        [0,2026,2500],[1,2026,4500],[2,2026,6500],[3,2026,700],[4,2026,13000]
+      ]
+    }]
+  },
+  "height": 500
+}
+```
+
+EXAMPLE - Sunburst Chart (กราฟวงกลมลำดับชั้น):
+- Use series type "sunburst" — suitable for hierarchical/proportional data with one or more levels.
+- For FLAT data (no hierarchy), use a single level with all items as children of a root node.
+- data format: array of { name, value } for flat data, or { name, children: [...] } for nested.
+- IMPORTANT: Do NOT use "pie" as a substitute when user asks for "sunburst" and sunburst IS in the allowed list.
+```chart-spec
+{
+  "option": {
+    "title": { "text": "ยอดขายสินค้า", "left": "center" },
+    "tooltip": { "trigger": "item", "formatter": "{b}: {c} ({d}%)" },
+    "series": [{
+      "type": "sunburst",
+      "radius": ["15%", "80%"],
+      "data": [
+        { "name": "Product-01", "value": 5022, "itemStyle": { "color": "#5470c6" } },
+        { "name": "Product-02", "value": 7268, "itemStyle": { "color": "#91cc75" } },
+        { "name": "Product-03", "value": 22518, "itemStyle": { "color": "#fac858" } },
+        { "name": "Product-04", "value": 852, "itemStyle": { "color": "#ee6666" } }
+      ],
+      "label": { "rotate": "radial", "fontSize": 11 },
+      "itemStyle": { "borderRadius": 4, "borderColor": "#fff", "borderWidth": 2 }
+    }]
+  },
+  "height": 450
+}
+```
+
+IMPORTANT REMINDER: You may ONLY use chart types from the supported list. In auto selection mode, choose the type that best represents the data.
+
+EXAMPLE - PictorialBar Chart (กราฟแท่งรูปสัญลักษณ์):
+- Use series type "pictorialBar" — suitable for infographic-style charts using icons/symbols instead of plain bars.
+- Each bar is rendered as a repeated symbol (circle, arrow, diamond, or custom SVG path).
+- Data format: same as bar — category axis + value axis.
+```chart-spec
+{
+  "option": {
+    "title": { "text": "ยอดขายตามสินค้า", "left": "center" },
+    "tooltip": { "trigger": "axis" },
+    "xAxis": { "type": "category", "data": ["Product-A", "Product-B", "Product-C", "Product-D"] },
+    "yAxis": { "type": "value" },
+    "series": [{
+      "type": "pictorialBar",
+      "symbol": "roundRect",
+      "symbolSize": [20, 10],
+      "symbolRepeat": true,
+      "symbolMargin": "20%",
+      "data": [
+        { "value": 12000, "itemStyle": { "color": "#5470c6" } },
+        { "value": 8500,  "itemStyle": { "color": "#91cc75" } },
+        { "value": 15000, "itemStyle": { "color": "#fac858" } },
+        { "value": 6200,  "itemStyle": { "color": "#ee6666" } }
+      ],
+      "label": { "show": true, "position": "top" }
+    }]
+  },
+  "height": 400
+}
+```
+
+EXAMPLE - Parallel Chart (กราฟแกนขนาน):
+- Use series type "parallel" — suitable for comparing items across MANY numeric dimensions simultaneously.
+- Requires "parallel" config at root level with "parallelAxis" array (one axis per dimension).
+- Each data item is an array of values matching the axis order.
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Product Multi-dimension Comparison", "left": "center" },
+    "tooltip": { "trigger": "item" },
+    "parallel": { "left": "5%", "right": "5%", "bottom": "10%", "top": "15%" },
+    "parallelAxis": [
+      { "dim": 0, "name": "Sales" },
+      { "dim": 1, "name": "Profit" },
+      { "dim": 2, "name": "Satisfaction" },
+      { "dim": 3, "name": "Returns" },
+      { "dim": 4, "name": "Growth %" }
+    ],
+    "series": [{
+      "type": "parallel",
+      "lineStyle": { "width": 2, "opacity": 0.7 },
+      "data": [
+        [12000, 3200, 85, 120, 12],
+        [8500,  2100, 78, 80,  8],
+        [15000, 4500, 92, 90,  18],
+        [6200,  1800, 70, 60,  5]
+      ]
+    }]
+  },
+  "height": 420
+}
+```
+
+EXAMPLE - ThemeRiver Chart (กราฟกระแสหัวข้อ):
+- Use series type "themeRiver" — suitable for showing how the proportion of topics/categories changes over time.
+- Requires "singleAxis" with type "time" at root level.
+- Data format: each item is [date_string, value, category_name].
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Topic Trend Over Time", "left": "center" },
+    "tooltip": { "trigger": "axis", "axisPointer": { "type": "line" } },
+    "legend": { "bottom": 0 },
+    "singleAxis": { "top": 50, "bottom": 50, "type": "time" },
+    "series": [{
+      "type": "themeRiver",
+      "data": [
+        ["2024-01", 20, "Topic A"], ["2024-02", 35, "Topic A"], ["2024-03", 28, "Topic A"],
+        ["2024-04", 42, "Topic A"], ["2024-05", 38, "Topic A"],
+        ["2024-01", 15, "Topic B"], ["2024-02", 18, "Topic B"], ["2024-03", 30, "Topic B"],
+        ["2024-04", 25, "Topic B"], ["2024-05", 40, "Topic B"],
+        ["2024-01", 10, "Topic C"], ["2024-02", 22, "Topic C"], ["2024-03", 15, "Topic C"],
+        ["2024-04", 18, "Topic C"], ["2024-05", 20, "Topic C"]
+      ],
+      "label": { "margin": 4 }
+    }]
+  },
+  "height": 380
+}
+```
+
+EXAMPLE - Calendar Heatmap (กราฟปฏิทินความหนาแน่น):
+- Use series type "heatmap" with coordinateSystem "calendar" — suitable for daily activity/count data over a full year.
+- Requires "calendar" config at root level with range (year or date range).
+- Data format: each item is ["YYYY-MM-DD", value].
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Daily Activity 2024", "left": "center" },
+    "tooltip": { "formatter": "function(p){ return p.data[0]+': '+p.data[1]; }" },
+    "visualMap": {
+      "min": 0, "max": 30, "show": true, "orient": "horizontal", "left": "center", "bottom": 0,
+      "inRange": { "color": ["#ebedf0", "#9be9a8", "#40c463", "#30a14e", "#216e39"] }
+    },
+    "calendar": {
+      "top": 80, "left": 30, "right": 30,
+      "range": "2024",
+      "itemStyle": { "borderWidth": 3 },
+      "yearLabel": { "show": false }
+    },
+    "series": [{
+      "type": "heatmap",
+      "coordinateSystem": "calendar",
+      "data": [
+        ["2024-01-01", 5], ["2024-01-02", 12], ["2024-01-03", 8],
+        ["2024-06-15", 20], ["2024-06-16", 25], ["2024-12-25", 30]
+      ]
+    }]
+  },
+  "height": 200
+}
+```
+
+
+
+CHART-SPECIFIC RULES:
+
+GAUGE CHART:
+- Use series type "gauge" (NOT "radar"). A gauge is a single speedometer/dial.
+- Data format: "data": [{ "value": 75, "name": "Score" }]  — single numeric value 0-100
+- EXAMPLE:
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Performance Score", "left": "center" },
+    "tooltip": { "formatter": "{b}: {c}" },
+    "series": [{
+      "type": "gauge",
+      "min": 0, "max": 100,
+      "progress": { "show": true },
+      "detail": { "valueAnimation": true, "formatter": "{value}%" },
+      "data": [{ "value": 72, "name": "Score" }]
+    }]
+  },
+  "height": 400
+}
+```
+
+BOXPLOT CHART:
+- Data must be array of 5 numbers: [min, Q1, median, Q3, max] — each item is one box.
+- EXAMPLE:
+```chart-spec
+{
+  "option": {
+    "title": { "text": "Sales Distribution", "left": "center" },
+    "tooltip": { "trigger": "item", "formatter": "{b}: {c}" },
+    "xAxis": { "type": "category", "data": ["2024"] },
+    "yAxis": { "type": "value" },
+    "series": [{
+      "type": "boxplot",
+      "data": [[320, 618, 1618, 5004, 9072]],
+      "itemStyle": { "color": "#2196f3", "borderColor": "#0d47a1" }
+    }]
+  },
+  "height": 400
+}
+```
+
+STRICT JSON & FORMATTING RULES:
+- STRICT JSON ONLY: You MUST output PURE, VALID JSON only. NEVER output JavaScript functions, callbacks, arrow functions, or executable code (such as `function(params) { ... }` or `formatter: params => ...`). All keys and string values must be double-quoted.
+- NO COMMENTS: Do NOT add any comments (// ... or /* ... */) inside the JSON. JSON does not support comments and they will break parsing.
+- COLORING INDIVIDUAL BARS/ITEMS: To set different colors for individual bars or data points in a single series, do NOT use a callback function. Instead, use one of these two valid JSON patterns:
+  1. Set a global color array at the root "option" level: `"color": ["#4caf50", "#f44336", "#ffeb3b"]`.
+  2. Or specify each item in the series `"data"` array as an object with its own `"itemStyle"`:
+     `"data": [ { "value": 120, "itemStyle": { "color": "#4caf50" } }, { "value": 145, "itemStyle": { "color": "#f44336" } } ]`.
+- TOOLTIP/LABEL FORMATTERS: Use static string templates (e.g. `"{b}: {c} ({d}%)"`) instead of formatting functions.
+
+DYNAMIC CUSTOMIZATIONS — USE THESE WHEN THE USER ASKS:
+- COLORS: ALWAYS use DISTINCT colors for each series/data item. Set via "itemStyle": { "color": "#hex" } or the global "color" array.
+- GRADIENTS: Use as color value: { "type": "linear", "x": 0, "y": 0, "x2": 0, "y2": 1, "colorStops": [{ "offset": 0, "color": "#colorA" }, { "offset": 1, "color": "#colorB" }] }
+- 3D-LIKE EFFECTS:
+  - Pie: use "roseType": "area" and/or "radius": ["30%", "70%"] for donut.
+  - Bar: use "itemStyle": { "borderRadius": [10, 10, 0, 0], "shadowBlur": 10, "shadowColor": "rgba(0,0,0,0.2)", "shadowOffsetY": 4 }.
+  - Use gradient fills to enhance depth perception.
+- GRID LINES: Use "splitLine": { "show": true, "lineStyle": { "type": "dashed", "color": "#ddd" } } in yAxis/xAxis.
+- STACKED: Add "stack": "total" to each series.
+- AREA FILL: Add "areaStyle": { "opacity": 0.3 } to line series.
+- SMOOTH: Add "smooth": true to line series.
+- DATA LABELS: Add "label": { "show": true, "position": "top" } to series.
+- EMPHASIS/HOVER: Add "emphasis": { "itemStyle": { "shadowBlur": 10 } } to series for hover effects.
+- HORIZONTAL BAR: Swap xAxis and yAxis definitions (put "type": "category" on yAxis).
+
+VISUAL DESIGN STANDARDS — APPLY TO EVERY CHART WITHOUT EXCEPTION:
+These styling rules must be applied to ALL charts regardless of type or who requested them.
+
+TYPOGRAPHY & TITLES:
+- title: always set left: "center", textStyle: { fontSize: 16, fontWeight: "bold", color: "#1a1a2e" }
+- subtitle (if needed): subtextStyle: { fontSize: 12, color: "#666" }
+- axis labels: axisLabel: { fontSize: 11, color: "#555" }
+- legend: textStyle: { fontSize: 11, color: "#333" }
+
+COLORS & PALETTE:
+- Use the configured color palette from CONFIGURATION above for series colors
+- Each series/category MUST have a visually distinct color — never use the same color twice
+- For single-series bar/line: apply gradient fill for depth effect
+- Bar gradient example: { "type": "linear", "x": 0, "y": 0, "x2": 0, "y2": 1, "colorStops": [{ "offset": 0, "color": "#5470c6" }, { "offset": 1, "color": "#91cc75" }] }
+
+BAR CHARTS:
+- ALWAYS add borderRadius: [6, 6, 0, 0] (or [0, 6, 6, 0] for horizontal)
+- Add shadowBlur: 4, shadowColor: "rgba(0,0,0,0.1)", shadowOffsetY: 2 on itemStyle
+- Use emphasis: { itemStyle: { shadowBlur: 10, shadowColor: "rgba(0,0,0,0.3)" } }
+- Show grid lines: yAxis.splitLine: { lineStyle: { type: "dashed", color: "#eee" } }
+- Horizontal bar: always set grid: { left: "20%", containLabel: true } to prevent label cutoff
+
+PIE / DONUT CHARTS:
+- ALWAYS use donut: radius: ["40%", "70%"] — never plain pie
+- Add itemStyle: { borderRadius: 8, borderColor: "#fff", borderWidth: 2 }
+- Use label: { formatter: "{b}\n{d}%", fontSize: 11 }
+- Add emphasis: { itemStyle: { shadowBlur: 20, shadowOffsetX: 0, shadowColor: "rgba(0,0,0,0.5)" } }
+- Legend at bottom with orient: "horizontal"
+
+LINE / AREA CHARTS:
+- ALWAYS use smooth: true
+- lineStyle: { width: 3 }
+- Add symbol: "circle", symbolSize: 6 for data points
+- Area: areaStyle: { opacity: 0.15 } for subtle fill
+- Use emphasis: { focus: "series" }
+
+SCATTER CHARTS:
+- symbolSize: 10, itemStyle: { opacity: 0.8 }
+- Add splitLine on both axes: { show: true, lineStyle: { type: "dashed", color: "#eee" } }
+
+RADAR CHARTS:
+- splitArea: { show: true, areaStyle: { color: ["rgba(114,172,209,0.1)", "rgba(114,172,209,0.2)"] } }
+- axisLine: { lineStyle: { color: "#bbb" } }
+- Add areaStyle to each series with opacity: 0.2
+
+HEATMAP CHARTS:
+- Always include visualMap with gradient colors
+- itemStyle: { borderColor: "#fff", borderWidth: 1 }
+
+GENERAL POLISH (ALL CHARTS):
+- tooltip: ALWAYS include with proper formatter showing meaningful values (not raw arrays)
+- legend: position bottom or top-right, never overlap the chart
+- grid: containLabel: true to prevent axis labels from being cut off
+- animation: true (default) for smooth rendering
+- backgroundColor: omit (let container handle it)
+- title.padding: [10, 0] for breathing room
+
+CONVERSATIONAL MODIFICATIONS:
+- If the user asks to modify an existing chart from chat history, read the previous ```chart-spec, keep the data, and generate a NEW ```chart-spec with the requested changes.
+- If the user asks for different colors, you MUST use new, visually different colors. NEVER reuse the same colors.
+- If the user asks for 3D, you should generate a real 3D chart using ECharts GL components (e.g., series type "bar3D", "line3D", "surface", "scatter3D" with "grid3D", "xAxis3D", "yAxis3D", "zAxis3D").
+- If the user asks to change chart type (e.g. "เปลี่ยนเป็นกราฟวงกลม"), change series.type accordingly and restructure data format as needed.
+- BEST VARIANT RULE: Whether you choose the chart type yourself OR the user requests it, ALWAYS generate the most polished and insightful variant:
+  - bar → use horizontal bar if category labels are long (>8 chars); use stacked bar if showing part-of-whole across groups; add borderRadius for modern look
+  - pie → use donut (radius: ["40%","70%"]) by default; group slices >12 items into "Others"
+  - line → use smooth: true and add markers for key points
+  - area → use smooth: true with areaStyle opacity 0.3 for clean fill
+  - bar3D → ALWAYS omit label formatter (let bar3D auto-fallback to z-value) AND omit tooltip formatter (echarts-gl shows all 3 dimensions by default). NEVER use "{c[2]}" or "{@[2]}" — they don't work in 3D series. Scale boxWidth = xCategories * 15. If >15 items suggest regular bar chart instead.
+  - heatmap → always include visualMap for color scale
+  - scatter → add regression line or trend annotation when correlation is visible
+  - radar → normalize all axes to same max for fair comparison
+
+RULES:
+- ALWAYS include "tooltip" in the option for interactivity.
+- ALWAYS use distinct, contrasting colors for different series/data items. NEVER use the same color for multiple items.
+- Always include "height" (default 400). For horizontal bar charts, calculate height as (number_of_items × 40 + 120), minimum 300. For charts with many data points (>10 items), increase height proportionally.
+- ALWAYS apply the VISUAL DESIGN STANDARDS above — every chart must look polished and professional, not plain/basic.
+- DATA COMPLETENESS RULES:
+  - ONLY plot data points that actually exist in the source — NEVER invent, interpolate, or assume missing values
+  - If comparing multiple series (e.g. 2024 vs 2025) and one series has fewer data points than the other, include ALL series with whatever data is available. Show partial data rather than omitting a series entirely.
+  - Example: if 2024 has 10 products and 2025 has 5 products → plot both series; 2024 shows 10 bars, 2025 shows 5 bars. Do NOT skip 2024 just because it has more data than 2025.
+  - If a series has ZERO data points at all → omit that series and add a note in the text answer explaining which data was unavailable (e.g. "ไม่พบข้อมูลปี 2024 ในแหล่งข้อมูลที่ให้มา")
+  - NEVER create a legend entry for a series that has no data — only show legend items for series that have at least one data point
+  - If data is partial, add a subtitle or annotation noting "ข้อมูลบางส่วน" or specify which items are missing
+- MULTI-CHART COMPARISON LAYOUT: When generating 2+ charts in one spec (e.g. comparing years):
+  - ALWAYS stack charts VERTICALLY (top/bottom), NEVER side by side (left/right).
+  - Set height = 700 for 2 charts, 1000 for 3 charts, minimum 500.
+  - For pie/donut: use center positions like ["50%","28%"] and ["50%","75%"], radius ["28%","44%"].
+  - For bar/line: use separate grid with top/bottom offsets, e.g. grid[0]: top="8%",height="35%", grid[1]: top="58%",height="35%".
+  - Each chart MUST have its own title with appropriate top offset.
+  - Use ONE shared legend at the bottom.
+- Chart-spec block MUST be the LAST part of your response.
+- Do NOT wrap chart-spec in any other code fence.
+- ONLY skip chart generation if your answer contains NO numeric data at all.
+- You MUST still include [citation] references in your text answer.
+- REMEMBER: generating a chart-spec alongside your answer is the EXPECTED and CORRECT behavior.
