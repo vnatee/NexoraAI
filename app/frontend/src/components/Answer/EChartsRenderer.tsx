@@ -4,6 +4,7 @@ import ReactECharts from "echarts-for-react";
 import type { ECharts } from "echarts";
 import DownloadIcon from "@mui/icons-material/Download";
 import "echarts-gl";
+import { ChartDataPanel } from "./ChartDataPanel";
 
 // ⭐ CHART CAPABILITY: EChartsRenderer
 //    ใช้ Apache ECharts แทน MUI X Charts เพื่อความ Dynamic สูงสุด
@@ -116,6 +117,27 @@ export function EChartsRenderer({ spec }: EChartsRendererProps) {
     const option = spec.option ? spec.option : convertLegacySpecToECharts(spec);
     if (!option) return null;
 
+    // Show every category label and rotate long/crowded X-axis labels automatically.
+    // This is renderer-side so it also applies to legacy and provider-generated specs.
+    const xAxisLabelLayout = (() => {
+        const axes = Array.isArray(option.xAxis) ? option.xAxis : option.xAxis ? [option.xAxis] : [];
+        const categoryAxis = axes.find((axis: any) => axis?.type === "category" || Array.isArray(axis?.data));
+        const labels = Array.isArray(categoryAxis?.data) ? categoryAxis.data.map((value: unknown) => String(value ?? "")) : [];
+        const maxLength = labels.reduce((maximum: number, label: string) => Math.max(maximum, label.length), 0);
+        const count = labels.length;
+
+        let rotate = 0;
+        if (count >= 12 || maxLength >= 24) rotate = 55;
+        else if (count >= 7 || maxLength >= 12) rotate = 35;
+
+        return {
+            count,
+            maxLength,
+            rotate,
+            requiredBottom: rotate ? Math.min(190, 60 + maxLength * (rotate >= 55 ? 4 : 3)) : 55
+        };
+    })();
+
     // ── คำนวณ height อัตโนมัติสำหรับ horizontal bar (yAxis = category) ──────
     // เพื่อให้ทุก item มีพื้นที่เพียงพอและไม่ถูกบีบเล็กลงเมื่อมีข้อมูลเยอะ
     const isHorizontalBar = (() => {
@@ -167,15 +189,42 @@ export function EChartsRenderer({ spec }: EChartsRendererProps) {
         if (multiChartCount > 1) {
             return Math.max(spec.height ?? 0, multiChartCount * 380);
         }
+        // Rotated labels need extra vertical room so they do not overlap the legend.
+        if (xAxisLabelLayout.rotate) {
+            return Math.max(spec.height ?? 400, 400 + Math.min(120, xAxisLabelLayout.maxLength * 3));
+        }
         return null;
     })();
 
-    const chartHeight = autoHeight ?? spec.height ?? 400;
+    const chartHeight = Math.min(1200, Math.max(240, autoHeight ?? spec.height ?? 400));
 
     // ── Post-process option: enforce grid containLabel + minimum margins ──────
     // ป้องกัน label ถูกตัดขอบและกราฟล้นออกนอก container
     const safeOption = (() => {
         const opt = { ...option };
+
+        if (opt.xAxis) {
+            const axes = Array.isArray(opt.xAxis) ? opt.xAxis : [opt.xAxis];
+            opt.xAxis = axes.map((axis: any) => {
+                const isCategory = axis?.type === "category" || Array.isArray(axis?.data);
+                if (!isCategory) return axis;
+                const configuredRotation = Number(axis.axisLabel?.rotate || 0);
+                return {
+                    ...axis,
+                    nameGap: axis.nameGap ?? 35,
+                    axisTick: { ...axis.axisTick, alignWithLabel: true },
+                    axisLabel: {
+                        ...axis.axisLabel,
+                        interval: 0,
+                        hideOverlap: false,
+                        rotate: Math.max(Math.abs(configuredRotation), xAxisLabelLayout.rotate),
+                        fontSize: axis.axisLabel?.fontSize ?? 11,
+                        margin: axis.axisLabel?.margin ?? 12
+                    }
+                };
+            });
+            if (!Array.isArray(option.xAxis)) opt.xAxis = opt.xAxis[0];
+        }
 
         // enforce grid containLabel + right margin สำหรับ bar/line/area/scatter/heatmap
         if (opt.grid) {
@@ -185,19 +234,23 @@ export function EChartsRenderer({ spec }: EChartsRendererProps) {
                 containLabel: true,
                 right: g.right ?? "8%",
                 left: g.left ?? "3%",
-                bottom: g.bottom ?? "10%",
+                bottom: xAxisLabelLayout.rotate ? xAxisLabelLayout.requiredBottom : (g.bottom ?? "10%"),
                 top: g.top ?? "10%"
             }));
             if (!Array.isArray(option.grid)) opt.grid = opt.grid[0];
         } else if (opt.xAxis || opt.yAxis) {
             // มี axis แต่ไม่มี grid → inject grid default
-            opt.grid = { containLabel: true, right: "8%", left: "3%", bottom: "10%", top: "10%" };
+            opt.grid = {
+                containLabel: true,
+                right: "8%",
+                left: "3%",
+                bottom: xAxisLabelLayout.rotate ? xAxisLabelLayout.requiredBottom : "10%",
+                top: "10%"
+            };
         }
 
         return opt;
     })();
-
-    console.debug("[EChartsRenderer] rendering chart:", { height: chartHeight, option: safeOption });
 
     // ── Responsive: resize ECharts instance เมื่อ container width เปลี่ยน ──
     const chartRef = useRef<ReactECharts | null>(null);
@@ -264,6 +317,7 @@ export function EChartsRenderer({ spec }: EChartsRendererProps) {
                     lazyUpdate={true}
                     opts={{ renderer: "canvas" }}
                 />
+                <ChartDataPanel data={spec.data} />
             </Paper>
         </EChartsErrorBoundary>
     );

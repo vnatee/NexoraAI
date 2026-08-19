@@ -29,6 +29,13 @@ from mongo_table_connecters.mongo_connector import get_database
 from mongo_table_connecters.teams import insert_team, get_all_teams, get_team_by_id, update_team, get_team_by_user_id, delete_team_by_id
 from mongo_table_connecters.users import get_user_by_id, get_user_by_ad_email, get_all_user_by_is_sys_admin, get_all_users, insert_user, delete_user_by_id, update_user
 from mongo_table_connecters.agents import insert_agent, get_agent_by_id, update_agent, delete_agent_by_id
+from mongo_table_connecters.llm_providers import (
+    get_llm_provider,
+    insert_llm_provider,
+    list_llm_providers,
+    soft_delete_llm_provider,
+    update_llm_provider,
+)
 from mongo_table_connecters.data_group import get_data_group_by_id, insert_data_group, delete_data_group_by_id, get_all_data_groups_by_user_id, update_data_group
 from mongo_table_connecters.permissions import insert_permission, get_all_permissions, get_permission_by_name
 from mongo_table_connecters.user_permission import get_user_permission_by_user_id, get_user_permission_by_team_id, delete_user_permission_by_id, get_user_permission_by_user_team_id, insert_user_permission, update_user_permission
@@ -37,11 +44,12 @@ from mongo_table_connecters.limit_size_config import insert_limit_size_config, g
 from mongo_table_connecters.external_apis import insert_apis, delete_apis_by_id, update_apis, get_all_apis_by_team_id, get_apis_by_id, get_apis_by_team_id_and_name
 from mongo_table_connecters.agent_bindings import insert_agent_binding, get_all_agent_bindings_by_agent_id, delete_agent_binding_by_id, update_agent_binding,get_agent_binding_by_apisid_and_endpointname
 from mongo_table_connecters.fixed_promts import insert_fixed_prompt, get_all_fixed_prompt
-from mongo_table_connecters.external_database import insert_external_database, get_external_database_by_id, get_external_databases_by_team_id, get_all_external_databases, update_external_database, delete_external_database_by_id
+from mongo_table_connecters.external_database import insert_external_database, get_external_database_by_id, get_external_databases_by_team_id, get_all_external_databases, update_external_database, delete_external_database_by_id, serialize_external_database
 from mongo_table_connecters.database_binding import insert_database_binding, get_database_binding_by_id, get_database_bindings_by_agent_id, get_all_database_bindings, update_database_binding, delete_database_binding_by_id
 # ⭐ CHART CAPABILITY: import chart binding functions
 from mongo_table_connecters.chart_binding import insert_chart_binding, get_chart_bindings_by_agent_id, get_enabled_chart_bindings_by_agent_id, update_chart_binding, delete_chart_binding_by_id
 from db_retrieval import get_agent_mongodb_sources
+from database_connectors import normalize_database_config, test_database_connection
 from smtp.send_mail import send_approve_mail, approved_mail, rejected_mail
 from mongo_table_connecters.mail_template import insert_mail_template, get_all_mail_template
 
@@ -66,7 +74,7 @@ from azure.storage.blob.aio import ContainerClient, BlobClient
 from azure.storage.blob.aio import StorageStreamDownloader as BlobDownloader
 from azure.storage.filedatalake.aio import FileSystemClient
 from azure.storage.filedatalake.aio import StorageStreamDownloader as DatalakeDownloader
-from openai import AsyncAzureOpenAI, AsyncOpenAI
+from openai import AsyncOpenAI
 from opentelemetry.instrumentation.aiohttp_client import AioHttpClientInstrumentor
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from opentelemetry.instrumentation.httpx import (
@@ -83,6 +91,7 @@ from quart import (
     request,
     send_file,
     send_from_directory,
+    stream_with_context,
 )
 from quart_cors import cors
 
@@ -92,6 +101,8 @@ from approaches.chatreadretrievereadvision import ChatReadRetrieveReadVisionAppr
 from approaches.promptmanager import PromptyManager
 from approaches.retrievethenread import RetrieveThenReadApproach
 from approaches.retrievethenreadvision import RetrieveThenReadVisionApproach
+from agent_runtime.factory import create_agent_runtime
+from agent_runtime.charting import ChartValidationError, validate_echarts_spec
 from chat_history.cosmosdb import chat_history_cosmosdb_bp
 from config import (
     CONFIG_AGENT_CLIENT,
@@ -115,6 +126,9 @@ from config import (
     CONFIG_OPENAI_CLIENT,
     CONFIG_QUERY_REWRITING_ENABLED,
     CONFIG_REASONING_EFFORT_ENABLED,
+    CONFIG_LLM_PROFILES,
+    CONFIG_LLM_PROFILE_CLIENTS,
+    CONFIG_RUNTIME_SETTINGS,
     CONFIG_SEARCH_CLIENT,
     CONFIG_SEARCH_INDEX_CLIENT,
     CONFIG_SEMANTIC_RANKER_DEPLOYED,
@@ -133,12 +147,20 @@ from config import (
     CONFIG_EXTERNAL_API_ENPOINT
 )
 from core.authentication import AuthenticationHelper
+from core.model_providers import create_embedding_service, create_llm_client
+from core.llm_vendors import apply_llm_vendor_chat_policy, get_llm_vendor, infer_llm_vendor
+from core.model_profiles import (
+    DEFAULT_LLM_PROFILE_ID,
+    LLMProfile,
+    load_llm_profiles,
+    managed_profile_id,
+)
+from core.provider_secrets import decrypt_provider_secret, encrypt_provider_secret
+from core.runtime_settings import LLMProviderSettings, ModelProvider, RuntimeSettings, parse_model_provider
 from core.sessionhelper import create_session_id
 from decorators import authenticated, authenticated_path
 from error import error_dict, error_response
 from prepdocs import (
-    clean_key_if_exists,
-    setup_embeddings_service,
     setup_file_processors,
     setup_search_info,
 )
@@ -152,6 +174,220 @@ def _require_fields(data: Dict[str, Any], required: list[str]):
     missing = [k for k in required if not data.get(k)]
     if missing:
         raise ValueError(f"missing required fields: {', '.join(missing)}")
+
+
+def _validate_agent_model_config(config: object) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        raise ValueError("Agent config must be an object")
+    profile_id = config.get("llm_profile_id") or DEFAULT_LLM_PROFILE_ID
+    profiles: dict[str, LLMProfile] = current_app.config[CONFIG_LLM_PROFILES]
+    if profile_id not in profiles:
+        raise ValueError(f"Unknown LLM profile '{profile_id}'")
+    runtime = str(config.get("runtime") or "legacy").strip().lower()
+    if runtime not in ("legacy", "langgraph"):
+        raise ValueError("Agent runtime must be 'legacy' or 'langgraph'")
+    if runtime == "langgraph" and not profiles[profile_id].supports_tools:
+        raise ValueError("LangGraph runtime requires a model with Supports tool / function calling enabled")
+    raw_tool_settings = config.get("tool_settings") or {}
+    if not isinstance(raw_tool_settings, dict):
+        raise ValueError("Agent tool_settings must be an object")
+    knowledge_search = str(raw_tool_settings.get("knowledge_search") or "auto").strip().lower()
+    if knowledge_search not in ("auto", "always", "disabled"):
+        raise ValueError("Knowledge Search must be 'auto', 'always', or 'disabled'")
+    tool_settings = {
+        "knowledge_search": knowledge_search,
+        "external_database": raw_tool_settings.get("external_database", True) is not False,
+        "rest_integrations": raw_tool_settings.get("rest_integrations", True) is not False,
+        "mcp": raw_tool_settings.get("mcp", True) is not False,
+        "subagents": raw_tool_settings.get("subagents", False) is True,
+    }
+    return {
+        **config,
+        "llm_profile_id": profile_id,
+        "runtime": runtime,
+        "tool_settings": tool_settings,
+    }
+
+
+def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> None:
+    profile_id = DEFAULT_LLM_PROFILE_ID
+    if agent_id:
+        agent = get_agent_by_id(agent_id)
+        if agent:
+            agent_config = agent.get("config") or {}
+            profile_id = agent_config.get("llm_profile_id") or DEFAULT_LLM_PROFILE_ID
+
+    profiles: dict[str, LLMProfile] = current_app.config[CONFIG_LLM_PROFILES]
+    clients: dict[str, AsyncOpenAI] = current_app.config[CONFIG_LLM_PROFILE_CLIENTS]
+    profile = profiles.get(profile_id)
+    if profile is None:
+        current_app.logger.warning(
+            "Agent %s references unavailable LLM profile %s; using system default",
+            agent_id,
+            profile_id,
+        )
+        profile = profiles[DEFAULT_LLM_PROFILE_ID]
+        profile_id = DEFAULT_LLM_PROFILE_ID
+
+    overrides = context.setdefault("overrides", {})
+    overrides["_llm_client"] = clients[profile_id]
+    overrides["_llm_model"] = profile.settings.model
+    overrides["_llm_deployment"] = profile.settings.deployment
+    overrides["_llm_profile_id"] = profile_id
+    overrides["_llm_supports_tools"] = profile.supports_tools
+    overrides["_llm_vendor"] = infer_llm_vendor(
+        {
+            "provider": profile.settings.provider.value,
+            "name": profile.label,
+            "base_url": profile.settings.base_url,
+            "endpoint": profile.settings.endpoint,
+        }
+    ).id
+
+
+def _require_system_admin(auth_claims: dict[str, Any]) -> dict[str, Any]:
+    username = (
+        auth_claims.get("preferred_username")
+        or auth_claims.get("email")
+        or auth_claims.get("upn")
+    )
+    user = get_user_by_ad_email(username) if username else None
+    if not user or not user.get("active", True) or not user.get("is_sys_admin"):
+        abort(403)
+    return user
+
+
+def _normalize_provider_models(models: object) -> list[dict[str, Any]]:
+    if not isinstance(models, list) or not models:
+        raise ValueError("At least one model is required")
+    normalized = []
+    seen_ids = set()
+    for item in models:
+        if not isinstance(item, dict):
+            raise ValueError("Each model must be an object")
+        model = str(item.get("model") or "").strip()
+        model_id = str(item.get("id") or model).strip()
+        label = str(item.get("label") or model).strip()
+        deployment = str(item.get("deployment") or "").strip() or None
+        if not model or not model_id:
+            raise ValueError("Each model requires model and id")
+        if ":" in model_id:
+            raise ValueError("Model id cannot contain ':'")
+        if model_id in seen_ids:
+            raise ValueError(f"Duplicate model id '{model_id}'")
+        seen_ids.add(model_id)
+        normalized.append({"id": model_id, "label": label, "model": model, "deployment": deployment})
+        normalized[-1]["supports_tools"] = bool(item.get("supports_tools", True))
+    return normalized
+
+
+def _normalize_llm_provider_payload(body: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    name = str(body.get("name") or "").strip()
+    vendor_source = {**(existing or {}), **body}
+    vendor = (
+        get_llm_vendor(str(body["vendor"]))
+        if str(body.get("vendor") or "").strip()
+        else infer_llm_vendor(vendor_source)
+    )
+    provider = vendor.provider
+    endpoint = str(body.get("endpoint") or "").strip() or None
+    base_url = str(body.get("base_url") or "").strip() or vendor.default_base_url
+    if not name:
+        raise ValueError("Provider name is required")
+    if provider == ModelProvider.AZURE_OPENAI and not endpoint:
+        raise ValueError("Azure OpenAI provider requires endpoint")
+    if provider == ModelProvider.OPENAI_COMPATIBLE and not base_url:
+        raise ValueError("OpenAI-compatible provider requires base_url")
+
+    api_key_ciphertext = existing.get("api_key_ciphertext") if existing else None
+    if body.get("clear_api_key"):
+        api_key_ciphertext = None
+    elif str(body.get("api_key") or "").strip():
+        api_key_ciphertext = encrypt_provider_secret(str(body["api_key"]).strip())
+    enabled = bool(body.get("enabled", True))
+    if vendor.requires_api_key and enabled and not api_key_ciphertext:
+        raise ValueError(f"{vendor.label} provider requires an API key when enabled")
+
+    return {
+        "name": name,
+        "vendor": vendor.id,
+        "provider": provider.value,
+        "endpoint": endpoint,
+        "base_url": base_url,
+        "api_version": (
+            str(body.get("api_version") or "").strip() or "2024-10-21"
+            if provider == ModelProvider.AZURE_OPENAI
+            else None
+        ),
+        "organization": str(body.get("organization") or "").strip() or None,
+        "models": _normalize_provider_models(body.get("models")),
+        "enabled": enabled,
+        "api_key_ciphertext": api_key_ciphertext,
+    }
+
+
+def _serialize_llm_provider(document: dict[str, Any]) -> dict[str, Any]:
+    vendor = infer_llm_vendor(document)
+    return {
+        "_id": str(document["_id"]),
+        "name": document["name"],
+        "vendor": vendor.id,
+        "vendor_label": vendor.label,
+        "provider": document["provider"],
+        "endpoint": document.get("endpoint"),
+        "base_url": document.get("base_url"),
+        "api_version": document.get("api_version"),
+        "organization": document.get("organization"),
+        "models": document.get("models", []),
+        "enabled": document.get("enabled", True),
+        "has_api_key": bool(document.get("api_key_ciphertext")),
+        "create_at": document.get("create_at").isoformat() if document.get("create_at") else None,
+        "update_at": document.get("update_at").isoformat() if document.get("update_at") else None,
+    }
+
+
+def _settings_for_managed_model(provider: dict[str, Any], model: dict[str, Any]) -> LLMProviderSettings:
+    return LLMProviderSettings(
+        provider=parse_model_provider(provider["provider"]),
+        model=model["model"],
+        deployment=model.get("deployment"),
+        api_version=provider.get("api_version") or "2024-10-21",
+        endpoint=provider.get("endpoint"),
+        base_url=provider.get("base_url"),
+        api_key=decrypt_provider_secret(provider.get("api_key_ciphertext")),
+        organization=provider.get("organization"),
+    )
+
+
+def _load_managed_profiles(base_profiles: dict[str, LLMProfile]) -> dict[str, LLMProfile]:
+    profiles = dict(base_profiles)
+    for provider in list_llm_providers():
+        if not provider.get("enabled", True):
+            continue
+        for model in provider.get("models", []):
+            profile_id = managed_profile_id(str(provider["_id"]), model["id"])
+            profiles[profile_id] = LLMProfile(
+                profile_id=profile_id,
+                label=f"{provider['name']} — {model.get('label') or model['model']}",
+                settings=_settings_for_managed_model(provider, model),
+                managed_provider_id=str(provider["_id"]),
+                managed_model_id=model["id"],
+                supports_tools=model.get("supports_tools", True),
+            )
+    return profiles
+
+
+def _refresh_llm_profile_registry() -> None:
+    runtime_settings: RuntimeSettings = current_app.config[CONFIG_RUNTIME_SETTINGS]
+    profiles = load_llm_profiles(os.environ, runtime_settings.llm)
+    profiles = _load_managed_profiles(profiles)
+    credential = current_app.config[CONFIG_CREDENTIAL]
+    clients = {
+        profile_id: create_llm_client(profile.settings, credential)
+        for profile_id, profile in profiles.items()
+    }
+    current_app.config[CONFIG_LLM_PROFILES] = profiles
+    current_app.config[CONFIG_LLM_PROFILE_CLIENTS] = clients
 
 
 class NamedBytesIO(io.BytesIO):
@@ -168,7 +404,12 @@ mimetypes.add_type("text/css", ".css")
 
 @bp.route("/")
 async def index():
-    return await bp.send_static_file("index.html")
+    # These two shell assets are small. Returning their bytes directly avoids
+    # keeping an aiofiles executor task alive during Quart test shutdown on
+    # Python 3.13.
+    response = await make_response((Path(__file__).resolve().parent / "static" / "index.html").read_bytes())
+    response.content_type = "text/html; charset=utf-8"
+    return response
 
 
 # Empty page is recommended for login redirect to work.
@@ -180,7 +421,9 @@ async def redirect():
 
 @bp.route("/favicon.ico")
 async def favicon():
-    return await bp.send_static_file("favicon.ico")
+    response = await make_response((Path(__file__).resolve().parent / "static" / "favicon.ico").read_bytes())
+    response.content_type = "image/x-icon"
+    return response
 
 
 @bp.route("/assets/<path:path>")
@@ -254,6 +497,7 @@ async def ask(auth_claims: dict[str, Any]):
     data_groups_id = request_json.get("data_groups_id")
     selected_scopes = request_json.get("selected_scopes")
     team_id = request_json.get("team_id")
+    agent_id = request_json.get("agent_id")
     if team_id:
         new_auth = auth_claims
         new_auth['data_groups_id'] = data_groups_id
@@ -263,6 +507,7 @@ async def ask(auth_claims: dict[str, Any]):
     else:
         context["auth_claims"] = auth_claims
     try:
+        _apply_agent_llm_profile(context, agent_id)
         use_gpt4v = context.get("overrides", {}).get("use_gpt4v", False)
         approach: Approach
         if use_gpt4v and CONFIG_ASK_VISION_APPROACH in current_app.config:
@@ -277,10 +522,11 @@ async def ask(auth_claims: dict[str, Any]):
 
         async def _bg():
             try:
-                insert_user_usage(auth_claims, r, "ask")
+                await asyncio.to_thread(insert_user_usage, auth_claims, r, "ask")
             except Exception:
                 current_app.logger.exception("Can't insert user usage")
-        asyncio.create_task(_bg())
+        if os.getenv("DISABLE_USAGE_PERSISTENCE", "").lower() != "true":
+            asyncio.create_task(_bg())
         return jsonify(r)
     except Exception as error:
         return error_response(error, "/ask")
@@ -301,6 +547,78 @@ async def format_as_ndjson(r: AsyncGenerator[dict, None]) -> AsyncGenerator[str,
         logging.exception(
             "Exception while generating response stream: %s", error)
         yield json.dumps(error_dict(error))
+
+
+def _use_langgraph_runtime(agent_id: str | None) -> bool:
+    mode = os.getenv("AGENT_RUNTIME_MODE", "per_agent").strip().lower()
+    if mode in ("legacy", "langgraph"):
+        return mode == "langgraph"
+    if agent_id:
+        agent = get_agent_by_id(agent_id)
+        configured = str((agent or {}).get("config", {}).get("runtime") or "").strip().lower()
+        if configured in ("legacy", "langgraph"):
+            return configured == "langgraph"
+    return False
+
+
+async def _run_langgraph_as_chat_stream(
+    *,
+    approach: Approach,
+    messages: list[dict[str, Any]],
+    context: dict[str, Any],
+    auth_claims: dict[str, Any],
+    agent_id: str,
+    team_id: str | None,
+    system_prompt: str,
+    session_state: Any,
+) -> AsyncGenerator[dict, None]:
+    runtime = await create_agent_runtime(
+        agent_id=agent_id,
+        team_id=team_id,
+        auth_claims=auth_claims,
+        approach=approach,
+        overrides=context.get("overrides") or {},
+        system_prompt=system_prompt,
+    )
+    result = await runtime.run(messages)
+    current_app.logger.info(
+        "LangGraph agent %s completed in %s model iteration(s); tools=%s",
+        agent_id,
+        result["iterations"],
+        [event["name"] for event in result.get("tool_trace", [])],
+    )
+    citations = []
+    chart_spec = (result.get("artifacts") or {}).get("chart")
+    rag_diagnostics = {"called": False, "result_count": 0}
+    for event in result.get("tool_trace", []):
+        if event.get("source") != "rag" or event.get("is_error"):
+            continue
+        rag_diagnostics["called"] = True
+        try:
+            rag_output = json.loads(event.get("output") or "{}")
+            citations.extend(rag_output.get("citations") or [])
+            rag_diagnostics["result_count"] += len(rag_output.get("results") or [])
+        except (json.JSONDecodeError, AttributeError):
+            current_app.logger.warning("Unable to parse RAG tool citations for agent %s", agent_id)
+    yield {
+        "delta": {"role": "assistant"},
+        "context": {
+            "data_points": {"text": citations, "images": []},
+            "thoughts": [
+                {
+                    "title": "LangGraph agent runtime",
+                    "description": {
+                        "iterations": result["iterations"],
+                        "tools": [event["name"] for event in result.get("tool_trace", [])],
+                        "rag": rag_diagnostics,
+                    },
+                }
+            ],
+            **({"chart": chart_spec} if chart_spec else {}),
+        },
+        "session_state": session_state,
+    }
+    yield {"delta": {"role": "assistant", "content": result["content"]}}
 
 
 # ⭐ CHART CAPABILITY: โหลด prompt template จากไฟล์ครั้งเดียวตอน startup
@@ -435,7 +753,7 @@ def build_chart_prompt(chart_binding_cfg: dict) -> str:
     ส่วน body (examples, rules) อ่านมาจากไฟล์ chart_capability_body.txt โดยตรง
 
     chart_selection_mode:
-      "auto"   → LLM เลือก chart type เองจากข้อมูล ไม่ enforce allowed list
+      "auto"   → LLM เลือก chart type เองจาก configured allowed list
       "manual" → enforce allowed_chart_types (พฤติกรรมเดิม)
     """
     from mongo_table_connecters.chart_binding import ALL_SUPPORTED_CHART_TYPES
@@ -447,10 +765,10 @@ def build_chart_prompt(chart_binding_cfg: dict) -> str:
     chart_selection_mode = chart_binding_cfg.get("chart_selection_mode", "manual")
     is_auto = chart_selection_mode == "auto"
 
-    # auto mode: LLM ใช้ chart type ใดก็ได้ที่รองรับ
+    # auto mode: LLM เลือกเอง แต่ยังอยู่ภายใน allowlist ของ binding
     # manual mode: enforce allowed_chart_types จาก config
     if is_auto:
-        allowed_types = ALL_SUPPORTED_CHART_TYPES
+        allowed_types = chart_binding_cfg.get("allowed_chart_types") or ALL_SUPPORTED_CHART_TYPES
         default_type = "auto"
     else:
         allowed_types = chart_binding_cfg.get("allowed_chart_types", ["bar", "line", "pie", "area"])
@@ -693,18 +1011,19 @@ async def wrap_stream_with_chart_extraction(
     cleaned_content, chart_spec = extract_chart_spec(accumulated_content)
 
     if chart_spec:
-        # auto mode → ไม่ enforce allowed_chart_types เลย LLM เลือกเองได้ทุก type
-        chart_selection_mode = (chart_binding_cfg or {}).get("chart_selection_mode", "manual")
-        is_auto = chart_selection_mode == "auto"
-
-        blocked_types = [] if is_auto else _check_chart_types(chart_spec, allowed_types or [])
+        try:
+            chart_spec = validate_echarts_spec(chart_spec, allowed_types or None)
+            blocked_types = []
+        except ChartValidationError as error:
+            logging.warning("Rejecting invalid chart spec: %s", error)
+            blocked_types = [str(error)]
         if blocked_types:
             # ── กรณี chart type ไม่อนุญาต ──
             logging.warning(
                 "Chart type(s) %s not in allowed list %s — rejecting chart spec",
                 blocked_types, allowed_types,
             )
-            error_msg = build_blocked_message(blocked_types, allowed_types or [], cleaned_content)
+            error_msg = "ไม่สามารถแสดงกราฟนี้ได้ เนื่องจากข้อมูลหรือรูปแบบกราฟไม่ผ่านการตรวจสอบความปลอดภัย"
 
             # Re-emit เฉพาะ non-content events (role, context ฯลฯ) ก่อน
             # แล้ว emit blocked message เพียงอย่างเดียวแทน LLM content ทั้งหมด
@@ -750,6 +1069,7 @@ async def chat(auth_claims: dict[str, Any]):
     else:
         context["auth_claims"] = auth_claims
     try:
+        _apply_agent_llm_profile(context, request_json.get("agent_id"))
         use_gpt4v = context.get("overrides", {}).get("use_gpt4v", False)
         approach: Approach
         if use_gpt4v and CONFIG_CHAT_VISION_APPROACH in current_app.config:
@@ -783,12 +1103,24 @@ async def chat_stream(auth_claims: dict[str, Any]):
         return jsonify({"error": "request must be json"}), 415
     request_json = await request.get_json()
     context = request_json.get("context", {})
+    base_prompt_template = str((context.get("overrides") or {}).get("prompt_template") or "")
     data_groups_id = request_json.get("data_groups_id")
     selected_scopes = request_json.get("selected_scopes")
     team_id = request_json.get("team_id")
     agent_id = request_json.get("agent_id")
+    use_langgraph_runtime = bool(agent_id and _use_langgraph_runtime(agent_id))
     api_result = request_json.get("api_result",None)
     app_message = request_json["messages"]
+    has_chart_capability = False
+    chart_binding_cfg = None
+    chart_bindings = []
+    if agent_id:
+        try:
+            chart_bindings = get_enabled_chart_bindings_by_agent_id(agent_id)
+        except Exception:
+            current_app.logger.exception("Failed to retrieve chart bindings for agent %s", agent_id)
+    has_chart_capability = len(chart_bindings) > 0
+    chart_binding_cfg = chart_bindings[0] if chart_bindings else None
     if team_id:
         new_auth = auth_claims
         new_auth['data_groups_id'] = data_groups_id
@@ -797,20 +1129,9 @@ async def chat_stream(auth_claims: dict[str, Any]):
         context["auth_claims"] = new_auth
         agent_bindings = get_all_agent_bindings_by_agent_id(agent_id)
 
-        # ⭐ CHART CAPABILITY: ตรวจสอบว่า agent มี chart binding เปิดอยู่หรือไม่
-        chart_bindings = []
-        if agent_id:
-            try:
-                chart_bindings = get_enabled_chart_bindings_by_agent_id(agent_id)
-            except Exception:
-                current_app.logger.exception("Failed to retrieve chart bindings for agent %s", agent_id)
-                chart_bindings = []
-        has_chart_capability = len(chart_bindings) > 0
-        chart_binding_cfg = chart_bindings[0] if chart_bindings else None
-
         db_sources = []
         try:
-            if agent_id:
+            if agent_id and not use_langgraph_runtime:
                 db_sources = get_agent_mongodb_sources(agent_id, query=None)
                 db_sources = db_sources[:5] if db_sources else []
         except Exception:
@@ -839,7 +1160,7 @@ Only answer based on the information included in these sources.
 Do not invent values that are not present in the documents above.
 """
 
-        if len(agent_bindings) > 0:
+        if len(agent_bindings) > 0 and not use_langgraph_runtime:
             api_registry = ""
             for binding in agent_bindings:
                 full_api = get_apis_by_id(binding['integration_id'])
@@ -988,6 +1309,7 @@ Always respond in the same language as the user"""
         final_prompt = f"{context['overrides']['prompt_template']}{response_promtp}"
         context['overrides']['prompt_template'] = final_prompt 
     try:
+        _apply_agent_llm_profile(context, agent_id)
         use_gpt4v = context.get("overrides", {}).get("use_gpt4v", False)
         approach: Approach
         if use_gpt4v and CONFIG_CHAT_VISION_APPROACH in current_app.config:
@@ -1004,20 +1326,33 @@ Always respond in the same language as the user"""
                 current_app.config[CONFIG_CHAT_HISTORY_COSMOS_ENABLED],
                 current_app.config[CONFIG_CHAT_HISTORY_BROWSER_ENABLED],
             )
-        result = await approach.run_stream(
-            app_message,
-            context=context,
-            session_state=session_state,
-        )
+        if use_langgraph_runtime:
+            runtime_system_prompt = base_prompt_template
+            result = _run_langgraph_as_chat_stream(
+                approach=approach,
+                messages=app_message,
+                context=context,
+                auth_claims=context.get("auth_claims") or auth_claims,
+                agent_id=agent_id,
+                team_id=team_id,
+                system_prompt=runtime_system_prompt,
+                session_state=session_state,
+            )
+        else:
+            result = await approach.run_stream(
+                app_message,
+                context=context,
+                session_state=session_state,
+            )
 
         # ⭐ CHART CAPABILITY: ถ้า agent มี chart capability ให้ wrap generator
         #    เพื่อ buffer ทั้งหมด ตรวจสอบ chart type แล้วค่อยส่งออก
-        if has_chart_capability:
+        if has_chart_capability and not use_langgraph_runtime:
             _default_allowed = ["bar", "line", "pie", "area"]
             _is_auto = (chart_binding_cfg or {}).get("chart_selection_mode", "manual") == "auto"
             if _is_auto:
                 from mongo_table_connecters.chart_binding import ALL_SUPPORTED_CHART_TYPES
-                _allowed = ALL_SUPPORTED_CHART_TYPES
+                _allowed = chart_binding_cfg.get("allowed_chart_types") or ALL_SUPPORTED_CHART_TYPES
             else:
                 _allowed = chart_binding_cfg.get("allowed_chart_types") or _default_allowed if chart_binding_cfg else _default_allowed
             result = wrap_stream_with_chart_extraction(
@@ -1026,23 +1361,30 @@ Always respond in the same language as the user"""
                 chart_binding_cfg=chart_binding_cfg,
             )
 
-        # Collect all NDJSON lines ก่อน เพื่อให้ wrap_stream_with_chart_extraction
-        # ทำงานจนจบ (post-stream chart validation) ก่อนส่ง response
-        ndjson_lines = []
-        async for line in format_as_ndjson(result):
-            ndjson_lines.append(line)
-        data_str = "".join(ndjson_lines)
+        # Stream NDJSON immediately. Legacy chart extraction still buffers internally,
+        # while normal and LangGraph responses are no longer buffered by this route.
+        @stream_with_context
+        async def stream_and_record_usage():
+            ndjson_lines = []
+            try:
+                async for line in format_as_ndjson(result):
+                    ndjson_lines.append(line)
+                    yield line
+            finally:
+                if ndjson_lines and os.getenv("DISABLE_USAGE_PERSISTENCE", "").lower() != "true":
+                    data_str = "".join(ndjson_lines)
 
-        response = await make_response(data_str)
+                    async def _bg():
+                        try:
+                            await asyncio.to_thread(insert_user_usage, auth_claims, data_str, "chat")
+                        except Exception:
+                            logging.exception("Can't insert user usage")
+
+                    asyncio.create_task(_bg())
+
+        response = await make_response(stream_and_record_usage())
         response.timeout = None  # type: ignore
         response.mimetype = "application/json-lines"
-
-        async def _bg():
-            try:
-                insert_user_usage(auth_claims, data_str, "chat")
-            except Exception:
-                current_app.logger.exception("Can't insert user usage")
-        asyncio.create_task(_bg())
         return response
     except Exception as error:
         return error_response(error, "/chat")
@@ -1055,10 +1397,129 @@ def auth_setup():
     return jsonify(auth_helper.get_auth_setup_for_client())
 
 
+@bp.get("/admin/llm-providers")
+@authenticated
+async def admin_list_llm_providers(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    return jsonify({"providers": [_serialize_llm_provider(item) for item in list_llm_providers()]})
+
+
+@bp.post("/admin/llm-providers")
+@authenticated
+async def admin_create_llm_provider(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        body = await request.get_json()
+        provider = insert_llm_provider(_normalize_llm_provider_payload(body or {}))
+        _refresh_llm_profile_registry()
+        return jsonify(_serialize_llm_provider(provider)), 201
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.put("/admin/llm-providers/<provider_id>")
+@authenticated
+async def admin_update_llm_provider(auth_claims: dict[str, Any], provider_id: str):
+    _require_system_admin(auth_claims)
+    existing = get_llm_provider(provider_id)
+    if not existing:
+        return jsonify({"error": "LLM provider not found"}), 404
+    try:
+        body = await request.get_json()
+        normalized = _normalize_llm_provider_payload(body or {}, existing=existing)
+        new_model_ids = {model["id"] for model in normalized["models"]}
+        removed_model_ids = {
+            model["id"] for model in existing.get("models", []) if model["id"] not in new_model_ids
+        }
+        if removed_model_ids:
+            removed_profiles = [managed_profile_id(provider_id, model_id) for model_id in removed_model_ids]
+            reference_count = get_database().agents.count_documents(
+                {"delete_at": None, "config.llm_profile_id": {"$in": removed_profiles}}
+            )
+            if reference_count:
+                return jsonify(
+                    {"error": f"Removed model(s) are used by {reference_count} agent(s)"}
+                ), 409
+        provider = update_llm_provider(
+            provider_id,
+            normalized,
+        )
+        _refresh_llm_profile_registry()
+        return jsonify(_serialize_llm_provider(provider))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.delete("/admin/llm-providers/<provider_id>")
+@authenticated
+async def admin_delete_llm_provider(auth_claims: dict[str, Any], provider_id: str):
+    _require_system_admin(auth_claims)
+    provider = get_llm_provider(provider_id)
+    if not provider:
+        return jsonify({"error": "LLM provider not found"}), 404
+    profile_prefix = f"managed:{provider_id}:"
+    reference_count = get_database().agents.count_documents(
+        {"delete_at": None, "config.llm_profile_id": {"$regex": f"^{re.escape(profile_prefix)}"}}
+    )
+    if reference_count:
+        return jsonify({"error": f"Provider is used by {reference_count} agent(s); disable it instead"}), 409
+    soft_delete_llm_provider(provider_id)
+    _refresh_llm_profile_registry()
+    return jsonify({"success": True})
+
+
+@bp.post("/admin/llm-providers/<provider_id>/test")
+@authenticated
+async def admin_test_llm_provider(auth_claims: dict[str, Any], provider_id: str):
+    _require_system_admin(auth_claims)
+    provider = get_llm_provider(provider_id)
+    if not provider:
+        return jsonify({"error": "LLM provider not found"}), 404
+    body = await request.get_json() or {}
+    model_id = body.get("model_id")
+    model = next(
+        (item for item in provider.get("models", []) if not model_id or item["id"] == model_id),
+        None,
+    )
+    if not model:
+        return jsonify({"error": "Model not found"}), 404
+    client = None
+    try:
+        settings = _settings_for_managed_model(provider, model)
+        client = create_llm_client(settings, current_app.config[CONFIG_CREDENTIAL])
+        completion_options: dict[str, Any] = {}
+        if settings.model in Approach.GPT_REASONING_MODELS:
+            completion_options["max_completion_tokens"] = 16
+        else:
+            completion_options.update({"max_tokens": 3, "temperature": 0})
+        completion_options = apply_llm_vendor_chat_policy(
+            infer_llm_vendor(provider).id, completion_options
+        )
+        response = await client.chat.completions.create(
+            model=settings.deployment or settings.model,
+            messages=[{"role": "user", "content": "Reply with OK"}],
+            **completion_options,
+        )
+        content = response.choices[0].message.content if response.choices else None
+        return jsonify({"success": True, "model": model["model"], "response": content})
+    except Exception as error:
+        current_app.logger.warning("LLM provider connection test failed: %s", error)
+        return jsonify({"success": False, "error": str(error)}), 400
+    finally:
+        if client is not None:
+            await client.close()
+
+
 @bp.route("/config", methods=["GET"])
-def config():
+async def config():
+    runtime_settings: RuntimeSettings = current_app.config[CONFIG_RUNTIME_SETTINGS]
+    llm_profiles: dict[str, LLMProfile] = current_app.config[CONFIG_LLM_PROFILES]
     return jsonify(
         {
+            "runtimeMode": runtime_settings.mode.value,
+            "llmProvider": runtime_settings.llm.provider.value,
+            "embeddingProvider": runtime_settings.embedding.provider.value,
+            "llmProfiles": [profile.public_dict() for profile in llm_profiles.values()],
             "showGPT4VOptions": current_app.config[CONFIG_GPT4V_DEPLOYED],
             "showSemanticRankerOption": current_app.config[CONFIG_SEMANTIC_RANKER_DEPLOYED],
             "showQueryRewritingOption": current_app.config[CONFIG_QUERY_REWRITING_ENABLED],
@@ -2064,7 +2525,8 @@ async def create_team(auth_claims: dict[str, Any]):
         team_name = body.get("team_name", None)
         if team_name:
             agent_config = {"temperature": 0.2, "seed": None,
-                            "min_search_score": 0, "max_search_results": 2, "max_tokens": 1024}
+                            "min_search_score": 0, "max_search_results": 2, "max_tokens": 1024,
+                            "llm_profile_id": DEFAULT_LLM_PROFILE_ID}
             result, agent_id = insert_agent("default", None, agent_config)
             result, data_group_id = insert_data_group("default", [])
             insert_team(team_name, [data_group_id], [agent_id], [], [])
@@ -2485,7 +2947,7 @@ async def create_agent(auth_claims: dict[str, Any]):
         body = await request.get_json()
         team_id = body.get("team_id", None)
         agent_name = body.get("agent_name", None)
-        agent_config = body.get("config", None)
+        agent_config = _validate_agent_model_config(body.get("config", None))
         agent_prompt = body.get("prompt", None)
         result, agent_id = insert_agent(agent_name, agent_prompt, agent_config)
         agent_team = get_team_by_id(team_id=team_id).get("agent_id")
@@ -2505,10 +2967,14 @@ async def get_agent_by_team(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         team_id = body.get("team_id", None)
-        agent_team = get_team_by_id(team_id=team_id).get("agent_id")
+        team = get_team_by_id(team_id=team_id)
+        if not team:
+            return jsonify({"error": "Team not found"}), 404
         agents = []
-        for agent_id in agent_team:
-            agents.append(get_agent_by_id(str(agent_id)))
+        for agent_id in team.get("agent_id") or []:
+            agent = get_agent_by_id(str(agent_id))
+            if agent:
+                agents.append(agent)
         return jsonify({"result": agents}), 200
     except Exception as error_txt:
         return jsonify({"error": str(error_txt)}), 400
@@ -2521,7 +2987,7 @@ async def edit_agent(auth_claims: dict[str, Any]):
         body = await request.get_json()
         agent_id = body.get("agent_id", None)
         agent_name = body.get("agent_name", None)
-        agent_config = body.get("config", None)
+        agent_config = _validate_agent_model_config(body.get("config", None))
         agent_prompt = body.get("prompt", None)
         update_agent(agent_id, agent_name, agent_prompt, agent_config)
         return jsonify({"success": f"Edit agent success"}), 200
@@ -2750,15 +3216,22 @@ async def create_edit_user_permissions(auth_claims: dict[str, Any]):
 async def insert_database_connection(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
-        team_id = body.get("team_id", None)
-        name = body.get("name", None)
-        db_type = body.get("db_type", None)
-        host = body.get("host", None)
-        port = body.get("port", None)
-        database = body.get("database", None)
-        username = body.get("username", None)
-        password = body.get("password", None)
-        insert_external_database(team_id, name, db_type, host, port, database, username, password)
+        team_id = str(body.get("team_id") or "").strip()
+        name = str(body.get("name") or "").strip()
+        if not team_id or not name:
+            raise ValueError("team_id and connection name are required")
+        config = normalize_database_config(body)
+        insert_external_database(
+            team_id,
+            name,
+            config["db_type"],
+            config["host"],
+            config["port"],
+            config["database"],
+            config["username"],
+            body.get("password"),
+            config["options"],
+        )
         return jsonify({"success": f"Create external database {name} success"}), 200
     except Exception as error_txt:
         return jsonify({"error": str(error_txt)}), 400
@@ -2779,16 +3252,32 @@ async def delete_database_connection(auth_claims: dict[str, Any]):
 async def edit_database_connection(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
-        database_id = body.get("database_id", None)
-        team_id = body.get("team_id", None)
-        name = body.get("name", None)
-        db_type = body.get("db_type", None)
-        host = body.get("host", None)
-        port = body.get("port", None)
-        database = body.get("database", None)
-        username = body.get("username", None)
-        password = body.get("password", None)
-        update_external_database(database_id, team_id, name, db_type, host, port, database, username, password)
+        database_id = str(body.get("database_id") or "").strip()
+        existing = get_external_database_by_id(database_id)
+        if not existing:
+            return jsonify({"error": "Database connection not found"}), 404
+        merged = {**existing, **{key: value for key, value in body.items() if value is not None}}
+        config = normalize_database_config(merged)
+        name = str(merged.get("name") or "").strip()
+        team_id = str(merged.get("team_id") or "").strip()
+        if not team_id or not name:
+            raise ValueError("team_id and connection name are required")
+        password_update = body.get("password")
+        if not password_update and existing.get("password") and not existing.get("password_ciphertext"):
+            password_update = existing["password"]
+        update_external_database(
+            database_id,
+            team_id,
+            name,
+            config["db_type"],
+            config["host"],
+            config["port"],
+            config["database"],
+            config["username"],
+            password_update,
+            config["options"],
+            body.get("clear_password") is True,
+        )
         return jsonify({"success": f"Edit external database success"}), 200
     except Exception as error_txt:
         return jsonify({"error": str(error_txt)}), 400
@@ -2800,7 +3289,30 @@ async def get_database_connection_by_team(auth_claims: dict[str, Any]):
         body = await request.get_json()
         team_id = body.get("team_id", None)
         all_database_connections = get_external_databases_by_team_id(team_id)
-        return jsonify({"result": all_database_connections}), 200
+        return jsonify({"result": [serialize_external_database(item) for item in all_database_connections]}), 200
+    except Exception as error_txt:
+        return jsonify({"error": str(error_txt)}), 400
+
+
+@bp.post("/test_database_connection")
+@authenticated
+async def test_database_connection_route(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        database_id = str(body.get("database_id") or body.get("connection_id") or "").strip()
+        existing = get_external_database_by_id(database_id) if database_id else None
+        if database_id and not existing:
+            return jsonify({"error": "Database connection not found"}), 404
+
+        connection = {**(existing or {}), **{key: value for key, value in body.items() if value is not None}}
+        if not body.get("password") and existing:
+            connection.pop("password", None)
+            connection["password_ciphertext"] = existing.get("password_ciphertext")
+            if not connection["password_ciphertext"] and existing.get("password"):
+                connection["password"] = existing["password"]
+        normalize_database_config(connection)
+        result = await asyncio.to_thread(test_database_connection, connection)
+        return jsonify(result), 200
     except Exception as error_txt:
         return jsonify({"error": str(error_txt)}), 400
     
@@ -2814,7 +3326,8 @@ async def insert_database_binding_func(auth_claims: dict[str, Any]):
         alias = body.get("alias", None)
         trigger_keywords = body.get("trigger_keywords", None)
         enabled = body.get("enabled", True)
-        insert_database_binding(agent_id, integration_id, alias, trigger_keywords, enabled)
+        query_profile = body.get("query_profile")
+        insert_database_binding(agent_id, integration_id, alias, trigger_keywords, enabled, query_profile)
         return jsonify({"success": f"Create database binding success"}), 200
     except Exception as error_txt:
         return jsonify({"error": str(error_txt)}), 400
@@ -2853,6 +3366,27 @@ async def toggle_database_binding_by_id(auth_claims: dict[str, Any]):
     except Exception as error_txt:
         return jsonify({"error": str(error_txt)}), 400
 
+
+@bp.post("/update_database_binding")
+@authenticated
+async def update_database_binding_func(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        binding_id = str(body.get("database_binding_id") or "").strip()
+        if not binding_id or not get_database_binding_by_id(binding_id):
+            return jsonify({"error": "Database binding not found"}), 404
+        update_database_binding(
+            binding_id,
+            integration_id=body.get("integration_id"),
+            alias=body.get("alias"),
+            trigger_keywords=body.get("trigger_keywords"),
+            enabled=body.get("enabled"),
+            query_profile=body.get("query_profile"),
+        )
+        return jsonify({"success": "Database query profile updated"}), 200
+    except Exception as error_txt:
+        return jsonify({"error": str(error_txt)}), 400
+
 # ⭐ CHART CAPABILITY: Routes สำหรับจัดการ chart bindings (CRUD)
 #    Pattern เดียวกับ database binding routes
 @bp.get("/chart_bindings")
@@ -2882,6 +3416,8 @@ async def insert_chart_binding_func(auth_claims: dict[str, Any]):
             enabled=body.get("enabled", True),
             auto_generate=body.get("auto_generate", False),
             chart_selection_mode=body.get("chart_selection_mode", "auto"),
+            default_chart_type=body.get("default_chart_type"),
+            allowed_chart_types=body.get("allowed_chart_types"),
         )
         return jsonify({"message": "Chart binding created successfully"}), 200
     except Exception as error_txt:
@@ -2929,6 +3465,8 @@ async def update_chart_binding_route(auth_claims: dict[str, Any]):
             enabled=body.get("enabled"),
             auto_generate=body.get("auto_generate"),
             chart_selection_mode=body.get("chart_selection_mode", "auto"),
+            default_chart_type=body.get("default_chart_type"),
+            allowed_chart_types=body.get("allowed_chart_types"),
         )
         return jsonify({"message": "Chart binding updated successfully"}), 200
     except Exception as error_txt:
@@ -3111,37 +3649,24 @@ async def setup_clients():
     AZURE_SEARCH_ENDPOINT = f"https://{AZURE_SEARCH_SERVICE}.search.windows.net"
     AZURE_SEARCH_INDEX = os.environ["AZURE_SEARCH_INDEX"]
     AZURE_SEARCH_AGENT = os.getenv("AZURE_SEARCH_AGENT", "")
-    # Shared by all OpenAI deployments
-    OPENAI_HOST = os.getenv("OPENAI_HOST", "azure")
-    OPENAI_CHATGPT_MODEL = os.environ["AZURE_OPENAI_CHATGPT_MODEL"]
+    # Model provider settings support both the legacy OPENAI_* variables and
+    # the new provider-specific LLM_*/EMBEDDING_* variables.
+    runtime_settings = RuntimeSettings.from_env(os.environ)
+    OPENAI_CHATGPT_MODEL = runtime_settings.llm.model
     AZURE_OPENAI_SEARCHAGENT_MODEL = os.getenv(
         "AZURE_OPENAI_SEARCHAGENT_MODEL")
     AZURE_OPENAI_SEARCHAGENT_DEPLOYMENT = os.getenv(
         "AZURE_OPENAI_SEARCHAGENT_DEPLOYMENT")
-    OPENAI_EMB_MODEL = os.getenv(
-        "AZURE_OPENAI_EMB_MODEL_NAME", "text-embedding-ada-002")
-    OPENAI_EMB_DIMENSIONS = int(
-        os.getenv("AZURE_OPENAI_EMB_DIMENSIONS") or 1536)
+    OPENAI_EMB_MODEL = runtime_settings.embedding.model
+    OPENAI_EMB_DIMENSIONS = runtime_settings.embedding.dimensions
     OPENAI_REASONING_EFFORT = os.getenv("AZURE_OPENAI_REASONING_EFFORT")
     # Used with Azure OpenAI deployments
-    AZURE_OPENAI_SERVICE = os.getenv("AZURE_OPENAI_SERVICE")
     AZURE_OPENAI_GPT4V_DEPLOYMENT = os.environ.get(
         "AZURE_OPENAI_GPT4V_DEPLOYMENT")
     AZURE_OPENAI_GPT4V_MODEL = os.environ.get("AZURE_OPENAI_GPT4V_MODEL")
-    AZURE_OPENAI_CHATGPT_DEPLOYMENT = (
-        os.getenv("AZURE_OPENAI_CHATGPT_DEPLOYMENT") if OPENAI_HOST.startswith(
-            "azure") else None
-    )
-    AZURE_OPENAI_EMB_DEPLOYMENT = os.getenv(
-        "AZURE_OPENAI_EMB_DEPLOYMENT") if OPENAI_HOST.startswith("azure") else None
-    AZURE_OPENAI_CUSTOM_URL = os.getenv("AZURE_OPENAI_CUSTOM_URL")
-    # https://learn.microsoft.com/azure/ai-services/openai/api-version-deprecation#latest-ga-api-release
-    AZURE_OPENAI_API_VERSION = os.getenv(
-        "AZURE_OPENAI_API_VERSION") or "2024-10-21"
+    AZURE_OPENAI_CHATGPT_DEPLOYMENT = runtime_settings.llm.deployment
+    AZURE_OPENAI_EMB_DEPLOYMENT = runtime_settings.embedding.deployment
     AZURE_VISION_ENDPOINT = os.getenv("AZURE_VISION_ENDPOINT", "")
-    # Used only with non-Azure OpenAI deployments
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-    OPENAI_ORGANIZATION = os.getenv("OPENAI_ORGANIZATION")
 
     AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID")
     AZURE_USE_AUTHENTICATION = os.getenv(
@@ -3203,6 +3728,7 @@ async def setup_clients():
     MAIL_PASSWORD = os.getenv("MAIL_PASSWORD")
     MAIL_ATTACH = os.getenv("MAIL_ATTACH_URL")
     EXTERNAL_API_ENPOINT = os.getenv("EXTERNAL_API_ENPOINT")
+    SKIP_STARTUP_BOOTSTRAP = os.getenv("SKIP_STARTUP_BOOTSTRAP", "").lower() == "true"
 
     # Use the current user identity for keyless authentication to Azure services.
     # This assumes you use 'azd auth login' locally, and managed identity when deployed on Azure.
@@ -3263,6 +3789,7 @@ async def setup_clients():
 
     # Set up authentication helper
     search_index = None
+    search_index_stats = {"document_count": 0, "storage_size": 0}
     if AZURE_USE_AUTHENTICATION:
         current_app.logger.info(
             "AZURE_USE_AUTHENTICATION is true, setting up search index client")
@@ -3285,6 +3812,13 @@ async def setup_clients():
         enable_unauthenticated_access=AZURE_ENABLE_UNAUTHENTICATED_ACCESS,
     )
 
+    text_embeddings_service = create_embedding_service(
+        runtime_settings.embedding,
+        azure_credential,
+        disable_vectors=os.getenv("USE_VECTORS", "").lower() == "false",
+        disable_batch=os.getenv("OPENAI_EMB_DISABLE_BATCH", "").lower() == "true",
+    )
+
     if USE_USER_UPLOAD:
         current_app.logger.info(
             "USE_USER_UPLOAD is true, setting up user upload feature")
@@ -3304,6 +3838,8 @@ async def setup_clients():
             azure_credential=azure_credential,
             document_intelligence_service=os.getenv(
                 "AZURE_DOCUMENTINTELLIGENCE_SERVICE"),
+            document_intelligence_api_version=os.getenv(
+                "AZURE_DOCUMENTINTELLIGENCE_API_VERSION", "2024-11-30"),
             local_pdf_parser=os.getenv(
                 "USE_LOCAL_PDF_PARSER", "").lower() == "true",
             local_html_parser=os.getenv(
@@ -3312,19 +3848,6 @@ async def setup_clients():
         )
         search_info = await setup_search_info(
             search_service=AZURE_SEARCH_SERVICE, index_name=AZURE_SEARCH_INDEX, azure_credential=azure_credential
-        )
-        text_embeddings_service = setup_embeddings_service(
-            azure_credential=azure_credential,
-            openai_host=OPENAI_HOST,
-            openai_model_name=OPENAI_EMB_MODEL,
-            openai_service=AZURE_OPENAI_SERVICE,
-            openai_custom_url=AZURE_OPENAI_CUSTOM_URL,
-            openai_deployment=AZURE_OPENAI_EMB_DEPLOYMENT,
-            openai_dimensions=OPENAI_EMB_DIMENSIONS,
-            openai_api_version=AZURE_OPENAI_API_VERSION,
-            openai_key=clean_key_if_exists(OPENAI_API_KEY),
-            openai_org=OPENAI_ORGANIZATION,
-            disable_vectors=os.getenv("USE_VECTORS", "").lower() == "false",
         )
         ingester = UploadUserFileStrategy(
             search_info=search_info,
@@ -3352,54 +3875,28 @@ async def setup_clients():
         # Wait until token is needed to fetch for the first time
         current_app.config[CONFIG_SPEECH_SERVICE_TOKEN] = None
 
-    if OPENAI_HOST.startswith("azure"):
-        if OPENAI_HOST == "azure_custom":
-            current_app.logger.info(
-                "OPENAI_HOST is azure_custom, setting up Azure OpenAI custom client")
-            if not AZURE_OPENAI_CUSTOM_URL:
-                raise ValueError(
-                    "AZURE_OPENAI_CUSTOM_URL must be set when OPENAI_HOST is azure_custom")
-            endpoint = AZURE_OPENAI_CUSTOM_URL
-        else:
-            current_app.logger.info(
-                "OPENAI_HOST is azure, setting up Azure OpenAI client")
-            if not AZURE_OPENAI_SERVICE:
-                raise ValueError(
-                    "AZURE_OPENAI_SERVICE must be set when OPENAI_HOST is azure")
-            endpoint = f"https://{AZURE_OPENAI_SERVICE}.openai.azure.com"
-        if api_key := os.getenv("AZURE_OPENAI_API_KEY_OVERRIDE"):
-            current_app.logger.info(
-                "AZURE_OPENAI_API_KEY_OVERRIDE found, using as api_key for Azure OpenAI client")
-            openai_client = AsyncAzureOpenAI(
-                api_version=AZURE_OPENAI_API_VERSION, azure_endpoint=endpoint, api_key=api_key
-            )
-        else:
-            current_app.logger.info(
-                "Using Azure credential (passwordless authentication) for Azure OpenAI client")
-            token_provider = get_bearer_token_provider(
-                azure_credential, "https://cognitiveservices.azure.com/.default")
-            openai_client = AsyncAzureOpenAI(
-                api_version=AZURE_OPENAI_API_VERSION,
-                azure_endpoint=endpoint,
-                azure_ad_token_provider=token_provider,
-            )
-    elif OPENAI_HOST == "local":
-        current_app.logger.info(
-            "OPENAI_HOST is local, setting up local OpenAI client for OPENAI_BASE_URL with no key")
-        openai_client = AsyncOpenAI(
-            base_url=os.environ["OPENAI_BASE_URL"],
-            api_key="no-key-required",
-        )
-    else:
-        current_app.logger.info(
-            "OPENAI_HOST is not azure, setting up OpenAI client using OPENAI_API_KEY and OPENAI_ORGANIZATION environment variables"
-        )
-        openai_client = AsyncOpenAI(
-            api_key=OPENAI_API_KEY,
-            organization=OPENAI_ORGANIZATION,
-        )
+    current_app.logger.info(
+        "Setting up model providers: runtime=%s, llm=%s, embedding=%s",
+        runtime_settings.mode.value,
+        runtime_settings.llm.provider.value,
+        runtime_settings.embedding.provider.value,
+    )
+    llm_profiles = load_llm_profiles(os.environ, runtime_settings.llm)
+    if os.getenv("SKIP_MANAGED_LLM_PROVIDER_LOAD", "").lower() != "true":
+        try:
+            llm_profiles = _load_managed_profiles(llm_profiles)
+        except Exception:
+            current_app.logger.exception("Unable to load managed LLM providers; continuing with environment profiles")
+    openai_client = create_llm_client(runtime_settings.llm, azure_credential)
+    llm_profile_clients = {DEFAULT_LLM_PROFILE_ID: openai_client}
+    for profile_id, profile in llm_profiles.items():
+        if profile_id != DEFAULT_LLM_PROFILE_ID:
+            llm_profile_clients[profile_id] = create_llm_client(profile.settings, azure_credential)
 
     current_app.config[CONFIG_OPENAI_CLIENT] = openai_client
+    current_app.config[CONFIG_RUNTIME_SETTINGS] = runtime_settings
+    current_app.config[CONFIG_LLM_PROFILES] = llm_profiles
+    current_app.config[CONFIG_LLM_PROFILE_CLIENTS] = llm_profile_clients
     current_app.config[CONFIG_SEARCH_CLIENT] = search_client
     current_app.config[CONFIG_SEARCH_INDEX_CLIENT] = search_index_stats
     current_app.config[CONFIG_AGENT_CLIENT] = agent_client
@@ -3464,6 +3961,7 @@ async def setup_clients():
         query_speller=AZURE_SEARCH_QUERY_SPELLER,
         prompt_manager=prompt_manager,
         reasoning_effort=OPENAI_REASONING_EFFORT,
+        embedding_service=text_embeddings_service,
     )
 
     # ChatReadRetrieveReadApproach is used by /chat for multi-turn conversation
@@ -3487,6 +3985,7 @@ async def setup_clients():
         query_speller=AZURE_SEARCH_QUERY_SPELLER,
         prompt_manager=prompt_manager,
         reasoning_effort=OPENAI_REASONING_EFFORT,
+        embedding_service=text_embeddings_service,
     )
 
     if USE_GPT4V:
@@ -3528,6 +4027,7 @@ async def setup_clients():
             query_language=AZURE_SEARCH_QUERY_LANGUAGE,
             query_speller=AZURE_SEARCH_QUERY_SPELLER,
             prompt_manager=prompt_manager,
+            embedding_service=text_embeddings_service,
         )
 
         current_app.config[CONFIG_CHAT_VISION_APPROACH] = ChatReadRetrieveReadVisionApproach(
@@ -3550,7 +4050,12 @@ async def setup_clients():
             query_language=AZURE_SEARCH_QUERY_LANGUAGE,
             query_speller=AZURE_SEARCH_QUERY_SPELLER,
             prompt_manager=prompt_manager,
+            embedding_service=text_embeddings_service,
         )
+    if SKIP_STARTUP_BOOTSTRAP:
+        current_app.logger.info("Skipping application data bootstrap")
+        return
+
     system_permissions = get_all_permissions()
     if system_permissions == []:
         await insert_permissions()

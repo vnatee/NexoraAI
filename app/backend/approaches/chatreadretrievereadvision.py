@@ -16,6 +16,7 @@ from approaches.chatapproach import ChatApproach
 from approaches.promptmanager import PromptManager
 from core.authentication import AuthenticationHelper
 from core.imageshelper import fetch_image
+from prepdocslib.embeddings import OpenAIEmbeddings
 
 
 class ChatReadRetrieveReadVisionApproach(ChatApproach):
@@ -47,6 +48,7 @@ class ChatReadRetrieveReadVisionApproach(ChatApproach):
         vision_endpoint: str,
         vision_token_provider: Callable[[], Awaitable[str]],
         prompt_manager: PromptManager,
+        embedding_service: Optional[OpenAIEmbeddings] = None,
     ):
         self.search_client = search_client
         self.blob_container_client = blob_container_client
@@ -59,6 +61,7 @@ class ChatReadRetrieveReadVisionApproach(ChatApproach):
         self.embedding_deployment = embedding_deployment
         self.embedding_model = embedding_model
         self.embedding_dimensions = embedding_dimensions
+        self.embedding_service = embedding_service
         self.embedding_field = embedding_field
         self.sourcepage_field = sourcepage_field
         self.content_field = content_field
@@ -103,18 +106,33 @@ class ChatReadRetrieveReadVisionApproach(ChatApproach):
         query_messages = self.prompt_manager.render_prompt(
             self.query_rewrite_prompt, {"user_query": original_user_query, "past_messages": messages[:-1]}
         )
-        tools: list[ChatCompletionToolParam] = self.query_rewrite_tools
+        tools: list[ChatCompletionToolParam] | None = (
+            self.query_rewrite_tools if overrides.get("_llm_supports_tools", True) else None
+        )
+        query_params: dict[str, Any] = {
+            "temperature": 0.0,
+            "max_tokens": 100,
+            "n": 1,
+            "seed": seed,
+        }
+        if tools:
+            query_params["tools"] = tools
+        query_params = self.apply_chat_completion_policy(overrides, query_params)
+
+        custom_profile = overrides.get("_llm_profile_id") not in (None, "system")
+        llm_client = overrides.get("_llm_client", self.openai_client) if custom_profile else self.openai_client
+        query_model = (
+            overrides.get("_llm_deployment") or overrides.get("_llm_model")
+            if custom_profile
+            else self.chatgpt_deployment or self.chatgpt_model
+        )
 
         # STEP 1: Generate an optimized keyword search query based on the chat history and the last question
-        chat_completion: ChatCompletion = await self.openai_client.chat.completions.create(
+        chat_completion: ChatCompletion = await llm_client.chat.completions.create(
             messages=query_messages,
             # Azure OpenAI takes the deployment name as the model name
-            model=self.chatgpt_deployment if self.chatgpt_deployment else self.chatgpt_model,
-            temperature=0.0,  # Minimize creativity for search query generation
-            max_tokens=100,
-            n=1,
-            tools=tools,
-            seed=seed,
+            model=query_model,
+            **query_params,
         )
 
         query_text = self.get_search_query(chat_completion, original_user_query)
@@ -207,16 +225,28 @@ class ChatReadRetrieveReadVisionApproach(ChatApproach):
             ],
         )
 
+        answer_model = (
+            overrides.get("_llm_deployment") or overrides.get("_llm_model")
+            if custom_profile
+            else self.gpt4v_deployment or self.gpt4v_model
+        )
+        answer_params = self.apply_chat_completion_policy(
+            overrides,
+            {
+                "temperature": overrides.get("temperature", 0.3),
+                "max_tokens": 1024,
+                "n": 1,
+                "stream": should_stream,
+                "stream_options": {"include_usage": True},
+                "seed": seed,
+            },
+        )
         chat_coroutine = cast(
             Union[Awaitable[ChatCompletion], Awaitable[AsyncStream[ChatCompletionChunk]]],
-            self.openai_client.chat.completions.create(
-                model=self.gpt4v_deployment if self.gpt4v_deployment else self.gpt4v_model,
+            llm_client.chat.completions.create(
+                model=answer_model,
                 messages=messages,
-                temperature=overrides.get("temperature", 0.3),
-                max_tokens=1024,
-                n=1,
-                stream=should_stream,
-                seed=seed,
+                **answer_params,
             ),
         )
         return (extra_info, chat_coroutine)

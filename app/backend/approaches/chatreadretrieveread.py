@@ -16,6 +16,7 @@ from approaches.approach import DataPoints, ExtraInfo, ThoughtStep
 from approaches.chatapproach import ChatApproach
 from approaches.promptmanager import PromptManager
 from core.authentication import AuthenticationHelper
+from prepdocslib.embeddings import OpenAIEmbeddings
 
 
 class ChatReadRetrieveReadApproach(ChatApproach):
@@ -47,6 +48,7 @@ class ChatReadRetrieveReadApproach(ChatApproach):
         query_speller: str,
         prompt_manager: PromptManager,
         reasoning_effort: Optional[str] = None,
+        embedding_service: Optional[OpenAIEmbeddings] = None,
     ):
         self.search_client = search_client
         self.search_index_name = search_index_name
@@ -60,6 +62,7 @@ class ChatReadRetrieveReadApproach(ChatApproach):
         self.embedding_deployment = embedding_deployment
         self.embedding_model = embedding_model
         self.embedding_dimensions = embedding_dimensions
+        self.embedding_service = embedding_service
         self.embedding_field = embedding_field
         self.sourcepage_field = sourcepage_field
         self.content_field = content_field

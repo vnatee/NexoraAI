@@ -216,14 +216,16 @@ class OpenAIEmbeddingService(OpenAIEmbeddings):
         open_ai_dimensions: int,
         credential: str,
         organization: Optional[str] = None,
+        base_url: Optional[str] = None,
         disable_batch: bool = False,
     ):
         super().__init__(open_ai_model_name, open_ai_dimensions, disable_batch)
         self.credential = credential
         self.organization = organization
+        self.base_url = base_url
 
     async def create_client(self) -> AsyncOpenAI:
-        return AsyncOpenAI(api_key=self.credential, organization=self.organization)
+        return AsyncOpenAI(api_key=self.credential, organization=self.organization, base_url=self.base_url)
 
 
 class ImageEmbeddings:

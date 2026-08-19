@@ -111,7 +111,7 @@ async def test_upload_file(auth_client, monkeypatch, mock_data_lake_service_clie
 async def test_list_uploaded(auth_client, monkeypatch, mock_data_lake_service_client):
     response = await auth_client.get("/list_uploaded", headers={"Authorization": "Bearer test"})
     assert response.status_code == 200
-    assert (await response.get_json()) == ["a.txt", "b.txt", "c.txt"]
+    assert (await response.get_json()) == [["a.txt", 1], ["b.txt", 1], ["c.txt", 1]]
 
 
 @pytest.mark.asyncio

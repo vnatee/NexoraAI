@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from typing import Optional
 
 from azure.core.credentials import AzureKeyCredential
@@ -14,12 +15,19 @@ from .strategy import DocumentAction, SearchInfo, Strategy
 logger = logging.getLogger("scripts")
 
 
+@dataclass(frozen=True)
+class ParsedFile:
+    sections: list[Section]
+    used_document_intelligence: bool
+    page_count: int
+
+
 async def parse_file(
     file: File,
     file_processors: dict[str, FileProcessor],
     category: Optional[str] = None,
     image_embeddings: Optional[ImageEmbeddings] = None,
-) -> list[Section]:
+) -> ParsedFile:
     key = file.file_extension().lower()
     processor = file_processors.get(key)
     is_docintel = 'DocumentAnalysisParser' in str(processor)
@@ -35,7 +43,11 @@ async def parse_file(
     sections = [
         Section(split_page, content=file, category=category) for split_page in processor.splitter.split_pages(pages)
     ]
-    return sections,is_docintel,docintel_pages
+    return ParsedFile(
+        sections=sections,
+        used_document_intelligence=is_docintel,
+        page_count=docintel_pages,
+    )
 
 
 class FileStrategy(Strategy):
@@ -104,7 +116,8 @@ class FileStrategy(Strategy):
             files = self.list_file_strategy.list()
             async for file in files:
                 try:
-                    sections = await parse_file(file, self.file_processors, self.category, self.image_embeddings)
+                    parsed_file = await parse_file(file, self.file_processors, self.category, self.image_embeddings)
+                    sections = parsed_file.sections
                     if sections:
                         blob_sas_uris = await self.blob_manager.upload_blob(file)
                         blob_image_embeddings: Optional[list[list[float]]] = None
@@ -155,18 +168,20 @@ class UploadUserFileStrategy:
     async def add_file(self, file: File):
         if self.image_embeddings:
             logging.warning("Image embeddings are not currently supported for the user upload feature")
-        sections,is_docintel,count = await parse_file(file, self.file_processors)
-        if sections:
-            await self.search_manager.update_content(sections, url=file.url)
-        return is_docintel,count
+        parsed_file = await parse_file(file, self.file_processors)
+        if not parsed_file.sections:
+            raise ValueError(f"No searchable content was extracted from {file.filename()}")
+        await self.search_manager.update_content(parsed_file.sections, url=file.url)
+        return parsed_file.used_document_intelligence, parsed_file.page_count
 
     async def add_global_file(self, file: File, folder = ""):
         if self.image_embeddings:
             logging.warning("Image embeddings are not currently supported for the user upload feature")
-        sections,is_docintel,count = await parse_file(file, self.file_processors)
-        if sections:
-            await self.search_manager.update_global_content(sections, url=file.url,folder=folder)
-        return is_docintel,count
+        parsed_file = await parse_file(file, self.file_processors)
+        if not parsed_file.sections:
+            raise ValueError(f"No searchable content was extracted from {file.filename()}")
+        await self.search_manager.update_global_content(parsed_file.sections, url=file.url,folder=folder)
+        return parsed_file.used_document_intelligence, parsed_file.page_count
 
     async def remove_file(self, filename: str, oid: str):
         if filename is None or filename == "":

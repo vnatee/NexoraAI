@@ -105,6 +105,10 @@ export type ChatAppRequest = {
 };
 
 export type Config = {
+    runtimeMode?: "azure" | "local";
+    llmProvider?: string;
+    embeddingProvider?: string;
+    llmProfiles: LLMProfile[];
     defaultReasoningEffort: string;
     showGPT4VOptions: boolean;
     showSemanticRankerOption: boolean;
@@ -120,6 +124,63 @@ export type Config = {
     showChatHistoryBrowser: boolean;
     showChatHistoryCosmos: boolean;
     showAgenticRetrievalOption: boolean;
+};
+
+export type LLMProfile = {
+    id: string;
+    label: string;
+    provider: string;
+    model: string;
+    managedProviderId?: string;
+    managedModelId?: string;
+    supportsTools?: boolean;
+};
+
+export type LLMProviderModel = {
+    id: string;
+    label: string;
+    model: string;
+    deployment?: string | null;
+    supports_tools?: boolean;
+};
+
+export type LLMVendor =
+    | "azure_openai"
+    | "openai"
+    | "google_gemini"
+    | "anthropic_claude"
+    | "ollama"
+    | "groq"
+    | "openrouter"
+    | "mistral"
+    | "deepseek"
+    | "together"
+    | "vllm"
+    | "localai"
+    | "other_openai_compatible";
+
+export type LLMProviderAdapter = "azure_openai" | "openai" | "openai_compatible";
+
+export type ManagedLLMProvider = {
+    _id: string;
+    name: string;
+    vendor: LLMVendor;
+    vendor_label: string;
+    provider: LLMProviderAdapter;
+    endpoint?: string | null;
+    base_url?: string | null;
+    api_version?: string | null;
+    organization?: string | null;
+    models: LLMProviderModel[];
+    enabled: boolean;
+    has_api_key: boolean;
+    create_at?: string | null;
+    update_at?: string | null;
+};
+
+export type LLMProviderPayload = Omit<ManagedLLMProvider, "_id" | "vendor_label" | "has_api_key" | "create_at" | "update_at"> & {
+    api_key?: string;
+    clear_api_key?: boolean;
 };
 
 export type SimpleAPIResponse = {
@@ -214,6 +275,9 @@ export interface AgentConfig {
     min_search_score?: number;
     max_search_results?: number;
     max_tokens?: number | null;
+    llm_profile_id?: string;
+    runtime?: "legacy" | "langgraph";
+    tool_settings?: AgentToolSettings;
 
     create_at?: string;
     update_at?: string;
@@ -300,6 +364,17 @@ export interface AgentConf {
     min_search_score?: number;
     max_search_results?: number;
     max_tokens?: number | null;
+    llm_profile_id?: string;
+    runtime?: "legacy" | "langgraph";
+    tool_settings?: AgentToolSettings;
+}
+
+export interface AgentToolSettings {
+    knowledge_search: "auto" | "always" | "disabled";
+    external_database: boolean;
+    rest_integrations: boolean;
+    mcp: boolean;
+    subagents: boolean;
 }
 
 export interface Prompt {
@@ -411,6 +486,15 @@ export interface DatabaseBindingData {
     alias: string;
     trigger_keywords: string[];
     enabled: boolean;
+    query_profile?: DatabaseQueryProfile;
+}
+
+export interface DatabaseQueryProfile {
+    business_context: string;
+    business_rules: string;
+    glossary: string;
+    allowed_objects: string[];
+    query_examples: { question: string; query: string }[];
 }
 
 export interface MailBindingData {
@@ -429,11 +513,29 @@ export interface MailBindingData {
 
 // ─── Chart Capability Binding ────────────────────────────────────────────────
 export type ChartType =
-    | "bar" | "line" | "pie" | "area" | "scatter"
-    | "radar" | "heatmap" | "treemap" | "sunburst" | "gauge"
-    | "funnel" | "boxplot" | "candlestick" | "sankey" | "graph"
-    | "bar3D" | "line3D" | "scatter3D" | "surface"
-    | "pictorialBar" | "parallel" | "themeRiver" | "calendar";
+    | "bar"
+    | "line"
+    | "pie"
+    | "area"
+    | "scatter"
+    | "radar"
+    | "heatmap"
+    | "treemap"
+    | "sunburst"
+    | "gauge"
+    | "funnel"
+    | "boxplot"
+    | "candlestick"
+    | "sankey"
+    | "graph"
+    | "bar3D"
+    | "line3D"
+    | "scatter3D"
+    | "surface"
+    | "pictorialBar"
+    | "parallel"
+    | "themeRiver"
+    | "calendar";
 
 export type ChartSelectionMode = "auto" | "manual";
 
@@ -443,7 +545,7 @@ export interface ChartBindingData {
     enabled: boolean;
     // v2 fields
     chart_selection_mode: ChartSelectionMode; // "auto" = LLM เลือกเอง, "manual" = enforce allowed list
-    auto_generate: boolean;                   // true = สร้างอัตโนมัติเมื่อมีข้อมูล, false = รอ user สั่ง
+    auto_generate: boolean; // true = สร้างอัตโนมัติเมื่อมีข้อมูล, false = รอ user สั่ง
     // shared styling
     color_palette?: string[];
     title_template?: string;
@@ -457,8 +559,33 @@ export interface ChartBindingData {
 //    เก็บ mui-x-charts native props ตรงๆ เพื่อ spread ลง component ได้ทันที
 export interface ChartSpec {
     chartType: ChartType;
+    data?: ChartDataAudit;
     // native props ที่จะ spread ลง component ตรงๆ เช่น { dataset, series, xAxis, height }
     [key: string]: any;
+}
+
+export interface ChartDataAudit {
+    sourceTool: string;
+    sourceType: string;
+    categoryField: string;
+    valueFields: string[];
+    columns: string[];
+    rows: Array<Record<string, unknown>>;
+    rowCount: number;
+    sourceRowCount: number;
+    sourceRecordCount?: number;
+    aggregateRowCount?: number;
+    fullDataset?: boolean;
+    resultTruncated?: boolean;
+    aggregation?: {
+        type?: string;
+        method?: string;
+        aggregation?: string;
+        metric?: string;
+        statistic?: string;
+        [key: string]: unknown;
+    };
+    query?: string | Record<string, unknown>;
 }
 
 export interface AuthConfig {
@@ -484,7 +611,14 @@ export interface ExternalApi {
     endpoints: Endpoint[];
 }
 
-export type DbType = "postgresql" | "mysql" | "mssql" | "mongodb";
+export type DbType = "postgresql" | "mysql" | "mssql" | "mongodb" | "sqlite";
+
+export interface DatabaseConnectionOptions {
+    ssl_mode?: "disable" | "prefer" | "require" | "verify-ca" | "verify-full";
+    auth_source?: string;
+    tls?: boolean;
+    connect_timeout_seconds?: number;
+}
 
 export interface DatabaseConnection {
     _id: string;
@@ -496,6 +630,8 @@ export interface DatabaseConnection {
     database: string;
     username: string;
     password?: string;
+    has_password?: boolean;
+    options?: DatabaseConnectionOptions;
 }
 
 export type MailProtocol = "SMTP" | "IMAP";

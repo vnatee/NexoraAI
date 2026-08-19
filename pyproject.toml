@@ -13,6 +13,10 @@ line-length = 120
 [tool.pytest.ini_options]
 addopts = "-ra"
 pythonpath = ["app/backend", "scripts"]
+markers = [
+    "data_integration: tests that parse repository data files and may vary with the data set",
+    "external_integration: tests that require live external services",
+]
 
 [tool.coverage.paths]
 source = ["scripts", "app"]

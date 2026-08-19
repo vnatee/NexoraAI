@@ -154,7 +154,7 @@ async def test_figure_to_html_with_bounding_regions(monkeypatch, caplog):
 async def test_parse_simple(monkeypatch):
     mock_poller = MagicMock()
 
-    async def mock_begin_analyze_document(self, model_id, analyze_request, **kwargs):
+    async def mock_begin_analyze_document(self, model_id, body, **kwargs):
         return mock_poller
 
     async def mock_poller_result():
@@ -185,7 +185,7 @@ async def test_parse_simple(monkeypatch):
 async def test_parse_doc_with_tables(monkeypatch):
     mock_poller = MagicMock()
 
-    async def mock_begin_analyze_document(self, model_id, analyze_request, **kwargs):
+    async def mock_begin_analyze_document(self, model_id, body, **kwargs):
         return mock_poller
 
     async def mock_poller_result():
@@ -260,7 +260,7 @@ async def test_parse_doc_with_tables(monkeypatch):
 async def test_parse_doc_with_figures(monkeypatch):
     mock_poller = MagicMock()
 
-    async def mock_begin_analyze_document(self, model_id, analyze_request, **kwargs):
+    async def mock_begin_analyze_document(self, model_id, body, **kwargs):
         return mock_poller
 
     async def mock_poller_result():
@@ -316,7 +316,7 @@ async def test_parse_doc_with_figures(monkeypatch):
 async def test_parse_unsupportedformat(monkeypatch, caplog):
     mock_poller = MagicMock()
 
-    async def mock_begin_analyze_document(self, model_id, analyze_request, **kwargs):
+    async def mock_begin_analyze_document(self, model_id, body, **kwargs):
 
         if kwargs.get("features") == ["ocrHighResolution"]:
 

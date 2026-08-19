@@ -9,6 +9,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 from approaches.approach import Approach, DataPoints, ExtraInfo, ThoughtStep
 from approaches.promptmanager import PromptManager
 from core.authentication import AuthenticationHelper
+from prepdocslib.embeddings import OpenAIEmbeddings
 
 
 class RetrieveThenReadApproach(Approach):
@@ -40,6 +41,7 @@ class RetrieveThenReadApproach(Approach):
         query_speller: str,
         prompt_manager: PromptManager,
         reasoning_effort: Optional[str] = None,
+        embedding_service: Optional[OpenAIEmbeddings] = None,
     ):
         self.search_client = search_client
         self.search_index_name = search_index_name
@@ -52,6 +54,7 @@ class RetrieveThenReadApproach(Approach):
         self.chatgpt_model = chatgpt_model
         self.embedding_model = embedding_model
         self.embedding_dimensions = embedding_dimensions
+        self.embedding_service = embedding_service
         self.chatgpt_deployment = chatgpt_deployment
         self.embedding_deployment = embedding_deployment
         self.embedding_field = embedding_field

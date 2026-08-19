@@ -149,23 +149,49 @@ class AuthenticationHelper:
             raise AuthError(
                 error="oids and groups must be defined in the search index to use authentication", status_code=400
             )
-        try:
-            data_groups_id = auth_claims.get('data_groups_id',None)
-            selected_scopes = auth_claims.get('selected_scopes',None)
-            filter_list = []
-            if selected_scopes != []:
-                if "personal" in selected_scopes:
-                    oid_security_filter = ("(oids/any(g:search.in(g, '{}')))".format(auth_claims.get("oid", "")) if use_oid_security_filter else None)
-                    filter_list.append(oid_security_filter)
-                if "global" in selected_scopes:
-                    global_security_filter = "(not oids/any() and not groups/any())"
-                    filter_list.append(global_security_filter)
-            if data_groups_id != []:          
-                groups_security_filter = "(not oids/any() and groups/any(g:search.in(g, '{}')))".format(", ".join(data_groups_id))
-                filter_list.append(groups_security_filter)
-            return " or ".join(filter_list)
-        except Exception:
-            return "oids/any() and groups/any()"
+        # The custom UI explicitly sends selected_scopes/data_groups_id. Keep that
+        # flow separate from the original Entra oid/group ACL behavior so callers
+        # that do not send UI scope selection still receive the standard filter.
+        has_scope_selection = "selected_scopes" in auth_claims or "data_groups_id" in auth_claims
+        if has_scope_selection:
+            selected_scopes = auth_claims.get("selected_scopes") or []
+            data_group_ids = auth_claims.get("data_groups_id") or []
+            filters: list[str] = []
+
+            if "personal" in selected_scopes and use_oid_security_filter:
+                filters.append("oids/any(g:search.in(g, '{}'))".format(auth_claims.get("oid", "")))
+            if "global" in selected_scopes:
+                filters.append("(not oids/any() and not groups/any())")
+            if data_group_ids:
+                filters.append(
+                    "(not oids/any() and groups/any(g:search.in(g, '{}')))".format(", ".join(data_group_ids))
+                )
+
+            # An explicit empty selection must not fall back to an unrestricted
+            # query. This expression matches no document in an ACL-enabled index.
+            if len(filters) > 1:
+                return f"({' or '.join(filters)})"
+            return filters[0] if filters else "(oids/any() and not oids/any())"
+
+        oid_security_filter = (
+            "oids/any(g:search.in(g, '{}'))".format(auth_claims.get("oid", ""))
+            if use_oid_security_filter
+            else None
+        )
+        groups_security_filter = (
+            "groups/any(g:search.in(g, '{}'))".format(", ".join(auth_claims.get("groups", [])))
+            if use_groups_security_filter
+            else None
+        )
+
+        if oid_security_filter and groups_security_filter:
+            security_filter = f"({oid_security_filter} or {groups_security_filter})"
+        else:
+            security_filter = oid_security_filter or groups_security_filter
+
+        if security_filter and self.enable_global_documents:
+            return f"({security_filter} or (not oids/any() and not groups/any()))"
+        return security_filter
 
        
 
@@ -248,9 +274,9 @@ class AuthenticationHelper:
 
     async def check_path_auth(self, path: str, auth_claims: dict[str, Any], search_client: SearchClient) -> bool:
         # Start with the standard security filter for all queries
-        # security_filter = self.build_security_filters(overrides={}, auth_claims=auth_claims)
+        security_filter = self.build_security_filters(overrides={}, auth_claims=auth_claims)
         # If there was no security filter or no path, then the path is allowed
-        if len(path) == 0:
+        if not security_filter or len(path) == 0:
             return True
 
         # Remove any fragment string from the path before checking
@@ -263,8 +289,7 @@ class AuthenticationHelper:
         # Replace ' with '' to escape the single quote for the filter
         # https://learn.microsoft.com/azure/search/query-odata-filter-orderby-syntax#escaping-special-characters-in-string-constants
         path_for_filter = path.replace("'", "''")
-        #filter = f"{security_filter} and ((sourcefile eq '{path_for_filter}') or (sourcepage eq '{path_for_filter}'))"
-        filter = f"((sourcefile eq '{path_for_filter}') or (sourcepage eq '{path_for_filter}'))"
+        filter = f"{security_filter} and ((sourcefile eq '{path_for_filter}') or (sourcepage eq '{path_for_filter}'))"
 
         # If the filter returns any results, the user is allowed to access the document
         # Otherwise, access is denied

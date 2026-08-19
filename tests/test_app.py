@@ -329,6 +329,33 @@ async def test_chat_stream_request_must_be_json(client):
 
 
 @pytest.mark.asyncio
+async def test_chat_stream_keeps_app_context_while_generator_runs(client, monkeypatch):
+    from quart import current_app
+
+    monkeypatch.setattr(app, "_use_langgraph_runtime", lambda agent_id: True)
+    monkeypatch.setattr(app, "get_agent_by_id", lambda agent_id: {"config": {}})
+    monkeypatch.setattr(app, "get_enabled_chart_bindings_by_agent_id", lambda agent_id: [])
+
+    async def contextual_stream(**kwargs):
+        # The response body is consumed after the route has returned. This access
+        # reproduces the production failure if stream_with_context is removed.
+        yield {"delta": {"role": "assistant", "content": current_app.name}}
+
+    monkeypatch.setattr(app, "_run_langgraph_as_chat_stream", contextual_stream)
+
+    response = await client.post(
+        "/chat/stream",
+        json={
+            "agent_id": "agent-context-test",
+            "messages": [{"content": "hello", "role": "user"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert b'"content": "app"' in await response.get_data()
+
+
+@pytest.mark.asyncio
 async def test_chat_handle_exception(client, monkeypatch, snapshot, caplog):
     monkeypatch.setattr(
         "approaches.chatreadretrieveread.ChatReadRetrieveReadApproach.run",

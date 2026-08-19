@@ -173,6 +173,7 @@ def setup_file_processors(
     azure_credential: AsyncTokenCredential,
     document_intelligence_service: Union[str, None],
     document_intelligence_key: Union[str, None] = None,
+    document_intelligence_api_version: str = "2024-11-30",
     local_pdf_parser: bool = False,
     local_html_parser: bool = False,
     search_images: bool = False,
@@ -190,6 +191,7 @@ def setup_file_processors(
         doc_int_parser = DocumentAnalysisParser(
             endpoint=f"https://{document_intelligence_service}.cognitiveservices.azure.com/",
             credential=documentintelligence_creds,
+            api_version=document_intelligence_api_version,
             use_content_understanding=use_content_understanding,
             content_understanding_endpoint=content_understanding_endpoint,
         )
