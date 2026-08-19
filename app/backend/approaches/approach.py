@@ -35,6 +35,8 @@ from openai.types.chat import (
 
 from approaches.promptmanager import PromptManager
 from core.authentication import AuthenticationHelper
+from core.llm_vendors import apply_llm_vendor_chat_policy
+from prepdocslib.embeddings import OpenAIEmbeddings
 
 
 @dataclass
@@ -360,7 +362,7 @@ class Approach(ABC):
                 try:
                     page_number = int(path[page_idx + 1 :])
                     return f"{path[:page_idx]}.pdf#page={page_number}"
-                except Exception as e:
+                except Exception:
                     return sourcepage
             elif "||" in str(sourcepage):
                 new_source = sourcepage.split("||")[-1].replace(".txt","").replace("_","/")
@@ -368,6 +370,11 @@ class Approach(ABC):
             return sourcepage
 
     async def compute_text_embedding(self, q: str):
+        embedding_service: Optional[OpenAIEmbeddings] = getattr(self, "embedding_service", None)
+        if embedding_service is not None:
+            vectors = await embedding_service.create_embeddings([q])
+            return VectorizedQuery(vector=vectors[0], k_nearest_neighbors=50, fields=self.embedding_field)
+
         SUPPORTED_DIMENSIONS_MODEL = {
             "text-embedding-ada-002": False,
             "text-embedding-3-small": True,
@@ -378,7 +385,9 @@ class Approach(ABC):
             dimensions: int
 
         dimensions_args: ExtraArgs = (
-            {"dimensions": self.embedding_dimensions} if SUPPORTED_DIMENSIONS_MODEL[self.embedding_model] else {}
+            {"dimensions": self.embedding_dimensions}
+            if SUPPORTED_DIMENSIONS_MODEL.get(self.embedding_model, False)
+            else {}
         )
         embedding = await self.openai_client.embeddings.create(
             # Azure OpenAI takes the deployment name as the model name
@@ -422,6 +431,11 @@ class Approach(ABC):
 
         return default_limit
 
+    def apply_chat_completion_policy(
+        self, overrides: dict[str, Any], params: dict[str, Any]
+    ) -> dict[str, Any]:
+        return apply_llm_vendor_chat_policy(overrides.get("_llm_vendor"), params)
+
     def create_chat_completion(
         self,
         chatgpt_deployment: Optional[str],
@@ -435,7 +449,13 @@ class Approach(ABC):
         n: Optional[int] = None,
         reasoning_effort: Optional[ChatCompletionReasoningEffort] = None,
     ) -> Union[Awaitable[ChatCompletion], Awaitable[AsyncStream[ChatCompletionChunk]]]:
-        if chatgpt_model in self.GPT_REASONING_MODELS:
+        effective_client = overrides.get("_llm_client", self.openai_client)
+        effective_model = overrides.get("_llm_model") or chatgpt_model
+        effective_deployment = overrides.get("_llm_deployment")
+        if "_llm_deployment" not in overrides:
+            effective_deployment = chatgpt_deployment
+
+        if effective_model in self.GPT_REASONING_MODELS:
             if overrides.get("max_tokens"):
                 params: dict[str, Any] = {
                 # max_tokens is not supported
@@ -448,7 +468,7 @@ class Approach(ABC):
                 }  
 
             # Adjust parameters for reasoning models
-            supported_features = self.GPT_REASONING_MODELS[chatgpt_model]
+            supported_features = self.GPT_REASONING_MODELS[effective_model]
             if supported_features.streaming and should_stream:
                 params["stream"] = True
                 params["stream_options"] = {"include_usage": True}
@@ -456,28 +476,34 @@ class Approach(ABC):
 
         else:
             # Include parameters that may not be supported for reasoning models
+            effective_temperature = (
+                temperature if temperature is not None else overrides.get("temperature", 0.3)
+            )
             if overrides.get("max_tokens"):
                 params = {
                     "max_tokens": int(overrides.get("max_tokens")),
-                    "temperature": temperature or overrides.get("temperature", 0.3),
+                    "temperature": effective_temperature,
                 }
             else:               
                 params = {
                     "max_tokens": response_token_limit,
-                    "temperature": temperature or overrides.get("temperature", 0.3),
+                    "temperature": effective_temperature,
                 }
         if should_stream:
             params["stream"] = True
             params["stream_options"] = {"include_usage": True}
 
-        params["tools"] = tools
+        if tools and overrides.get("_llm_supports_tools", True):
+            params["tools"] = tools
+
+        params["seed"] = overrides.get("seed")
+        params["n"] = n if n is not None else 1
+        params = self.apply_chat_completion_policy(overrides, params)
 
         # Azure OpenAI takes the deployment name as the model name
-        return self.openai_client.chat.completions.create(
-            model=chatgpt_deployment if chatgpt_deployment else chatgpt_model,
+        return effective_client.chat.completions.create(
+            model=effective_deployment if effective_deployment else effective_model,
             messages=messages,
-            seed=overrides.get("seed", None),
-            n=n or 1,
             **params,
         )
 
@@ -491,11 +517,15 @@ class Approach(ABC):
         usage: Optional[CompletionUsage] = None,
         reasoning_effort: Optional[ChatCompletionReasoningEffort] = None,
     ) -> ThoughtStep:
-        properties: dict[str, Any] = {"model": model}
-        if deployment:
-            properties["deployment"] = deployment
+        effective_model = overrides.get("_llm_model") or model
+        effective_deployment = overrides.get("_llm_deployment") if "_llm_deployment" in overrides else deployment
+        properties: dict[str, Any] = {"model": effective_model}
+        if effective_deployment:
+            properties["deployment"] = effective_deployment
+        if overrides.get("_llm_profile_id") not in (None, "system"):
+            properties["llm_profile_id"] = overrides["_llm_profile_id"]
         # Only add reasoning_effort setting if the model supports it
-        if model in self.GPT_REASONING_MODELS:
+        if effective_model in self.GPT_REASONING_MODELS:
             properties["reasoning_effort"] = reasoning_effort or overrides.get(
                 "reasoning_effort", self.reasoning_effort
             )

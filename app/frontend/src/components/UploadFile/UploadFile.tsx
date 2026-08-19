@@ -95,7 +95,7 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
             if (!idToken) {
                 throw new Error("No authentication token available");
             }
-            listUploadedFiles(idToken);
+            await listUploadedFiles(idToken);
             fetchLimitSizeConf();
         } catch (error) {
             console.error(error);
@@ -104,7 +104,8 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
     };
 
     const listUploadedFiles = async (idToken: string) => {
-        listUploadedFilesApi(idToken).then(raw => {
+        try {
+            const raw = await listUploadedFilesApi(idToken);
             setIsLoading(false);
             setDeletionStatus({});
 
@@ -127,11 +128,15 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
 
             setStoredSize(sum);
             setTotalUsed(sum + newSize);
-        });
+        } catch (error) {
+            console.error(error);
+            setIsLoading(false);
+            throw error;
+        }
     };
 
     const handleRemoveFile = async (filename: string) => {
-        setDeletionStatus({ ...deletionStatus, [filename]: "pending" });
+        setDeletionStatus(current => ({ ...current, [filename]: "pending" }));
         setDeletingFile(filename);
         try {
             const idToken = await getToken(client);
@@ -140,14 +145,17 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
             }
 
             await deleteUploadedFileApi(filename, idToken);
-            setDeletionStatus({ ...deletionStatus, [filename]: "success" });
+            setDeletionStatus(current => ({ ...current, [filename]: "success" }));
             setMessage(`Deleted: ${filename}`);
             setOpenDeleteSuccess(true);
-            listUploadedFiles(idToken);
+            await listUploadedFiles(idToken);
         } catch (error) {
-            setDeletionStatus({ ...deletionStatus, [filename]: "error" });
+            setDeletionStatus(current => ({ ...current, [filename]: "error" }));
             setMessage(`Failed to delete: ${filename}`);
             setOpenDeleteError(true);
+        } finally {
+            setDeletingFile(null);
+            setConfirmingDelete(null);
         }
     };
 
@@ -179,7 +187,7 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
             setIsUploading(false);
             setUploadedFileError(undefined);
             setOpenSuccess(true);
-            listUploadedFiles(idToken);
+            await listUploadedFiles(idToken);
         } catch (error) {
             console.error(error);
             setIsUploading(false);
@@ -323,9 +331,9 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
                                 <Typography>{t("upload.noFilesUploaded")}</Typography>
                             ) : (
                                 <Stack spacing={1}>
-                                    {uploadedFiles.map(([file, size], i) => (
+                                    {uploadedFiles.map(([file, size]) => (
                                         <Paper
-                                            key={i}
+                                            key={file}
                                             elevation={1}
                                             sx={{
                                                 p: 1.5,

@@ -1,3 +1,4 @@
+import json
 import os
 from unittest import mock
 
@@ -12,12 +13,18 @@ def minimal_env(monkeypatch):
     with mock.patch.dict(os.environ, clear=True):
         monkeypatch.setenv("AZURE_STORAGE_ACCOUNT", "test-storage-account")
         monkeypatch.setenv("AZURE_STORAGE_CONTAINER", "test-storage-container")
+        monkeypatch.setenv("AZURE_WEB_STORAGE_CONTAINER", "test-web-storage-container")
+        monkeypatch.setenv("AZURE_WEB_GROUP_STORAGE_CONTAINER", "test-web-group-storage-container")
+        monkeypatch.setenv("AZURE_GROUP_STORAGE_CONTAINER", "test-group-storage-container")
         monkeypatch.setenv("AZURE_SEARCH_INDEX", "test-search-index")
         monkeypatch.setenv("AZURE_SEARCH_SERVICE", "test-search-service")
         monkeypatch.setenv("AZURE_OPENAI_SERVICE", "test-openai-service")
         monkeypatch.setenv("AZURE_OPENAI_CHATGPT_MODEL", "gpt-4.1-mini")
         monkeypatch.setenv("AZURE_OPENAI_EMB_MODEL_NAME", "text-embedding-3-large")
         monkeypatch.setenv("AZURE_OPENAI_EMB_DIMENSIONS", "3072")
+        monkeypatch.setenv("SKIP_STARTUP_BOOTSTRAP", "true")
+        monkeypatch.setenv("SKIP_MANAGED_LLM_PROVIDER_LOAD", "true")
+        monkeypatch.setenv("DISABLE_USAGE_PERSISTENCE", "true")
         yield
 
 
@@ -30,6 +37,70 @@ async def test_app_local_openai(monkeypatch, minimal_env):
     async with quart_app.test_app():
         assert quart_app.config[app.CONFIG_OPENAI_CLIENT].api_key == "no-key-required"
         assert quart_app.config[app.CONFIG_OPENAI_CLIENT].base_url == "http://localhost:5000"
+
+
+@pytest.mark.asyncio
+async def test_app_independent_local_model_providers(monkeypatch, minimal_env):
+    monkeypatch.setenv("APP_RUNTIME_MODE", "local")
+    monkeypatch.setenv("LLM_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("LLM_BASE_URL", "http://llm:8000/v1")
+    monkeypatch.setenv("LLM_MODEL", "qwen-chat")
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "openai_compatible")
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "http://embedding:8001/v1")
+    monkeypatch.setenv("EMBEDDING_MODEL", "qwen-embedding")
+    monkeypatch.setenv("EMBEDDING_DIMENSIONS", "1024")
+
+    quart_app = app.create_app()
+    async with quart_app.test_app() as test_app:
+        response = await test_app.test_client().get("/config")
+        result = await response.get_json()
+
+        assert result["runtimeMode"] == "local"
+        assert result["llmProvider"] == "openai_compatible"
+        assert result["embeddingProvider"] == "openai_compatible"
+        assert quart_app.config[app.CONFIG_OPENAI_CLIENT].base_url == "http://llm:8000/v1/"
+        assert quart_app.config[app.CONFIG_ASK_APPROACH].embedding_service.base_url == "http://embedding:8001/v1"
+
+
+@pytest.mark.asyncio
+async def test_app_exposes_safe_agent_llm_profiles(monkeypatch, minimal_env):
+    monkeypatch.setenv(
+        "LLM_PROFILES_JSON",
+        json.dumps(
+            [
+                {
+                    "id": "local-qwen",
+                    "label": "Local Qwen",
+                    "provider": "openai_compatible",
+                    "model": "qwen3",
+                    "base_url": "http://ollama:11434/v1",
+                }
+            ]
+        ),
+    )
+
+    quart_app = app.create_app()
+    async with quart_app.test_app() as test_app:
+        response = await test_app.test_client().get("/config")
+        result = await response.get_json()
+
+        assert result["llmProfiles"] == [
+            {
+                "id": "system",
+                "label": "System default",
+                "provider": "azure_openai",
+                "model": "gpt-4.1-mini",
+                "supportsTools": True,
+            },
+            {
+                "id": "local-qwen",
+                "label": "Local Qwen",
+                "provider": "openai_compatible",
+                "model": "qwen3",
+                "supportsTools": True,
+            },
+        ]
+        assert quart_app.config[app.CONFIG_LLM_PROFILE_CLIENTS]["local-qwen"].base_url == "http://ollama:11434/v1/"
 
 
 @pytest.mark.asyncio

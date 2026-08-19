@@ -76,6 +76,22 @@ class SearchManager:
         self.field_name_embedding = field_name_embedding
         self.search_images = search_images
 
+    @staticmethod
+    def _ensure_indexing_succeeded(results) -> None:
+        """Raise when Azure Search accepts a batch request but rejects documents."""
+        if results is None:
+            return
+        failed = [result for result in results if not getattr(result, "succeeded", True)]
+        if not failed:
+            return
+
+        details = "; ".join(
+            f"{getattr(result, 'key', '<unknown>')}: "
+            f"{getattr(result, 'error_message', None) or 'unknown indexing error'}"
+            for result in failed[:5]
+        )
+        raise RuntimeError(f"Search indexing failed for {len(failed)} document(s): {details}")
+
     async def create_index(self):
         logger.info("Checking whether search index %s exists...", self.search_info.index_name)
 
@@ -454,7 +470,8 @@ class SearchManager:
                     for i, (document, section) in enumerate(zip(documents, batch)):
                         document["imageEmbedding"] = image_embeddings[section.split_page.page_num]
 
-                await search_client.upload_documents(documents)
+                results = await search_client.upload_documents(documents)
+                self._ensure_indexing_succeeded(results)
     
     async def update_global_content(
         self, sections: list[Section], image_embeddings: Optional[list[list[float]]] = None, url: Optional[str] = None, folder = ''
@@ -510,7 +527,8 @@ class SearchManager:
                             new_item["groups"] = [g]   
                             new_item["id"] = str(new_item["id"]) + "-" + str(g)
                             new_documents.append(new_item)
-                await search_client.upload_documents(new_documents)
+                results = await search_client.upload_documents(new_documents)
+                self._ensure_indexing_succeeded(results)
 
     async def remove_content(self, path: Optional[str] = None, only_oid: Optional[str] = None):
         logger.info(

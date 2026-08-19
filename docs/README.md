@@ -3,6 +3,8 @@
 Consult the main [README](../README.md) for general information about the project.
 These are advanced topics that are not necessary for a basic deployment.
 
+- [Product backlog](product-backlog.md)
+
 - Deploying:
   - [Troubleshooting deployment](docs/deploy_troubleshooting.md)
     - [Debugging the app on App Service](appservice.md)

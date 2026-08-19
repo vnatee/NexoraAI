@@ -315,10 +315,10 @@ async def test_chathistory_getitem_error_entra(auth_public_documents_client, mon
 @pytest.mark.asyncio
 async def test_chathistory_getitem_error_runtime(auth_public_documents_client, monkeypatch):
 
-    async def mock_read_item(container_proxy, item, partition_key, **kwargs):
+    def mock_query_items(container_proxy, query, **kwargs):
         raise Exception("Test Exception")
 
-    monkeypatch.setattr(ContainerProxy, "read_item", mock_read_item)
+    monkeypatch.setattr(ContainerProxy, "query_items", mock_query_items)
 
     response = await auth_public_documents_client.get(
         "/chat_history/sessions/123",
@@ -387,10 +387,10 @@ async def test_chathistory_deleteitem_error_entra(auth_public_documents_client, 
 @pytest.mark.asyncio
 async def test_chathistory_deleteitem_error_runtime(auth_public_documents_client, monkeypatch):
 
-    async def mock_delete_item(container_proxy, item, partition_key, **kwargs):
+    def mock_query_items(container_proxy, query, **kwargs):
         raise Exception("Test Exception")
 
-    monkeypatch.setattr(ContainerProxy, "delete_item", mock_delete_item)
+    monkeypatch.setattr(ContainerProxy, "query_items", mock_query_items)
 
     response = await auth_public_documents_client.delete(
         "/chat_history/sessions/123",

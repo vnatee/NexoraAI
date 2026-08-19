@@ -10,6 +10,7 @@ import { ManageUserTabs } from "./Tabs/ManageUserTabs";
 import { hasPermission } from "../../utill/hasPermission";
 import { TeamProfile } from "../../api/models";
 import { IntegrationManagementPage } from "./Tabs/IntegrationManagementPage";
+import { LLMProviderManagement } from "../LLMProviderManagement";
 
 interface Props {
     open: boolean;
@@ -18,9 +19,10 @@ interface Props {
     is_sys_admin: boolean;
     sys_permissions: string[] | null;
     selectTeamData: TeamProfile | null;
+    onAgentsChanged?: () => void;
 }
 
-export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin, selectTeamData, sys_permissions }: Props) {
+export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin, selectTeamData, sys_permissions, onAgentsChanged }: Props) {
     const [tab, setTab] = useState(0);
 
     const tabs = [
@@ -32,7 +34,7 @@ export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin
         {
             label: "Agents",
             permission: ["Manage agents"],
-            element: <AgentManagementPage />
+            element: <AgentManagementPage onAgentsChanged={onAgentsChanged} />
         },
         {
             label: "Integrations",
@@ -53,16 +55,24 @@ export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin
             label: "Manage User",
             permission: ["Manage users", "Manage teams"],
             element: <ManageUserTabs />
+        },
+        {
+            label: "LLM Providers",
+            permission: ["Manage users", "Manage teams"],
+            systemAdminOnly: true,
+            element: <LLMProviderManagement />
         }
     ];
 
-    const allowedTabs = tabs.filter(t =>
-        hasPermission({
-            is_sys_admin,
-            permissions: selectTeamData?.permissions ?? [],
-            sys_permissions: sys_permissions ?? [],
-            requiredPermissions: t.permission
-        })
+    const allowedTabs = tabs.filter(
+        t =>
+            (!("systemAdminOnly" in t) || !t.systemAdminOnly || is_sys_admin) &&
+            hasPermission({
+                is_sys_admin,
+                permissions: selectTeamData?.permissions ?? [],
+                sys_permissions: sys_permissions ?? [],
+                requiredPermissions: t.permission
+            })
     );
 
     useEffect(() => {

@@ -80,7 +80,7 @@ import CheckIcon from "@mui/icons-material/Check";
 import Checkbox from "@mui/material/Checkbox";
 import { AuthStorage } from "../../utill/authStorage";
 import { hasPermission } from "../../utill/hasPermission";
-import { Agent, DataGroup, TeamProfile, User } from "../../api/models";
+import { Agent, DataGroup, LLMProfile, TeamProfile, User } from "../../api/models";
 import { Storage } from "../../utill/storage";
 import { STORAGE_KEYS } from "../../utill/storageKeys";
 import { useNotification } from "../../utill/NotificationProvider";
@@ -159,6 +159,7 @@ const Chat = () => {
     const [showChatHistoryCosmos, setShowChatHistoryCosmos] = useState<boolean>(false);
     const [showAgenticRetrievalOption, setShowAgenticRetrievalOption] = useState<boolean>(false);
     const [useAgenticRetrieval, setUseAgenticRetrieval] = useState<boolean>(false);
+    const [llmProfiles, setLlmProfiles] = useState<LLMProfile[]>([]);
     const [menuOpen, setMenuOpen] = useState(false);
     const menuRef = useRef<HTMLDivElement>(null);
     const uploadDialogRef = useRef<HTMLDivElement>(null);
@@ -359,6 +360,7 @@ const Chat = () => {
 
     const getConfig = async () => {
         configApi().then(config => {
+            setLlmProfiles(config.llmProfiles ?? []);
             setShowGPT4VOptions(config.showGPT4VOptions);
             if (config.showGPT4VOptions) {
                 setUseGPT4V(true);
@@ -392,6 +394,12 @@ const Chat = () => {
                 setRetrieveCount(10);
             }
         });
+    };
+
+    const getAgentModelName = (agent: Agent | null): string => {
+        if (!agent) return "";
+        const profileId = agent.config?.llm_profile_id ?? "system";
+        return llmProfiles.find(profile => profile.id === profileId)?.model ?? profileId;
     };
 
     const handleAsyncRequest = async (question: string, answers: [string, ChatAppResponse][], responseBody: ReadableStream<any>) => {
@@ -1404,7 +1412,22 @@ const Chat = () => {
                                     px: 1.5
                                 }}
                             >
-                                🤖 {selectedAgent?.agent_name ?? "Select Agent"}
+                                <Box component="span" sx={{ display: "flex", alignItems: "baseline", gap: 0.75, minWidth: 0 }}>
+                                    <Box component="span" sx={{ whiteSpace: "nowrap" }}>
+                                        🤖 {selectedAgent?.agent_name ?? "Select Agent"}
+                                    </Box>
+                                    {selectedAgent && (
+                                        <Typography
+                                            component="span"
+                                            variant="caption"
+                                            color="text.secondary"
+                                            noWrap
+                                            sx={{ fontSize: "0.68rem", maxWidth: 150 }}
+                                        >
+                                            · {getAgentModelName(selectedAgent)}
+                                        </Typography>
+                                    )}
+                                </Box>
                             </Button>
                         )}
                     </Box>
@@ -1838,6 +1861,7 @@ const Chat = () => {
                     is_sys_admin={userData ? userData?.is_sys_admin! : false}
                     selectTeamData={selectTeamData}
                     sys_permissions={sysPers ? sysPers : []}
+                    onAgentsChanged={() => void loadAgents()}
                     onClose={() => setOpenTeamAdminManagement(false)}
                 // onSubmit={handleSubmitFeedback}
                 />
@@ -1872,11 +1896,17 @@ const Chat = () => {
                                         <ListItemIcon sx={{ minWidth: 28 }}>{selected && <CheckIcon fontSize="small" />}</ListItemIcon>
 
                                         <ListItemText
-                                            primary={agent.agent_name}
+                                            primary={
+                                                <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.75, minWidth: 0 }}>
+                                                    <Typography component="span" variant="body2" fontWeight={selected ? 600 : 400} noWrap sx={{ minWidth: 0 }}>
+                                                        {agent.agent_name}
+                                                    </Typography>
+                                                    <Typography component="span" variant="caption" color="text.secondary" noWrap sx={{ fontSize: "0.68rem", maxWidth: 120, flexShrink: 1 }}>
+                                                        · {getAgentModelName(agent)}
+                                                    </Typography>
+                                                </Box>
+                                            }
                                             secondary={`Temp ${agent.config.temperature} · Max ${agent.config.max_tokens}`}
-                                            primaryTypographyProps={{
-                                                fontWeight: selected ? 600 : 400
-                                            }}
                                         />
                                     </MenuItem>
                                 );

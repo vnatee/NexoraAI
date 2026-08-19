@@ -1,4 +1,5 @@
 import io
+from types import SimpleNamespace
 
 import openai
 import openai.types
@@ -207,6 +208,28 @@ async def test_update_content(monkeypatch, search_info):
             )
         ]
     )
+
+
+@pytest.mark.asyncio
+async def test_update_content_raises_for_rejected_document(monkeypatch, search_info):
+    async def mock_upload_documents(self, documents):
+        return [SimpleNamespace(key=documents[0]["id"], succeeded=False, error_message="Invalid field")]
+
+    monkeypatch.setattr(SearchClient, "upload_documents", mock_upload_documents)
+    manager = SearchManager(search_info)
+    test_io = io.BytesIO(b"test content")
+    test_io.name = "test/foo.pdf"
+
+    with pytest.raises(RuntimeError, match="Search indexing failed.*Invalid field"):
+        await manager.update_content(
+            [
+                Section(
+                    split_page=SplitPage(page_num=0, text="test content"),
+                    content=File(test_io),
+                    category="test",
+                )
+            ]
+        )
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,8 @@ import {
     GroupPrompt,
     FeedbackPayload,
     AgentConfig,
+    LLMProviderPayload,
+    ManagedLLMProvider,
     User,
     RegisterUserPayload,
     Prompt,
@@ -39,6 +41,55 @@ export async function configApi(): Promise<Config> {
     });
 
     return (await response.json()) as Config;
+}
+
+async function parseProviderAdminResponse(response: Response): Promise<any> {
+    const data = await response.json();
+    if (!response.ok) {
+        throw new Error(data.error || `LLM provider request failed (${response.status})`);
+    }
+    return data;
+}
+
+export async function listLLMProvidersApi(idToken: string): Promise<ManagedLLMProvider[]> {
+    const response = await fetch("/admin/llm-providers", { headers: await getHeaders(idToken) });
+    const data = await parseProviderAdminResponse(response);
+    return data.providers;
+}
+
+export async function createLLMProviderApi(payload: LLMProviderPayload, idToken: string): Promise<ManagedLLMProvider> {
+    const response = await fetch("/admin/llm-providers", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function updateLLMProviderApi(providerId: string, payload: LLMProviderPayload, idToken: string): Promise<ManagedLLMProvider> {
+    const response = await fetch(`/admin/llm-providers/${providerId}`, {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function deleteLLMProviderApi(providerId: string, idToken: string): Promise<void> {
+    const response = await fetch(`/admin/llm-providers/${providerId}`, {
+        method: "DELETE",
+        headers: await getHeaders(idToken)
+    });
+    await parseProviderAdminResponse(response);
+}
+
+export async function testLLMProviderApi(providerId: string, modelId: string, idToken: string): Promise<{ success: boolean; response?: string }> {
+    const response = await fetch(`/admin/llm-providers/${providerId}/test`, {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: modelId })
+    });
+    return parseProviderAdminResponse(response);
 }
 
 export async function askApi(request: ChatAppRequest, idToken: string | undefined): Promise<ChatAppResponse> {
@@ -216,7 +267,7 @@ export async function deleteGlobalUploadedFileApi(filename: string, idToken: str
     return dataResponse;
 }
 
-export async function listUploadedFilesApi(idToken: string): Promise<string[]> {
+export async function listUploadedFilesApi(idToken: string): Promise<[string, number][]> {
     const response = await fetch(`/list_uploaded`, {
         method: "GET",
         headers: await getHeaders(idToken)
@@ -226,7 +277,7 @@ export async function listUploadedFilesApi(idToken: string): Promise<string[]> {
         throw new Error(`Listing files failed: ${response.statusText}`);
     }
 
-    const dataResponse: string[] = await response.json();
+    const dataResponse: [string, number][] = await response.json();
     return dataResponse;
 }
 
@@ -1444,7 +1495,8 @@ export async function insert_database_binding(payload: any, idToken: string): Pr
         body: JSON.stringify(payload)
     });
     if (!response.ok) {
-        throw new Error(`insert database binding failed: ${response.statusText}`);
+        const errorResponse = await response.json().catch(() => ({}));
+        throw new Error(errorResponse.error || `insert database binding failed: ${response.statusText}`);
     }
     const dataResponse: any = await response.json();
     return dataResponse;
@@ -1492,6 +1544,20 @@ export async function toggle_database_binding_by_id(database_binding_id: string,
         throw new Error(`toggle database binding failed: ${response.statusText}`);
     }
     const dataResponse: any = await response.json();
+    return dataResponse;
+}
+
+export async function update_database_binding(payload: any, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/update_database_binding", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    const dataResponse: any = await response.json();
+    if (!response.ok) {
+        throw new Error(dataResponse.error || `update database binding failed: ${response.statusText}`);
+    }
     return dataResponse;
 }
 
@@ -1578,7 +1644,8 @@ export async function insert_db_connection(payload: any, idToken: string): Promi
         body: JSON.stringify(payload)
     });
     if (!response.ok) {
-        throw new Error(`insert database connection failed: ${response.statusText}`);
+        const errorResponse = await response.json().catch(() => ({}));
+        throw new Error(errorResponse.error || `insert database connection failed: ${response.statusText}`);
     }
     const dataResponse: any = await response.json();
     return dataResponse;
@@ -1598,7 +1665,8 @@ export async function edit_db_connection(payload: any, idToken: string): Promise
         body: JSON.stringify(normalizedPayload)
     });
     if (!response.ok) {
-        throw new Error(`edit database connection failed: ${response.statusText}`);
+        const errorResponse = await response.json().catch(() => ({}));
+        throw new Error(errorResponse.error || `edit database connection failed: ${response.statusText}`);
     }
     const dataResponse: any = await response.json();
     return dataResponse;
@@ -1616,6 +1684,23 @@ export async function delete_db_connection(connection_id: string, idToken: strin
     }
     const dataResponse: any = await response.json();
     return dataResponse;
+}
+
+export async function test_db_connection(
+    payload: Partial<DatabaseConnection> & { database_id?: string },
+    idToken: string
+): Promise<{ ok: boolean; message: string }> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/test_database_connection", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    const dataResponse: { ok?: boolean; message?: string; error?: string } = await response.json();
+    if (!response.ok) {
+        throw new Error(dataResponse.error || `test database connection failed: ${response.statusText}`);
+    }
+    return { ok: dataResponse.ok === true, message: dataResponse.message || "Connection succeeded" };
 }
 
 export async function get_mail_configs(team_id: string, idToken: string): Promise<MailEmailConfig[]> {
@@ -1723,12 +1808,23 @@ export async function toggle_mail_binding_by_id(binding_id: string, enabled: boo
 //    ใช้ pattern เดียวกับ mail binding (GET /chart_bindings + POST insert/delete/toggle)
 import { ChartBindingData } from "./models";
 
+async function chartBindingError(response: Response, operation: string): Promise<Error> {
+    let detail = "";
+    try {
+        const body = await response.json();
+        detail = typeof body?.error === "string" ? body.error : typeof body?.message === "string" ? body.message : "";
+    } catch {
+        // The status text is still useful if a proxy returned a non-JSON body.
+    }
+    return new Error(detail || `${operation} failed (${response.status} ${response.statusText})`);
+}
+
 export async function get_chart_bindings_by_agent(agent_id: string, idToken: string): Promise<ChartBindingData[]> {
     const response = await fetch(`/chart_bindings?agent_id=${agent_id}`, {
         method: "GET",
         headers: await getHeaders(idToken)
     });
-    if (!response.ok) throw new Error(`get chart bindings failed: ${response.statusText}`);
+    if (!response.ok) throw await chartBindingError(response, "Get chart bindings");
     return response.json();
 }
 
@@ -1739,7 +1835,7 @@ export async function insert_chart_binding(payload: Omit<ChartBindingData, "_id"
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify(payload)
     });
-    if (!response.ok) throw new Error(`insert chart binding failed: ${response.statusText}`);
+    if (!response.ok) throw await chartBindingError(response, "Add chart capability");
     return response.json();
 }
 
@@ -1750,7 +1846,7 @@ export async function delete_chart_binding_by_id(binding_id: string, idToken: st
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify({ binding_id })
     });
-    if (!response.ok) throw new Error(`delete chart binding failed: ${response.statusText}`);
+    if (!response.ok) throw await chartBindingError(response, "Delete chart capability");
     return response.json();
 }
 
@@ -1761,7 +1857,7 @@ export async function toggle_chart_binding_by_id(binding_id: string, enabled: bo
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify({ binding_id, enabled })
     });
-    if (!response.ok) throw new Error(`toggle chart binding failed: ${response.statusText}`);
+    if (!response.ok) throw await chartBindingError(response, "Toggle chart capability");
     return response.json();
 }
 
@@ -1777,9 +1873,11 @@ export async function update_chart_binding(payload: ChartBindingData, idToken: s
             color_palette: payload.color_palette,
             title_template: payload.title_template,
             trigger_keywords: payload.trigger_keywords,
-            enabled: payload.enabled
+            enabled: payload.enabled,
+            default_chart_type: payload.default_chart_type,
+            allowed_chart_types: payload.allowed_chart_types
         })
     });
-    if (!response.ok) throw new Error(`update chart binding failed: ${response.statusText}`);
+    if (!response.ok) throw await chartBindingError(response, "Update chart capability");
     return response.json();
 }

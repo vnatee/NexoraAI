@@ -55,10 +55,12 @@ class DocumentAnalysisParser(Parser):
         endpoint: str,
         credential: Union[AsyncTokenCredential, AzureKeyCredential],
         model_id="prebuilt-layout",
+        api_version="2024-11-30",
         use_content_understanding=True,
         content_understanding_endpoint: Union[str, None] = None,
     ):
         self.model_id = model_id
+        self.api_version = api_version
         self.endpoint = endpoint
         self.credential = credential
         self.use_content_understanding = use_content_understanding
@@ -68,7 +70,7 @@ class DocumentAnalysisParser(Parser):
         logger.info("Extracting text from '%s' using Azure Document Intelligence", content.name)
 
         async with DocumentIntelligenceClient(
-            endpoint=self.endpoint, credential=self.credential
+            endpoint=self.endpoint, credential=self.credential, api_version=self.api_version
         ) as document_intelligence_client:
             file_analyzed = False
             if self.use_content_understanding:
@@ -83,7 +85,7 @@ class DocumentAnalysisParser(Parser):
                 try:
                     poller = await document_intelligence_client.begin_analyze_document(
                         model_id="prebuilt-layout",
-                        analyze_request=AnalyzeDocumentRequest(bytes_source=content_bytes),
+                        body=AnalyzeDocumentRequest(bytes_source=content_bytes),
                         output=["figures"],
                         features=["ocrHighResolution"],
                         output_content_format="markdown",
@@ -104,7 +106,7 @@ class DocumentAnalysisParser(Parser):
 
             if file_analyzed is False:
                 poller = await document_intelligence_client.begin_analyze_document(
-                    model_id=self.model_id, analyze_request=content, content_type="application/octet-stream"
+                    model_id=self.model_id, body=content, content_type="application/octet-stream"
                 )
             analyze_result: AnalyzeResult = await poller.result()
 

@@ -12,6 +12,7 @@ from approaches.approach import Approach, DataPoints, ExtraInfo, ThoughtStep
 from approaches.promptmanager import PromptManager
 from core.authentication import AuthenticationHelper
 from core.imageshelper import fetch_image
+from prepdocslib.embeddings import OpenAIEmbeddings
 
 
 class RetrieveThenReadVisionApproach(Approach):
@@ -41,6 +42,7 @@ class RetrieveThenReadVisionApproach(Approach):
         vision_endpoint: str,
         vision_token_provider: Callable[[], Awaitable[str]],
         prompt_manager: PromptManager,
+        embedding_service: Optional[OpenAIEmbeddings] = None,
     ):
         self.search_client = search_client
         self.blob_container_client = blob_container_client
@@ -49,6 +51,7 @@ class RetrieveThenReadVisionApproach(Approach):
         self.embedding_model = embedding_model
         self.embedding_deployment = embedding_deployment
         self.embedding_dimensions = embedding_dimensions
+        self.embedding_service = embedding_service
         self.embedding_field = embedding_field
         self.sourcepage_field = sourcepage_field
         self.content_field = content_field
@@ -129,13 +132,26 @@ class RetrieveThenReadVisionApproach(Approach):
             | {"user_query": q, "text_sources": text_sources, "image_sources": image_sources},
         )
 
-        chat_completion = await self.openai_client.chat.completions.create(
-            model=self.gpt4v_deployment if self.gpt4v_deployment else self.gpt4v_model,
+        custom_profile = overrides.get("_llm_profile_id") not in (None, "system")
+        llm_client = overrides.get("_llm_client", self.openai_client) if custom_profile else self.openai_client
+        answer_model = (
+            overrides.get("_llm_deployment") or overrides.get("_llm_model")
+            if custom_profile
+            else self.gpt4v_deployment or self.gpt4v_model
+        )
+        completion_params = self.apply_chat_completion_policy(
+            overrides,
+            {
+                "temperature": overrides.get("temperature", 0.3),
+                "max_tokens": 1024,
+                "n": 1,
+                "seed": seed,
+            },
+        )
+        chat_completion = await llm_client.chat.completions.create(
+            model=answer_model,
             messages=messages,
-            temperature=overrides.get("temperature", 0.3),
-            max_tokens=1024,
-            n=1,
-            seed=seed,
+            **completion_params,
         )
 
         extra_info = ExtraInfo(

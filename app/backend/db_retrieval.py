@@ -1,13 +1,14 @@
 import logging
-import re
-from typing import Any, Dict, Iterable, List, Optional
-from urllib.parse import quote_plus
+from typing import Any, Dict, List, Optional
 
 from pymongo import MongoClient
 from pymongo.collection import Collection
 from pymongo.errors import PyMongoError
 
-from mongo_table_connecters.database_binding import get_enabled_database_bindings_by_agent_id
+from database_connectors import mongodb_uri
+from mongo_table_connecters.database_binding import (
+    get_enabled_database_bindings_by_agent_id,
+)
 from mongo_table_connecters.external_database import get_external_database_by_id
 
 logger = logging.getLogger(__name__)
@@ -18,25 +19,7 @@ def is_mongodb_database(external_db: Dict[str, Any]) -> bool:
 
 
 def build_mongodb_uri(external_db: Dict[str, Any]) -> str:
-    host = str(external_db.get("host", "")).strip()
-    port = external_db.get("port")
-    username = external_db.get("username")
-    password = external_db.get("password")
-    database = str(external_db.get("database", "")).strip()
-
-    # Handle full connection string with mongodb:// or mongodb+srv:// prefix
-    if host.startswith("mongodb://") or host.startswith("mongodb+srv://"):
-        return host
-
-    # For simple host:port format (no protocol prefix)
-    credentials = ""
-    if username and password:
-        credentials = f"{quote_plus(username)}:{quote_plus(password)}@"
-
-    if port:
-        return f"mongodb+srv://{credentials}{host}:{port}/{database}?tls=true&authMechanism=SCRAM-SHA-256&retrywrites=false&maxIdleTimeMS=120000"
-    else:
-        return f"mongodb+srv://{credentials}{host}/{database}?tls=true&authMechanism=SCRAM-SHA-256&retrywrites=false&maxIdleTimeMS=120000"
+    return mongodb_uri(external_db)
 
 
 def connect_to_external_mongodb(external_db: Dict[str, Any], server_selection_timeout_ms: int = 5000) -> MongoClient:

@@ -28,6 +28,9 @@ export interface ChartBindingInput {
     title_template: string;
     trigger_keywords: string[];
     enabled: boolean;
+    chart_selection_mode: ChartBindingData["chart_selection_mode"];
+    default_chart_type: NonNullable<ChartBindingData["default_chart_type"]>;
+    allowed_chart_types: NonNullable<ChartBindingData["allowed_chart_types"]>;
 }
 
 interface ChartBindingDialogProps {
@@ -39,6 +42,7 @@ interface ChartBindingDialogProps {
 }
 
 const DEFAULT_PALETTE = ["#2196f3", "#ff9800", "#4caf50", "#e91e63", "#9c27b0", "#00bcd4"];
+const SAFE_CHART_TYPES = ["bar", "line", "area", "pie", "scatter", "radar", "heatmap", "treemap", "sunburst", "funnel", "gauge", "boxplot", "candlestick", "sankey", "graph"];
 
 // ── Color chip input ──────────────────────────────────────────────────────────
 function ColorChipInput({
@@ -108,21 +112,37 @@ export function ChartBindingDialog({ open, saving, initialBinding, onClose, onSa
     const [titleTemplate, setTitleTemplate] = useState("");
     const [triggerKeywords, setTriggerKeywords] = useState("");
     const [enabled, setEnabled] = useState(true);
+    const [selectionMode, setSelectionMode] = useState<"auto" | "manual">("auto");
+    const [allowedTypes, setAllowedTypes] = useState<NonNullable<ChartBindingData["allowed_chart_types"]>>(SAFE_CHART_TYPES as NonNullable<ChartBindingData["allowed_chart_types"]>);
+    const [defaultType, setDefaultType] = useState<NonNullable<ChartBindingData["default_chart_type"]>>("bar");
 
     useEffect(() => {
         if (!open) return;
         if (initialBinding) {
+            const initialAllowed = initialBinding.allowed_chart_types?.length
+                ? initialBinding.allowed_chart_types
+                : SAFE_CHART_TYPES as NonNullable<ChartBindingData["allowed_chart_types"]>;
             setAutoGenerate(initialBinding.auto_generate ?? false);
             setColorPalette(initialBinding.color_palette ?? DEFAULT_PALETTE);
             setTitleTemplate(initialBinding.title_template ?? "");
             setTriggerKeywords(initialBinding.trigger_keywords ? initialBinding.trigger_keywords.join(", ") : "");
             setEnabled(initialBinding.enabled !== false);
+            setSelectionMode(initialBinding.chart_selection_mode ?? "auto");
+            setAllowedTypes(initialAllowed);
+            setDefaultType(
+                initialBinding.default_chart_type && initialAllowed.includes(initialBinding.default_chart_type)
+                    ? initialBinding.default_chart_type
+                    : initialAllowed[0]
+            );
         } else {
             setAutoGenerate(false);
             setColorPalette(DEFAULT_PALETTE);
             setTitleTemplate("");
             setTriggerKeywords("");
             setEnabled(true);
+            setSelectionMode("auto");
+            setAllowedTypes(SAFE_CHART_TYPES as NonNullable<ChartBindingData["allowed_chart_types"]>);
+            setDefaultType("bar");
         }
     }, [open, initialBinding]);
 
@@ -133,7 +153,10 @@ export function ChartBindingDialog({ open, saving, initialBinding, onClose, onSa
             color_palette: colorPalette,
             title_template: titleTemplate,
             trigger_keywords: triggerKeywords.split(",").map(k => k.trim()).filter(Boolean),
-            enabled
+            enabled,
+            chart_selection_mode: selectionMode,
+            default_chart_type: defaultType,
+            allowed_chart_types: allowedTypes
         });
     };
 
@@ -180,6 +203,49 @@ export function ChartBindingDialog({ open, saving, initialBinding, onClose, onSa
                             label=""
                         />
                     </Box>
+
+                    <Divider />
+
+                    <Typography variant="subtitle2" color="text.secondary">Chart selection</Typography>
+                    <TextField
+                        select
+                        label="Selection Mode"
+                        value={selectionMode}
+                        disabled={saving}
+                        onChange={e => setSelectionMode(e.target.value as "auto" | "manual")}
+                        helperText={selectionMode === "auto" ? "LLM เลือกชนิดกราฟจากรายการที่อนุญาต" : "จำกัดชนิดกราฟและกำหนดค่าเริ่มต้น"}
+                    >
+                        <MenuItem value="auto">Automatic</MenuItem>
+                        <MenuItem value="manual">Restricted</MenuItem>
+                    </TextField>
+                    <TextField
+                        select
+                        SelectProps={{ multiple: true }}
+                        label="Allowed Chart Types"
+                        value={allowedTypes}
+                        disabled={saving}
+                        onChange={e => {
+                            const next = (typeof e.target.value === "string" ? e.target.value.split(",") : e.target.value) as NonNullable<ChartBindingData["allowed_chart_types"]>;
+                            if (next.length) {
+                                setAllowedTypes(next);
+                                if (!next.includes(defaultType)) setDefaultType(next[0]);
+                            }
+                        }}
+                        helperText="ใช้เป็น allowlist ทั้ง Automatic และ Restricted mode"
+                    >
+                        {SAFE_CHART_TYPES.map(type => <MenuItem key={type} value={type}>{type}</MenuItem>)}
+                    </TextField>
+                    {selectionMode === "manual" && (
+                        <TextField
+                            select
+                            label="Default Chart Type"
+                            value={defaultType}
+                            disabled={saving}
+                            onChange={e => setDefaultType(e.target.value as NonNullable<ChartBindingData["default_chart_type"]>)}
+                        >
+                            {allowedTypes.map(type => <MenuItem key={type} value={type}>{type}</MenuItem>)}
+                        </TextField>
+                    )}
 
                     <Divider />
 

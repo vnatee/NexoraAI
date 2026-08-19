@@ -266,6 +266,62 @@ def test_build_security_filters(mock_confidential_client_success, mock_validate_
     )
 
 
+def test_build_security_filters_for_custom_scopes(mock_confidential_client_success, mock_validate_token_success):
+    auth_helper = create_authentication_helper(require_access_control=True)
+
+    assert (
+        auth_helper.build_security_filters(
+            overrides={},
+            auth_claims={
+                "oid": "OID_X",
+                "selected_scopes": ["personal", "global"],
+                "data_groups_id": ["DATA_GROUP_A", "DATA_GROUP_B"],
+            },
+        )
+        == "(oids/any(g:search.in(g, 'OID_X')) or (not oids/any() and not groups/any()) or "
+        "(not oids/any() and groups/any(g:search.in(g, 'DATA_GROUP_A, DATA_GROUP_B'))))"
+    )
+    assert (
+        auth_helper.build_security_filters(
+            overrides={},
+            auth_claims={"oid": "OID_X", "selected_scopes": [], "data_groups_id": []},
+        )
+        == "(oids/any() and not oids/any())"
+    )
+
+
+@pytest.mark.asyncio
+async def test_check_path_auth_uses_custom_scope_filter(
+    monkeypatch, mock_confidential_client_success, mock_validate_token_success
+):
+    auth_helper = create_authentication_helper(require_access_control=True)
+    captured_filter = None
+
+    async def mock_search(self, *args, **kwargs):
+        nonlocal captured_filter
+        captured_filter = kwargs.get("filter")
+        return MockAsyncPageIterator(data=[])
+
+    monkeypatch.setattr(SearchClient, "search", mock_search)
+
+    allowed = await auth_helper.check_path_auth(
+        path="team/report.pdf",
+        auth_claims={
+            "oid": "OID_X",
+            "selected_scopes": ["personal"],
+            "data_groups_id": ["DATA_GROUP_A"],
+        },
+        search_client=create_search_client(),
+    )
+
+    assert allowed is False
+    assert captured_filter == (
+        "(oids/any(g:search.in(g, 'OID_X')) or "
+        "(not oids/any() and groups/any(g:search.in(g, 'DATA_GROUP_A')))) and "
+        "((sourcefile eq 'team/report.pdf') or (sourcepage eq 'team/report.pdf'))"
+    )
+
+
 @pytest.mark.asyncio
 async def test_check_path_auth_denied(monkeypatch, mock_confidential_client_success, mock_validate_token_success):
     auth_helper_require_access_control = create_authentication_helper(require_access_control=True)

@@ -27,9 +27,15 @@ from openai.types.chat.chat_completion import (
 )
 from openai.types.create_embedding_response import Usage
 
+# Unit tests must not require azd, DNS, or a live MongoDB server merely to
+# import the application. PyMongo connects lazily for a standard mongodb URI.
+os.environ.setdefault("MONGO_URI", "mongodb://localhost:27017")
+os.environ.setdefault("MONGO_DB_NAME", "nexora_test")
+
 import app
 import core
 from core.authentication import AuthenticationHelper
+from prepdocslib.embeddings import AzureOpenAIEmbeddingService, OpenAIEmbeddingService
 
 from .mocks import (
     MockAsyncPageIterator,
@@ -53,6 +59,15 @@ MockSearchIndex = SearchIndex(
     ],
 )
 MockAgent = KnowledgeAgent(name="test", models=[], target_indexes=[], request_limits=[])
+
+
+def set_custom_app_test_env(monkeypatch):
+    monkeypatch.setenv("AZURE_WEB_STORAGE_CONTAINER", "test-web-storage-container")
+    monkeypatch.setenv("AZURE_WEB_GROUP_STORAGE_CONTAINER", "test-web-group-storage-container")
+    monkeypatch.setenv("AZURE_GROUP_STORAGE_CONTAINER", "test-group-storage-container")
+    monkeypatch.setenv("SKIP_STARTUP_BOOTSTRAP", "true")
+    monkeypatch.setenv("SKIP_MANAGED_LLM_PROVIDER_LOAD", "true")
+    monkeypatch.setenv("DISABLE_USAGE_PERSISTENCE", "true")
 
 
 async def mock_search(self, *args, **kwargs):
@@ -117,6 +132,12 @@ def mock_openai_embedding(monkeypatch):
 
     def patch(openai_client):
         monkeypatch.setattr(openai_client.embeddings, "create", mock_acreate)
+
+        async def mock_create_client(*args, **kwargs):
+            return openai_client
+
+        monkeypatch.setattr(AzureOpenAIEmbeddingService, "create_client", mock_create_client)
+        monkeypatch.setattr(OpenAIEmbeddingService, "create_client", mock_create_client)
 
     return patch
 
@@ -284,7 +305,11 @@ def mock_acs_search_filter(monkeypatch):
     async def mock_get_index(*args, **kwargs):
         return MockSearchIndex
 
+    async def mock_get_index_statistics(*args, **kwargs):
+        return {"document_count": 0, "storage_size": 0}
+
     monkeypatch.setattr(SearchIndexClient, "get_index", mock_get_index)
+    monkeypatch.setattr(SearchIndexClient, "get_index_statistics", mock_get_index_statistics)
 
 
 @pytest.fixture
@@ -404,6 +429,7 @@ agent_auth_envs = [
 @pytest.fixture(params=envs, ids=["client0", "client1"])
 def mock_env(monkeypatch, request):
     with mock.patch.dict(os.environ, clear=True):
+        set_custom_app_test_env(monkeypatch)
         monkeypatch.setenv("AZURE_STORAGE_ACCOUNT", "test-storage-account")
         monkeypatch.setenv("AZURE_STORAGE_CONTAINER", "test-storage-container")
         monkeypatch.setenv("AZURE_STORAGE_RESOURCE_GROUP", "test-storage-rg")
@@ -430,6 +456,7 @@ def mock_env(monkeypatch, request):
 @pytest.fixture(params=reasoning_envs, ids=["reasoning_client0", "reasoning_client1"])
 def mock_reasoning_env(monkeypatch, request):
     with mock.patch.dict(os.environ, clear=True):
+        set_custom_app_test_env(monkeypatch)
         monkeypatch.setenv("AZURE_STORAGE_ACCOUNT", "test-storage-account")
         monkeypatch.setenv("AZURE_STORAGE_CONTAINER", "test-storage-container")
         monkeypatch.setenv("AZURE_STORAGE_RESOURCE_GROUP", "test-storage-rg")
@@ -454,6 +481,7 @@ def mock_reasoning_env(monkeypatch, request):
 @pytest.fixture(params=agent_envs, ids=["agent_client0"])
 def mock_agent_env(monkeypatch, request):
     with mock.patch.dict(os.environ, clear=True):
+        set_custom_app_test_env(monkeypatch)
         monkeypatch.setenv("AZURE_STORAGE_ACCOUNT", "test-storage-account")
         monkeypatch.setenv("AZURE_STORAGE_CONTAINER", "test-storage-container")
         monkeypatch.setenv("AZURE_STORAGE_RESOURCE_GROUP", "test-storage-rg")
@@ -478,6 +506,7 @@ def mock_agent_env(monkeypatch, request):
 @pytest.fixture(params=agent_auth_envs, ids=["agent_auth_client0"])
 def mock_agent_auth_env(monkeypatch, request):
     with mock.patch.dict(os.environ, clear=True):
+        set_custom_app_test_env(monkeypatch)
         monkeypatch.setenv("AZURE_STORAGE_ACCOUNT", "test-storage-account")
         monkeypatch.setenv("AZURE_STORAGE_CONTAINER", "test-storage-container")
         monkeypatch.setenv("AZURE_STORAGE_RESOURCE_GROUP", "test-storage-rg")
@@ -563,7 +592,7 @@ async def agent_auth_client(
     mock_agent_auth_env,
     mock_openai_chatcompletion,
     mock_openai_embedding,
-    mock_acs_search,
+    mock_acs_search_filter,
     mock_acs_agent,
     mock_blob_container_client,
     mock_azurehttp_calls,
@@ -614,6 +643,7 @@ async def auth_client(
     mock_acs_search_filter,
     request,
 ):
+    set_custom_app_test_env(monkeypatch)
     monkeypatch.setenv("AZURE_STORAGE_ACCOUNT", "test-storage-account")
     monkeypatch.setenv("AZURE_STORAGE_CONTAINER", "test-storage-container")
     monkeypatch.setenv("AZURE_SEARCH_INDEX", "test-search-index")
@@ -653,6 +683,7 @@ async def auth_public_documents_client(
     mock_acs_search_filter,
     request,
 ):
+    set_custom_app_test_env(monkeypatch)
     monkeypatch.setenv("AZURE_STORAGE_ACCOUNT", "test-storage-account")
     monkeypatch.setenv("AZURE_STORAGE_CONTAINER", "test-storage-container")
     monkeypatch.setenv("AZURE_SEARCH_INDEX", "test-search-index")
@@ -701,7 +732,14 @@ def mock_confidential_client_success(monkeypatch):
         assert kwargs.get("user_assertion") is not None
         scopes = kwargs.get("scopes")
         assert scopes == [AuthenticationHelper.scope]
-        return {"access_token": "MockToken", "id_token_claims": {"oid": "OID_X", "groups": ["GROUP_Y", "GROUP_Z"]}}
+        return {
+            "access_token": "MockToken",
+            "id_token_claims": {
+                "oid": "OID_X",
+                "groups": ["GROUP_Y", "GROUP_Z"],
+                "preferred_username": "john.doe@example.com",
+            },
+        }
 
     monkeypatch.setattr(
         msal.ConfidentialClientApplication, "acquire_token_on_behalf_of", mock_acquire_token_on_behalf_of
@@ -741,6 +779,7 @@ def mock_confidential_client_overage(monkeypatch):
             "access_token": "MockToken",
             "id_token_claims": {
                 "oid": "OID_X",
+                "preferred_username": "john.doe@example.com",
                 "_claim_names": {"groups": "src1"},
                 "_claim_sources": {"src1": {"endpoint": "https://example.com"}},
             },
@@ -875,7 +914,9 @@ def mock_data_lake_service_client(monkeypatch):
         paths = ["a.txt", "b.txt", "c.txt"]
         if kwargs.get("path") == "OID_X":
             paths = [f"OID_X/{path}" for path in paths]
-        return MockAsyncPageIterator([azure.storage.filedatalake.PathProperties(name=path) for path in paths])
+        return MockAsyncPageIterator(
+            [azure.storage.filedatalake.PathProperties(name=path, content_length=1) for path in paths]
+        )
 
     monkeypatch.setattr(azure.storage.filedatalake.FileSystemClient, "__init__", mock_init)
     monkeypatch.setattr(azure.storage.filedatalake.FileSystemClient, "get_file_client", mock_get_file_client)

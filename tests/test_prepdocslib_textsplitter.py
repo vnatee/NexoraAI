@@ -32,6 +32,7 @@ def test_sentencetextsplitter_split_small_pages():
 
 
 @pytest.mark.asyncio
+@pytest.mark.data_integration
 async def test_sentencetextsplitter_list_parse_and_split(tmp_path, snapshot):
     text_splitter = SentenceTextSplitter()
     pdf_parser = LocalPdfParser()
