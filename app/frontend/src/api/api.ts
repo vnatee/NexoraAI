@@ -86,7 +86,19 @@ export async function deleteLLMProviderApi(providerId: string, idToken: string):
     await parseProviderAdminResponse(response);
 }
 
-export async function testLLMProviderApi(providerId: string, modelId: string, idToken: string): Promise<{ success: boolean; response?: string }> {
+export type LLMProviderTestResult = {
+    success: boolean;
+    model: string;
+    response?: string;
+    tool_capability: {
+        status: "unknown" | "supported" | "unsupported";
+        supports_tools: boolean | null;
+        detail: string;
+        checked_at?: string;
+    };
+};
+
+export async function testLLMProviderApi(providerId: string, modelId: string, idToken: string): Promise<LLMProviderTestResult> {
     const response = await fetch(`/admin/llm-providers/${providerId}/test`, {
         method: "POST",
         headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
@@ -1944,6 +1956,11 @@ export const delete_document_processing_provider = (provider_id: string, token: 
 export const get_document_processing_profiles = (token: string) => documentProcessingRequest("/document_processing/profiles", token);
 export const save_document_processing_profile = (payload: any, token: string) => documentProcessingRequest("/document_processing/profiles/save", token, payload);
 export const delete_document_processing_profile = (profile_id: string, token: string) => documentProcessingRequest("/document_processing/profiles/delete", token, { profile_id });
+export const get_document_processing_routing_rules = (token: string) => documentProcessingRequest("/document_processing/routing-rules", token);
+export const save_document_processing_routing_rule = (payload: any, token: string) => documentProcessingRequest("/document_processing/routing-rules/save", token, payload);
+export const delete_document_processing_routing_rule = (rule_id: string, token: string) => documentProcessingRequest("/document_processing/routing-rules/delete", token, { rule_id });
+export const explain_document_processing_route = (payload: any, token: string) => documentProcessingRequest("/document_processing/explain-route", token, payload);
+export const get_document_processing_upload_options = (token: string) => documentProcessingRequest("/document_processing/upload-options", token);
 
 // ─── Chart Capability Binding ────────────────────────────────────────────────
 // ⭐ CHART CAPABILITY: CRUD สำหรับผูก "ความสามารถสร้างกราฟ" เข้ากับ agent

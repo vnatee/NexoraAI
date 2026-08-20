@@ -25,6 +25,7 @@ import {
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import CancelIcon from "@mui/icons-material/Cancel";
 import Tooltip from "@mui/material/Tooltip";
+import { DocumentProcessingUploadSelector } from "../DocumentProcessingUploadSelector/DocumentProcessingUploadSelector";
 
 import styles from "./UploadFile.module.css";
 
@@ -58,6 +59,7 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
     const [storedSize, setStoredSize] = useState<number>(0);
     const [newSize, setNewSize] = useState<number>(0);
     const [totalUsed, setTotalUsed] = useState<number>(0);
+    const [processingProfileId, setProcessingProfileId] = useState("");
 
     const formatFileSize = (size: number): string => {
         if (size === 0) return "0 KB";
@@ -176,6 +178,7 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
         const file: File = e.target.files[0];
         const formData = new FormData();
         formData.append("file", file);
+        if (processingProfileId) formData.append("processing_profile_id", processingProfileId);
 
         try {
             const idToken = await getToken(client);
@@ -220,6 +223,7 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
 
                     <DialogContent dividers>
                         <Stack spacing={2}>
+                            <DocumentProcessingUploadSelector value={processingProfileId} onChange={setProcessingProfileId} />
                             <Box>
                                 <Typography variant="subtitle1" gutterBottom>
                                     {t("upload.fileLabel")}

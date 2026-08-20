@@ -39,6 +39,7 @@ import { Storage } from "../../utill/storage";
 import { STORAGE_KEYS } from "../../utill/storageKeys";
 import { AuthStorage } from "../../utill/authStorage";
 import { hasPermission } from "../../utill/hasPermission";
+import { DocumentProcessingUploadSelector } from "../DocumentProcessingUploadSelector/DocumentProcessingUploadSelector";
 
 interface Props {
     disabled?: boolean;
@@ -96,6 +97,7 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
     const [loadingFiles, setLoadingFiles] = useState(false);
     const [hasLoaded, setHasLoaded] = useState(false);
     const [sysPers, setSysPers] = useState<string[] | null>(null);
+    const [processingProfileId, setProcessingProfileId] = useState("");
     const totalUsed = storedSize + selectedSize;
 
     const [userData, setUserData] = useState<User | null>(null);
@@ -412,6 +414,7 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
             for (const file of selectedFiles) {
                 formData.append("file", file, file.name);
             }
+            if (processingProfileId) formData.append("processing_profile_id", processingProfileId);
             await uploadGlobalFileApi(formData, token);
             setHasLoaded(false);
             await fetchFiles();
@@ -741,6 +744,9 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
                                         sx={{ border: "2px dashed #ccc", padding: 2, borderRadius: 2, textAlign: "center", mb: 2, cursor: "pointer" }}
                                     >
                                         <Typography variant="body1">Drag & drop files or folders here</Typography>
+                                    </Box>
+                                    <Box sx={{ mb: 2 }}>
+                                        <DocumentProcessingUploadSelector value={processingProfileId} onChange={setProcessingProfileId} />
                                     </Box>
                                     {/* Data Group Multi Select */}
                                     {/* <Box sx={{ mb: 2 }}>

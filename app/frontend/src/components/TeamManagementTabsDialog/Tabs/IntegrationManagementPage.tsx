@@ -18,9 +18,10 @@ type ViewMode = "types" | "external_api" | "database" | "mail" | "messaging" | "
 
 interface Props {
     team: TeamProfile | null;
+    isSystemAdmin: boolean;
 }
 
-export function IntegrationManagementPage({ team }: Props) {
+export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
     const [view, setView] = useState<ViewMode>("types");
 
     // ✅ reset view ถ้า team เปลี่ยน
@@ -91,6 +92,7 @@ export function IntegrationManagementPage({ team }: Props) {
             description: "Manage Azure and local extraction providers used by RAG ingestion",
             icon: <DocumentScannerIcon fontSize="large" />,
             enabled: true,
+            systemAdminOnly: true,
             badges: [
                 { label: "Azure DI", color: "primary" as const },
                 { label: "Docling", color: "success" as const },
@@ -142,7 +144,7 @@ export function IntegrationManagementPage({ team }: Props) {
             </Typography>
 
             <Stack spacing={2}>
-                {integrationTypes.map(type => (
+                {integrationTypes.filter(type => !("systemAdminOnly" in type) || !type.systemAdminOnly || isSystemAdmin).map(type => (
                     <IntegrationCard
                         key={type.key}
                         icon={type.icon}

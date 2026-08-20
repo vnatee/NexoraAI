@@ -12,6 +12,7 @@ import Autocomplete from "@mui/material/Autocomplete";
 import { STORAGE_KEYS } from "../../utill/storageKeys";
 import { Storage } from "../../utill/storage";
 import { TeamProfile } from "../../api";
+import { DocumentProcessingUploadSelector } from "../DocumentProcessingUploadSelector/DocumentProcessingUploadSelector";
 
 interface DataGroup {
     _id: string;
@@ -64,6 +65,7 @@ export const GroupFileUpload: React.FC = () => {
     const [paginationModel, setPaginationModel] = useState<GridPaginationModel>({ pageSize: 10, page: 0 });
     const handleRemoveSelectedFile = (index: number) => setSelectedFiles(prev => prev.filter((_, i) => i !== index));
     const [loadedTeamId, setLoadedTeamId] = useState<string | null>(null);
+    const [processingProfileId, setProcessingProfileId] = useState("");
 
     const generateRowsForGrid = (node: { files: FileRow[]; folders: Record<string, FileTreeNode> }, depth = 0): FileRow[] => {
         let rows: FileRow[] = [];
@@ -338,6 +340,7 @@ export const GroupFileUpload: React.FC = () => {
                 // await uploadGroupFileApi(formData, token, gid);
                 // uploadTeamFileApi(formData, selectedDataGroupIds, team_id, token);
             }
+            if (processingProfileId) formData.append("processing_profile_id", processingProfileId);
 
             uploadTeamFileApi(formData, selectedDataGroupIds, team_id, token).catch(err => {
                 console.error("Background upload error", err);
@@ -732,6 +735,9 @@ export const GroupFileUpload: React.FC = () => {
             </Box>
 
             {/* Data Group Single Select */}
+            <Box sx={{ mb: 2 }}>
+                <DocumentProcessingUploadSelector value={processingProfileId} onChange={setProcessingProfileId} />
+            </Box>
             <Box sx={{ mb: 2 }}>
                 <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
                     Select Data Group

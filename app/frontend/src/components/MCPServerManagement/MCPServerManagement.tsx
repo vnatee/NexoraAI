@@ -73,6 +73,11 @@ interface MCPTemplateDefinition {
     available: boolean;
 }
 
+interface DiscoveredMCPTool {
+    name: string;
+    description?: string;
+}
+
 const MCP_TEMPLATE_GROUPS: MCPTemplateDefinition["group"][] = ["Observability", "Diagram & Collaboration", "Cloud & Platform", "Custom"];
 
 const MCP_TEMPLATES: MCPTemplateDefinition[] = [
@@ -128,7 +133,9 @@ export function MCPServerManagement() {
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [testingId, setTestingId] = useState<string | null>(null);
-    const [testStatus, setTestStatus] = useState<Record<string, { status: "success" | "error"; toolCount?: number }>>({});
+    const [testStatus, setTestStatus] = useState<Record<string, { status: "success" | "error"; tools?: DiscoveredMCPTool[] }>>({});
+    const [toolDialogServer, setToolDialogServer] = useState<ManagedMCPServer | null>(null);
+    const [toolSearch, setToolSearch] = useState("");
     const [categoryFilter, setCategoryFilter] = useState<"all" | MCPCategory>("all");
     const [editing, setEditing] = useState<ManagedMCPServer | null>(null);
     const [form, setForm] = useState<MCPServerPayload>(emptyPayload());
@@ -276,7 +283,7 @@ export function MCPServerManagement() {
             const token = await getToken(instance);
             if (!token) throw new Error("No authentication token");
             const result = await testMCPServerApi(server._id, token);
-            setTestStatus(previous => ({ ...previous, [server._id]: { status: "success", toolCount: result.tools.length } }));
+            setTestStatus(previous => ({ ...previous, [server._id]: { status: "success", tools: result.tools } }));
             setNotice({ severity: "success", text: `${server.name}: discovered ${result.tools.length} tool(s)` });
         } catch (error) {
             setTestStatus(previous => ({ ...previous, [server._id]: { status: "error" } }));
@@ -287,6 +294,11 @@ export function MCPServerManagement() {
     };
 
     const filteredServers = categoryFilter === "all" ? servers : servers.filter(server => server.category === categoryFilter);
+    const discoveredTools = toolDialogServer ? testStatus[toolDialogServer._id]?.tools ?? [] : [];
+    const visibleTools = discoveredTools.filter(tool => {
+        const query = toolSearch.trim().toLocaleLowerCase();
+        return !query || tool.name.toLocaleLowerCase().includes(query) || (tool.description ?? "").toLocaleLowerCase().includes(query);
+    });
 
     const remove = async (server: ManagedMCPServer) => {
         if (!window.confirm(`Remove MCP server ${server.name}?`)) return;
@@ -388,7 +400,17 @@ export function MCPServerManagement() {
                                         {server.has_headers && <Chip size="small" variant="outlined" label="Headers stored" />}
                                         <Chip size="small" color="primary" variant="outlined" label={`${server.agent_usage_count ?? 0} Agent(s)`} />
                                         {testStatus[server._id]?.status === "success" && (
-                                            <Chip size="small" color="success" label={`Connected · ${testStatus[server._id].toolCount ?? 0} tools`} />
+                                            <Chip
+                                                size="small"
+                                                color="success"
+                                                clickable
+                                                label={`Connected · ${testStatus[server._id].tools?.length ?? 0} tools`}
+                                                onClick={() => {
+                                                    setToolDialogServer(server);
+                                                    setToolSearch("");
+                                                }}
+                                                aria-label={`View ${testStatus[server._id].tools?.length ?? 0} tools discovered from ${server.name}`}
+                                            />
                                         )}
                                         {testStatus[server._id]?.status === "error" && <Chip size="small" color="error" label="Test failed" />}
                                     </Stack>
@@ -427,6 +449,44 @@ export function MCPServerManagement() {
                     )}
                 </Stack>
             )}
+
+            <Dialog open={Boolean(toolDialogServer)} onClose={() => setToolDialogServer(null)} fullWidth maxWidth="md">
+                <DialogTitle>
+                    <Typography variant="h6" component="div">Tools available from {toolDialogServer?.name}</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                        {discoveredTools.length} tool(s) returned by the latest connection test
+                    </Typography>
+                </DialogTitle>
+                <DialogContent dividers>
+                    <TextField
+                        fullWidth
+                        size="small"
+                        label="Search tools"
+                        placeholder="Search by name or description"
+                        value={toolSearch}
+                        onChange={event => setToolSearch(event.target.value)}
+                        sx={{ mb: 2 }}
+                    />
+                    <Stack spacing={1}>
+                        {visibleTools.map(tool => (
+                            <Paper key={tool.name} variant="outlined" sx={{ p: 1.5 }}>
+                                <Typography fontWeight={600} sx={{ overflowWrap: "anywhere" }}>{tool.name}</Typography>
+                                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, whiteSpace: "pre-wrap" }}>
+                                    {tool.description?.trim() || "No description provided by this MCP server."}
+                                </Typography>
+                            </Paper>
+                        ))}
+                        {!visibleTools.length && (
+                            <Typography color="text.secondary" textAlign="center" py={3}>
+                                {discoveredTools.length ? "No tools match this search." : "This server returned no tools."}
+                            </Typography>
+                        )}
+                    </Stack>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setToolDialogServer(null)}>Close</Button>
+                </DialogActions>
+            </Dialog>
 
             <Dialog open={dialogOpen} onClose={() => !saving && setDialogOpen(false)} fullWidth maxWidth="md">
                 <DialogTitle>{editing ? "Edit MCP Server" : "Add MCP Server"}</DialogTitle>

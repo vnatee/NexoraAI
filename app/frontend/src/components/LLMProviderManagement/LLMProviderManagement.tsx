@@ -86,7 +86,7 @@ export function LLMProviderManagement() {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [editing, setEditing] = useState<ManagedLLMProvider | null>(null);
     const [form, setForm] = useState<LLMProviderPayload>(emptyPayload());
-    const [notice, setNotice] = useState<{ severity: "success" | "error"; text: string } | null>(null);
+    const [notice, setNotice] = useState<{ severity: "success" | "warning" | "error"; text: string } | null>(null);
     const selectedVendor = vendorOptions.find(vendor => vendor.id === form.vendor);
     const apiKeyRequired = Boolean(selectedVendor?.requiresApiKey && form.enabled && !editing?.has_api_key);
 
@@ -169,14 +169,35 @@ export function LLMProviderManagement() {
     };
 
     const testConnection = async (provider: ManagedLLMProvider) => {
-        const model = provider.models[0];
-        if (!model) return;
+        if (provider.models.length === 0) return;
         setTestingId(provider._id);
         try {
             const token = await getToken(instance);
             if (!token) throw new Error("No authentication token");
-            await testLLMProviderApi(provider._id, model.id, token);
-            setNotice({ severity: "success", text: `${provider.name} connection succeeded` });
+            const unsupported: string[] = [];
+            const unknown: string[] = [];
+            const failed: string[] = [];
+            for (const model of provider.models) {
+                try {
+                    const result = await testLLMProviderApi(provider._id, model.id, token);
+                    if (result.tool_capability.status === "unsupported") unsupported.push(model.label || model.model);
+                    if (result.tool_capability.status === "unknown") unknown.push(model.label || model.model);
+                } catch {
+                    failed.push(model.label || model.model);
+                }
+            }
+            await loadProviders();
+            if (failed.length > 0) {
+                setNotice({ severity: "error", text: `${provider.name}: connection failed for ${failed.join(", ")}` });
+            } else if (unsupported.length > 0 || unknown.length > 0) {
+                const details = [
+                    unsupported.length > 0 ? `tool calling unsupported: ${unsupported.join(", ")}` : "",
+                    unknown.length > 0 ? `capability inconclusive: ${unknown.join(", ")}` : ""
+                ].filter(Boolean).join("; ");
+                setNotice({ severity: "warning", text: `${provider.name} connection succeeded; ${details}` });
+            } else {
+                setNotice({ severity: "success", text: `${provider.name} connection and tool calling succeeded for all models` });
+            }
         } catch (error) {
             setNotice({ severity: "error", text: error instanceof Error ? error.message : "Connection failed" });
         } finally {
@@ -312,6 +333,7 @@ export function LLMProviderManagement() {
                                         <Switch
                                             size="small"
                                             checked={model.supports_tools ?? true}
+                                            disabled={model.tool_capability_status === "unsupported"}
                                             onChange={event => {
                                                 const models = form.models.map((item, modelIndex) =>
                                                     modelIndex === index ? { ...item, supports_tools: event.target.checked } : item
@@ -319,7 +341,11 @@ export function LLMProviderManagement() {
                                                 setForm({ ...form, models });
                                             }}
                                         />
-                                        <Typography variant="body2">Supports tool / function calling</Typography>
+                                        <Typography variant="body2" color={model.tool_capability_status === "unsupported" ? "text.disabled" : "text.primary"}>
+                                            Supports tool / function calling
+                                            {model.tool_capability_status === "unsupported" ? " — Not supported (detected by Test)" : ""}
+                                            {model.tool_capability_status === "supported" ? " — Supported (detected by Test)" : ""}
+                                        </Typography>
                                     </Stack>
                                 </Stack>
                             </Paper>
