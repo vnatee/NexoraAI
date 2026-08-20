@@ -436,7 +436,11 @@ class ManagedDocumentParser(Parser):
                 file_extension=extension,
                 scope=str(routing_context.get("scope") or "personal"),
                 team_id=str(routing_context.get("team_id") or ""),
-                explicit_profile_id=str(routing_context.get("explicit_profile_id") or ""),
+                explicit_profile_id=str(
+                    routing_context.get("resolved_profile_id")
+                    or routing_context.get("explicit_profile_id")
+                    or ""
+                ),
             )
             if route.get("status") == "error":
                 raise ValueError(str(route.get("reason") or "Document processing route failed"))

@@ -26,6 +26,7 @@ import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import CancelIcon from "@mui/icons-material/Cancel";
 import Tooltip from "@mui/material/Tooltip";
 import { DocumentProcessingUploadSelector } from "../DocumentProcessingUploadSelector/DocumentProcessingUploadSelector";
+import { IngestionJobStatus } from "../IngestionJobStatus";
 
 import styles from "./UploadFile.module.css";
 
@@ -43,7 +44,7 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
     const [deletionStatus, setDeletionStatus] = useState<{ [filename: string]: "pending" | "error" | "success" }>({});
     const [uploadedFile, setUploadedFile] = useState<SimpleAPIResponse>();
     const [uploadedFileError, setUploadedFileError] = useState<string>();
-    const [uploadedFiles, setUploadedFiles] = useState<[string, number][]>([]);
+    const [uploadedFiles, setUploadedFiles] = useState<[string, number, string | null][]>([]);
 
     const { t } = useTranslation();
     const [isOpen, setIsOpen] = useState(false);
@@ -60,6 +61,7 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
     const [newSize, setNewSize] = useState<number>(0);
     const [totalUsed, setTotalUsed] = useState<number>(0);
     const [processingProfileId, setProcessingProfileId] = useState("");
+    const [jobRefreshKey, setJobRefreshKey] = useState(0);
 
     const formatFileSize = (size: number): string => {
         if (size === 0) return "0 KB";
@@ -120,9 +122,9 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
 
             const entries = Object.values(raw);
 
-            const safeEntries: [string, number][] = entries
+            const safeEntries: [string, number, string | null][] = entries
                 .filter(v => Array.isArray(v) && typeof v[0] === "string" && (typeof v[1] === "string" || typeof v[1] === "number"))
-                .map(v => [v[0], Number(v[1])]); // ⬅ แปลงตรงนี้
+                .map(v => [v[0], Number(v[1]), typeof v[2] === "string" ? v[2] : null]);
 
             setUploadedFiles(safeEntries);
 
@@ -187,6 +189,7 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
             }
             const response: SimpleAPIResponse = await uploadFileApi(formData, idToken);
             setUploadedFile(response);
+            setJobRefreshKey(value => value + 1);
             setIsUploading(false);
             setUploadedFileError(undefined);
             setOpenSuccess(true);
@@ -279,6 +282,8 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
                                 </Box>
                             )}
 
+                            <IngestionJobStatus scope="personal" refreshKey={jobRefreshKey} />
+
                             <Snackbar
                                 open={openError}
                                 autoHideDuration={3000}
@@ -335,7 +340,7 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
                                 <Typography>{t("upload.noFilesUploaded")}</Typography>
                             ) : (
                                 <Stack spacing={1}>
-                                    {uploadedFiles.map(([file, size]) => (
+                                    {uploadedFiles.map(([file, size, indexedAt]) => (
                                         <Paper
                                             key={file}
                                             elevation={1}
@@ -346,9 +351,12 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
                                                 alignItems: "center"
                                             }}
                                         >
-                                            <Typography variant="body2" noWrap title={file}>
-                                                {truncateFileName(file, 45)}
-                                            </Typography>
+                                            <Box minWidth={0}>
+                                                <Typography variant="body2" noWrap title={file}>{truncateFileName(file, 45)}</Typography>
+                                                <Typography variant="caption" color="text.secondary">
+                                                    Indexed: {indexedAt ? new Date(indexedAt).toLocaleString() : "Not indexed yet"}
+                                                </Typography>
+                                            </Box>
 
                                             <Typography variant="caption" sx={{ opacity: 0.6 }}>
                                                 {formatFileSize(size)}

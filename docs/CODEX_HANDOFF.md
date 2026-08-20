@@ -17,6 +17,9 @@ logs, credentials, attachments, or repetitive conversational text.
   capability testing, MCP discovered-tool details, and the pre-existing
   devcontainer-name edit. The product owner explicitly requested the checkpoint
   before proceeding to the next slice.
+- Current uncommitted work implements persistent ingestion jobs, upload status
+  UI, Retry, worker leases, and restart recovery. Preserve it until the live
+  Personal/Team/Global smoke tests below are accepted.
 - Automated validation passed at checkpoint time. The live OCR routing checks
   in the manual smoke-test section remain deployment acceptance work; do not
   treat the checkpoint itself as evidence that those external services passed.
@@ -221,6 +224,26 @@ rejected. Duplicates created before this protection are not deleted
 automatically; remove the unwanted entry through the UI after confirming that
 no routing rule uses it.
 
+## Persistent ingestion jobs
+
+Personal, Team, and Global uploads now create one MongoDB-backed job per file
+and return HTTP 202 after the source object is stored. OCR extraction, chunking,
+embedding/indexing, and completion/failure are timestamped. The upload UI shows
+the current stage, selected provider/profile/rule, elapsed time, safe error
+message, and Retry for failed work. Job list and Retry queries are restricted to
+the authenticated submitter; existing Personal and data-group ACLs are reused.
+Active and failed jobs remain in the Recent panel. Indexed jobs stay there for
+60 seconds as completion feedback, then their durable Indexed Time is shown in
+the corresponding Personal, Team, or Global file list instead. The Mongo job
+record is retained; only its Recent-panel visibility is shortened.
+
+The processing profile resolved at submission is pinned into the private job
+context so rule edits cannot make the displayed provider differ from the parser
+actually used. Mongo worker leases and a recovery sweep resume unclaimed work
+and work whose process lease expired after restart. This remains an in-process
+worker rather than an external durable queue; see `docs/ingestion-jobs.md` for
+the contract and scaling limitation.
+
 Example target rules:
 
 | Scope | File types | Profile/provider | Priority |
@@ -235,9 +258,8 @@ Example target rules:
 
 ### Near-term document work
 
-1. Persistent ingestion jobs and status UI for `Uploaded`, `Extracting`,
-   `Chunking`, `Embedding`, `Indexed`, and `Failed`, including provider, timing,
-   error, and Retry.
+1. Manually smoke-test persistent ingestion jobs across Personal/Team/Global,
+   including restart lease recovery and Retry after a controlled provider error.
 2. Page-aware Docling output so citations use real page numbers rather than one
    logical page.
 3. Persist/index selected safe OCR metadata such as provider and confidence.
@@ -272,6 +294,10 @@ The guardrail/API/dashboard discussion order is documented in
 - **OCR routing:** automated tests cover precedence, conflicts, fallback and
   override authorization, but live Personal/Team/Global uploads with multiple
   providers still require manual smoke testing before checkpointing.
+- **Ingestion worker:** jobs and leases are persistent, but execution still runs
+  inside the web application. Use a dedicated queue/worker before high-volume
+  horizontal scaling or extraction calls that can exceed the one-hour lease.
+  No automatic ingestion-job retention/TTL policy is configured yet.
 - **Local mode:** LLM/provider work is ahead of search, storage, authentication,
   and deployment migration; this is not yet a fully local product.
 - **Tool-capability probes:** detection is a live request and can consume a small
@@ -330,7 +356,7 @@ Do not put real credentials in this file or examples.
 Latest service-free backend regression on 2026-08-20:
 
 ```text
-467 passed, 1 deselected
+474 passed, 1 deselected
 ```
 
 Command:
@@ -343,6 +369,12 @@ Latest focused OCR/upload/profile-idempotency validation:
 
 ```text
 62 passed
+```
+
+Latest focused ingestion-job and document-processing validation:
+
+```text
+39 passed
 ```
 
 Latest focused LLM provider/model-capability validation:
@@ -380,6 +412,10 @@ Known non-blocking warnings:
 - Azure startup, Personal/Team/Global upload, search, deletion, and citations.
 - OCR routing precedence for Personal/Team/Global, Auto selection, authorized
   manual override, conflict rejection, Explain Route, and legacy/system fallback.
+- Persistent job stages for Personal/Team/Global, selected provider/profile/rule,
+  controlled failure and Retry, page refresh persistence, and restart recovery
+  after the worker lease expires. Confirm Indexed leaves Recent after about one
+  minute while Indexed Time remains visible in the relevant file list.
 - At least one Agent per OpenAI/Gemini/Ollama provider and a tool-capable model.
 - Run LLM Provider Test for every configured model and verify supported models
   stay enabled, unsupported switches become disabled, and ambiguous failures
@@ -399,9 +435,10 @@ Known non-blocking warnings:
 
 ```text
 Read AGENTS.md and docs/CODEX_HANDOFF.md completely. Preserve the dirty working
-tree and do not commit or discard unrelated changes. Manually smoke-test OCR
-Routing Rules across Personal, Team, and Global uploads, including Auto,
-system-admin override, Explain Route, conflicts, unavailable-provider fallback,
-ACL-filtered retrieval, deletion, and restart persistence. Do not checkpoint or
-begin persistent ingestion jobs until the routing slice is accepted.
+tree and do not commit or discard unrelated changes. Manually smoke-test
+persistent ingestion jobs across Personal, Team, and Global uploads: confirm
+Uploaded/Extracting/Chunking/Embedding/Indexed, provider/profile/rule metadata,
+ACL-filtered retrieval, controlled failure and Retry, refresh persistence, and
+restart lease recovery. Fix concrete defects with focused tests before starting
+page-aware Docling citation work.
 ```

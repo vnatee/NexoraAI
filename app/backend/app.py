@@ -114,6 +114,17 @@ from mongo_table_connecters.document_processing import (
     save_routing_rule as save_document_routing_rule,
     serialize_provider as serialize_document_provider,
 )
+from mongo_table_connecters.ingestion_jobs import (
+    claim_ingestion_job,
+    create_ingestion_job,
+    get_ingestion_job,
+    latest_indexed_times,
+    list_ingestion_jobs,
+    list_recoverable_ingestion_jobs,
+    restart_failed_ingestion_job,
+    serialize_ingestion_job,
+    update_ingestion_job_status,
+)
 
 from azure.cognitiveservices.speech import (
     ResultReason,
@@ -2496,50 +2507,210 @@ async def document_processing_upload_options(auth_claims: dict[str, Any]):
 #    chart generation ทำใน /chat/stream flow ผ่าน chart binding ของ agent แทน
 #    (เดิมเป็น endpoint เดี่ยวที่ยิง external API แล้วคืนผลลัพธ์ ไม่ใช่การสร้างกราฟจริงๆ)
 
+BACKGROUND_TASKS = set()
+INGEST_SEM = asyncio.Semaphore(3)
+INGESTION_WORKER_ID = str(uuid.uuid4())
+
+
+def _file_size(stream: io.BufferedReader) -> int:
+    position = stream.tell()
+    stream.seek(0, os.SEEK_END)
+    size = stream.tell()
+    stream.seek(position)
+    return size
+
+
+def _resolve_upload_route(filename: str, routing_context: dict[str, str]) -> dict[str, Any]:
+    route = resolve_processing_route(
+        file_extension=Path(filename).suffix.lower(),
+        scope=routing_context["scope"],
+        team_id=routing_context.get("team_id", ""),
+        explicit_profile_id=routing_context.get("explicit_profile_id", ""),
+    )
+    if route.get("status") == "error":
+        raise ValueError(str(route.get("reason") or "Document processing route failed"))
+    profile = route.get("profile") or {}
+    if profile.get("_id"):
+        routing_context["resolved_profile_id"] = str(profile["_id"])
+    return route
+
+
+def _schedule_ingestion_job(job_id: str) -> None:
+    task = asyncio.create_task(_run_ingestion_job(job_id))
+    BACKGROUND_TASKS.add(task)
+    task.add_done_callback(BACKGROUND_TASKS.discard)
+
+
+async def _set_job_blob_status(job: dict[str, Any], status: str) -> None:
+    if job.get("scope") == "personal":
+        return
+    config_key = CONFIG_GROUP_BLOB_CONTAINER_CLIENT if job.get("scope") == "team" else CONFIG_BLOB_CONTAINER_CLIENT
+    container: ContainerClient = current_app.config[config_key]
+    blob = container.get_blob_client(str(job["storage_path"]))
+    tags = {"status": status}
+    if job.get("scope") == "team":
+        tags["data_groups"] = "/".join(job.get("data_group_ids") or [])
+    try:
+        await blob.set_blob_tags(tags=tags)
+    except Exception:
+        current_app.logger.warning("Unable to update blob status for ingestion job %s", job.get("_id"), exc_info=True)
+
+
+async def _run_ingestion_job(job_id: str) -> None:
+    job = await asyncio.to_thread(claim_ingestion_job, job_id, INGESTION_WORKER_ID)
+    if not job:
+        return
+
+    async def update_stage(status: str) -> None:
+        await asyncio.to_thread(
+            update_ingestion_job_status,
+            job_id,
+            status,
+            worker_id=INGESTION_WORKER_ID,
+        )
+        await _set_job_blob_status(job, "InProgress")
+
+    try:
+        scope = str(job["scope"])
+        if scope == "personal":
+            file_system: FileSystemClient = current_app.config[CONFIG_USER_BLOB_CONTAINER_CLIENT]
+            storage_client = file_system.get_file_client(str(job["storage_path"]))
+            downloader = await storage_client.download_file()
+            acls = {"oids": [str(job["owner_id"])]}
+            folder = ""
+        else:
+            config_key = CONFIG_GROUP_BLOB_CONTAINER_CLIENT if scope == "team" else CONFIG_BLOB_CONTAINER_CLIENT
+            container: ContainerClient = current_app.config[config_key]
+            storage_client = container.get_blob_client(str(job["storage_path"]))
+            downloader = await storage_client.download_blob()
+            acls = {"oids": [], "groups": list(job.get("data_group_ids") or [])}
+            folder = os.path.dirname(str(job["storage_path"]))
+            folder = folder + os.sep if folder else ""
+
+        data = await downloader.readall()
+        stream = BytesIO(data)
+        stream.name = str(job["filename"])
+        ingester: UploadUserFileStrategy = current_app.config[CONFIG_INGESTER]
+        async with INGEST_SEM:
+            if scope == "personal":
+                is_docintel, count = await ingester.add_file(
+                    File(content=stream, acls=acls, url=storage_client.url),
+                    routing_context=job.get("routing_context") or {},
+                    status_callback=update_stage,
+                )
+            else:
+                is_docintel, count = await ingester.add_global_file(
+                    File(content=stream, acls=acls, url=storage_client.url),
+                    folder,
+                    routing_context=job.get("routing_context") or {},
+                    status_callback=update_stage,
+                )
+            if is_docintel:
+                usage_scope = "personal" if scope == "personal" else ("team" if scope == "team" else "public")
+                insert_docintel_usage(str(job.get("owner_name") or ""), str(job.get("team_id") or ""), usage_scope, count)
+        await asyncio.to_thread(
+            update_ingestion_job_status,
+            job_id,
+            "indexed",
+            worker_id=INGESTION_WORKER_ID,
+        )
+        await _set_job_blob_status(job, "Pass")
+    except Exception as error:
+        current_app.logger.exception("Ingestion job %s failed", job_id)
+        await asyncio.to_thread(
+            update_ingestion_job_status,
+            job_id,
+            "failed",
+            error=error,
+            worker_id=INGESTION_WORKER_ID,
+        )
+        await _set_job_blob_status(job, "Failed")
+
+
+async def _recover_ingestion_jobs() -> None:
+    while True:
+        try:
+            jobs = await asyncio.to_thread(list_recoverable_ingestion_jobs)
+            for job in jobs:
+                _schedule_ingestion_job(str(job["_id"]))
+        except Exception:
+            current_app.logger.exception("Unable to recover persistent ingestion jobs")
+        await asyncio.sleep(30)
+
+
+@bp.get("/ingestion-jobs")
+@authenticated
+async def ingestion_jobs(auth_claims: dict[str, Any]):
+    scope = str(request.args.get("scope") or "").strip().lower()
+    if scope and scope not in {"personal", "team", "global"}:
+        return jsonify({"error": "scope must be personal, team or global"}), 400
+    team_id = str(request.args.get("team_id") or "").strip()
+    try:
+        limit = int(request.args.get("limit") or 20)
+    except ValueError:
+        return jsonify({"error": "limit must be an integer"}), 400
+    jobs = list_ingestion_jobs(str(auth_claims["oid"]), scope=scope, team_id=team_id, limit=limit)
+    return jsonify({"jobs": [serialize_ingestion_job(job) for job in jobs]})
+
+
+@bp.post("/ingestion-jobs/<job_id>/retry")
+@authenticated
+async def retry_ingestion_job(auth_claims: dict[str, Any], job_id: str):
+    job = restart_failed_ingestion_job(job_id, str(auth_claims["oid"]))
+    if not job:
+        return jsonify({"error": "Failed ingestion job not found"}), 404
+    _schedule_ingestion_job(job_id)
+    return jsonify({"message": "Ingestion retry submitted", "job": serialize_ingestion_job(job)}), 202
+
+
 @bp.post("/upload")
 @authenticated
 async def upload(auth_claims: dict[str, Any]):
     request_files = await request.files
     request_form = await request.form
     if "file" not in request_files:
-        # If no files were included in the request, return an error response
         return jsonify({"message": "No file part in the request", "status": "failed"}), 400
 
-    user_oid = auth_claims["oid"]
-    user_name = auth_claims["preferred_username"]
+    user_oid = str(auth_claims["oid"])
+    user_name = str(auth_claims["preferred_username"])
     explicit_profile_id = str(request_form.get("processing_profile_id") or "").strip()
     if explicit_profile_id:
         _require_system_admin(auth_claims)
     file = request_files.getlist("file")[0]
-    user_blob_container_client: FileSystemClient = current_app.config[
-        CONFIG_USER_BLOB_CONTAINER_CLIENT]
-    user_directory_client = user_blob_container_client.get_directory_client(
-        user_oid)
+    routing_context = {
+        "scope": "personal",
+        "team_id": "",
+        "user_id": user_oid,
+        "explicit_profile_id": explicit_profile_id,
+    }
     try:
-        await user_directory_client.get_directory_properties()
+        route = _resolve_upload_route(file.filename, routing_context)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    user_file_system: FileSystemClient = current_app.config[CONFIG_USER_BLOB_CONTAINER_CLIENT]
+    user_directory = user_file_system.get_directory_client(user_oid)
+    try:
+        await user_directory.get_directory_properties()
     except ResourceNotFoundError:
         current_app.logger.info("Creating directory for user %s", user_oid)
-        await user_directory_client.create_directory()
-    await user_directory_client.set_access_control(owner=user_oid)
-    file_client = user_directory_client.get_file_client(file.filename)
-    file_io = file
-    file_io.name = file.filename
-    file_io = io.BufferedReader(file_io)
+        await user_directory.create_directory()
+    await user_directory.set_access_control(owner=user_oid)
+    file_client = user_directory.get_file_client(file.filename)
+    file_io = io.BufferedReader(file)
+    size = _file_size(file_io)
     await file_client.upload_data(file_io, overwrite=True, metadata={"UploadedBy": user_oid})
-    file_io.seek(0)
-    ingester: UploadUserFileStrategy = current_app.config[CONFIG_INGESTER]
-    is_docintel, count = await ingester.add_file(
-        File(content=file_io, acls={"oids": [user_oid]}, url=file_client.url),
-        routing_context={
-            "scope": "personal",
-            "team_id": "",
-            "user_id": user_oid,
-            "explicit_profile_id": explicit_profile_id,
-        },
+    job = create_ingestion_job(
+        owner_id=user_oid,
+        owner_name=user_name,
+        scope="personal",
+        filename=file.filename,
+        storage_path=f"{user_oid}/{file.filename}",
+        file_size=size,
+        routing_context=routing_context,
+        route=route,
     )
-    if is_docintel:
-        insert_docintel_usage(user_name, '', 'personal', count)
-    return jsonify({"message": "File uploaded successfully"}), 200
+    _schedule_ingestion_job(str(job["_id"]))
+    return jsonify({"message": "Upload accepted for processing", "jobs": [serialize_ingestion_job(job)]}), 202
 
 
 @bp.post("/delete_uploaded")
@@ -2558,36 +2729,6 @@ async def delete_uploaded(auth_claims: dict[str, Any]):
     await ingester.remove_file(filename, user_oid)
     return jsonify({"message": f"File {filename} deleted successfully"}), 200
 
-BACKGROUND_TASKS = set()
-INGEST_SEM = asyncio.Semaphore(3)
-
-
-async def run_ingest_task(
-    blob_client, data_groups_tag, data_groups_list, folder, user_name, team_id, filename, routing_context
-):
-    try:
-        ingester: UploadUserFileStrategy = current_app.config[CONFIG_INGESTER]
-        downloader = await blob_client.download_blob()
-        data = await downloader.readall()
-        stream = BytesIO(data)
-        stream.name = filename
-        stream.seek(0)
-        async with INGEST_SEM:
-            await blob_client.set_blob_tags(tags={"status": "InProgress", "data_groups": data_groups_tag})
-            is_docintel, count = await ingester.add_global_file(
-                File(content=stream, acls={"groups": data_groups_list, "oids": []}, url=blob_client.url),
-                folder,
-                routing_context=routing_context,
-            )
-            if is_docintel:
-                insert_docintel_usage(user_name, team_id, "team", count)
-
-        await blob_client.set_blob_tags(tags={"status": "Pass", "data_groups": data_groups_tag})
-    except Exception as ermsg:
-        print(ermsg)
-        await blob_client.set_blob_tags(tags={"status": "Failed", "data_groups": data_groups_tag})
-
-
 @bp.post("/global_upload")
 @authenticated
 async def global_upload(auth_claims: dict[str, Any]):
@@ -2597,8 +2738,8 @@ async def global_upload(auth_claims: dict[str, Any]):
         # If no files were included in the request, return an error response
         return jsonify({"message": "No file part in the request", "status": "failed"}), 400
 
-    user_oid = auth_claims["oid"]
-    user_name = auth_claims["preferred_username"]
+    user_oid = str(auth_claims["oid"])
+    user_name = str(auth_claims["preferred_username"])
     explicit_profile_id = str(request_form.get("processing_profile_id") or "").strip()
     if explicit_profile_id:
         _require_system_admin(auth_claims)
@@ -2610,42 +2751,43 @@ async def global_upload(auth_claims: dict[str, Any]):
         filename = str(blob.name).split("/")[-1]
         existing_files[filename] = blob.size
 
+    jobs = []
     for file in request_files.getlist("file"):
         new_filename = (file.filename).split("/")[-1]
         blob_path = f"{file.filename}"
         blob_client: BlobClient = container_client.get_blob_client(blob_path)
-        file_io = file
-        file_io.name = file.filename
-        file_io = io.BufferedReader(file_io)
-        await blob_client.upload_blob(file_io, overwrite=True, metadata={"UploadedBy": user_oid})
-        file_io.seek(0)
-        ingester: UploadUserFileStrategy = current_app.config[CONFIG_INGESTER]
-        status = 'Pass'
+        file_io = io.BufferedReader(file)
+        size = _file_size(file_io)
+        routing_context = {
+            "scope": "global",
+            "team_id": "",
+            "user_id": user_oid,
+            "explicit_profile_id": explicit_profile_id,
+        }
         try:
-            if new_filename in existing_files:
-                file_bytes = file.read()
-                upload_size = len(file_bytes)
-                if upload_size == existing_files[new_filename]:
-                    status = 'Duplicate'
-            if status != 'Duplicate':
-                folder = os.path.dirname(blob_path)
-                folder = folder + os.sep if folder else ""
-                is_docintel, count = await ingester.add_global_file(
-                    File(content=file_io, acls={"oids": [], "groups": []}, url=blob_client.url),
-                    folder,
-                    routing_context={
-                        "scope": "global",
-                        "team_id": "",
-                        "user_id": user_oid,
-                        "explicit_profile_id": explicit_profile_id,
-                    },
-                )
-                if is_docintel:
-                    insert_docintel_usage(user_name, '', 'public', count)
-        except Exception:
-            status = 'Failed'
-        await blob_client.set_blob_tags(tags={"status": status})
-    return jsonify({"message": "File uploaded successfully"}), 200
+            route = _resolve_upload_route(file.filename, routing_context)
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
+        await blob_client.upload_blob(file_io, overwrite=True, metadata={"UploadedBy": user_oid})
+        job = create_ingestion_job(
+            owner_id=user_oid,
+            owner_name=user_name,
+            scope="global",
+            filename=file.filename,
+            storage_path=blob_path,
+            file_size=size,
+            routing_context=routing_context,
+            route=route,
+        )
+        if new_filename in existing_files and size == existing_files[new_filename]:
+            update_ingestion_job_status(str(job["_id"]), "indexed", result_message="Duplicate file already exists")
+            await blob_client.set_blob_tags(tags={"status": "Duplicate"})
+            job = get_ingestion_job(str(job["_id"])) or job
+        else:
+            await blob_client.set_blob_tags(tags={"status": "Pending"})
+            _schedule_ingestion_job(str(job["_id"]))
+        jobs.append(serialize_ingestion_job(job))
+    return jsonify({"message": "Upload accepted for processing", "jobs": jobs}), 202
 
 
 @bp.post("/team_upload")
@@ -2660,58 +2802,54 @@ async def teams_upload(auth_claims: dict[str, Any]):
     user_oid = auth_claims["oid"]
     team_id = request_form.get("team_id")
     data_groups_id = request_form.get("data_groups_id")
-    data_groups_list = json.loads(data_groups_id)
+    try:
+        data_groups_list = json.loads(data_groups_id or "[]")
+    except json.JSONDecodeError:
+        return jsonify({"error": "data_groups_id must be a JSON array"}), 400
+    if not isinstance(data_groups_list, list) or not all(isinstance(item, str) for item in data_groups_list):
+        return jsonify({"error": "data_groups_id must be a JSON array of IDs"}), 400
     data_groups_tag = "/".join(data_groups_list)
-    user_name = auth_claims["preferred_username"]
+    user_name = str(auth_claims["preferred_username"])
     explicit_profile_id = str(request_form.get("processing_profile_id") or "").strip()
     if explicit_profile_id:
         _require_system_admin(auth_claims)
     # file = request_files.getlist("file")[0]
     container_client: ContainerClient = current_app.config[CONFIG_GROUP_BLOB_CONTAINER_CLIENT]
 
+    jobs = []
     for file in request_files.getlist("file"):
 
         blob_path = f"{str(team_id)}/{file.filename}"
         blob_client: BlobClient = container_client.get_blob_client(blob_path)
-        file_io = file
-        file_io.name = file.filename
-        file_io = io.BufferedReader(file_io)
+        file_io = io.BufferedReader(file)
+        size = _file_size(file_io)
+        routing_context = {
+            "scope": "team",
+            "team_id": str(team_id or ""),
+            "user_id": str(user_oid),
+            "explicit_profile_id": explicit_profile_id,
+        }
+        try:
+            route = _resolve_upload_route(file.filename, routing_context)
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
         await blob_client.upload_blob(file_io, overwrite=True, metadata={"UploadedBy": user_oid})
         await blob_client.set_blob_tags(tags={"status": "Pending", "data_groups": data_groups_tag})
-        file_io.close()
-        folder = os.path.dirname(blob_path)
-        folder = folder + os.sep if folder else ""
-        t = asyncio.create_task(run_ingest_task(
-            blob_client,
-            data_groups_tag,
-            data_groups_list,
-            folder,
-            user_name,
-            team_id,
-            file.filename,
-            {
-                "scope": "team",
-                "team_id": str(team_id or ""),
-                "user_id": user_oid,
-                "explicit_profile_id": explicit_profile_id,
-            },
-        ))
-        BACKGROUND_TASKS.add(t)
-        t.add_done_callback(BACKGROUND_TASKS.discard)
-        # ingester: UploadUserFileStrategy = current_app.config[CONFIG_INGESTER]
-        # status = 'Pass'
-        # try:
-        #     folder = os.path.dirname(blob_path)
-        #     folder = folder + os.sep if folder else ""
-        #     file_io.seek(0)
-        #     is_docintel, count = await ingester.add_global_file(File(content=file_io, acls={"groups": data_groups_list, "oids": []}, url=blob_client.url), folder)
-        #     if is_docintel:
-        #         insert_docintel_usage(user_name, team_id, 'team', count)
-        # except Exception as er:
-        #     print(er)
-        #     status = 'Failed'
-        # await blob_client.set_blob_tags(tags={"status": status,"data_groups": data_groups_tag})
-    return jsonify({"message": "File uploaded successfully"}), 200
+        job = create_ingestion_job(
+            owner_id=str(user_oid),
+            owner_name=user_name,
+            scope="team",
+            team_id=str(team_id or ""),
+            data_group_ids=data_groups_list,
+            filename=file.filename,
+            storage_path=blob_path,
+            file_size=size,
+            routing_context=routing_context,
+            route=route,
+        )
+        _schedule_ingestion_job(str(job["_id"]))
+        jobs.append(serialize_ingestion_job(job))
+    return jsonify({"message": "Upload accepted for processing", "jobs": jobs}), 202
 
 
 @bp.post("/global_delete_uploaded")
@@ -2763,6 +2901,18 @@ async def list_uploaded(auth_claims: dict[str, Any]):
     except ResourceNotFoundError as error:
         if error.status_code != 404:
             current_app.logger.exception("Error listing uploaded files", error)
+    storage_paths = [f"{user_oid}/{item[0]}" for item in files]
+    try:
+        indexed_times = await asyncio.to_thread(
+            latest_indexed_times,
+            "personal",
+            storage_paths,
+            owner_id=str(user_oid),
+        )
+    except Exception:
+        current_app.logger.exception("Unable to load Personal file indexing times")
+        indexed_times = {}
+    files = [item + [indexed_times.get(f"{user_oid}/{item[0]}")] for item in files]
     return jsonify(files), 200
 
 
@@ -2789,6 +2939,18 @@ async def list_team_uploaded(auth_claims: dict[str, Any]):
     except ResourceNotFoundError as error:
         if error.status_code != 404:
             current_app.logger.exception("Error listing uploaded files", error)
+    storage_paths = [f"{tid}/{item[0]}" for item in files]
+    try:
+        indexed_times = await asyncio.to_thread(
+            latest_indexed_times,
+            "team",
+            storage_paths,
+            team_id=str(tid or ""),
+        )
+    except Exception:
+        current_app.logger.exception("Unable to load Team file indexing times")
+        indexed_times = {}
+    files = [item + [indexed_times.get(f"{tid}/{item[0]}")] for item in files]
     return jsonify(files), 200
 
 
@@ -2807,6 +2969,16 @@ async def list_global_uploaded(auth_claims: dict[str, Any]):
     except ResourceNotFoundError as error:
         if error.status_code != 404:
             current_app.logger.exception("Error listing uploaded files", error)
+    try:
+        indexed_times = await asyncio.to_thread(
+            latest_indexed_times,
+            "global",
+            [str(item[0]) for item in files],
+        )
+    except Exception:
+        current_app.logger.exception("Unable to load Global file indexing times")
+        indexed_times = {}
+    files = [item + [indexed_times.get(str(item[0]))] for item in files]
     return jsonify(files), 200
 
 PER_FILE_CONC = 3
@@ -4820,6 +4992,10 @@ async def setup_clients():
             search_field_name_embedding=AZURE_SEARCH_FIELD_NAME_EMBEDDING,
         )
         current_app.config[CONFIG_INGESTER] = ingester
+        if os.getenv("DISABLE_INGESTION_JOB_RECOVERY", "").lower() != "true":
+            recovery_task = asyncio.create_task(_recover_ingestion_jobs())
+            BACKGROUND_TASKS.add(recovery_task)
+            recovery_task.add_done_callback(BACKGROUND_TASKS.discard)
 
     # Used by the OpenAI SDK
     openai_client: AsyncOpenAI

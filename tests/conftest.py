@@ -32,6 +32,7 @@ from openai.types.create_embedding_response import Usage
 os.environ.setdefault("MONGO_URI", "mongodb://localhost:27017")
 os.environ.setdefault("MONGO_DB_NAME", "nexora_test")
 os.environ.setdefault("DISABLE_AGENT_AUDIT_PERSISTENCE", "true")
+os.environ.setdefault("DISABLE_INGESTION_JOB_RECOVERY", "true")
 
 import app
 import core
@@ -69,6 +70,7 @@ def set_custom_app_test_env(monkeypatch):
     monkeypatch.setenv("SKIP_STARTUP_BOOTSTRAP", "true")
     monkeypatch.setenv("SKIP_MANAGED_LLM_PROVIDER_LOAD", "true")
     monkeypatch.setenv("DISABLE_USAGE_PERSISTENCE", "true")
+    monkeypatch.setenv("DISABLE_INGESTION_JOB_RECOVERY", "true")
 
 
 async def mock_search(self, *args, **kwargs):

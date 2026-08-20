@@ -23,7 +23,8 @@ import {
     RegisterUserPayload,
     Prompt,
     DatabaseConnection,
-    MailEmailConfig
+    MailEmailConfig,
+    IngestionJob
 } from "./models";
 import { useLogin, getToken, isUsingAppServicesLogin } from "../authConfig";
 
@@ -197,6 +198,30 @@ export async function uploadGlobalFileApi(request: FormData, idToken: string): P
     return dataResponse;
 }
 
+export async function listIngestionJobsApi(
+    idToken: string,
+    filters: { scope?: "personal" | "team" | "global"; teamId?: string; limit?: number } = {}
+): Promise<IngestionJob[]> {
+    const query = new URLSearchParams();
+    if (filters.scope) query.set("scope", filters.scope);
+    if (filters.teamId) query.set("team_id", filters.teamId);
+    query.set("limit", String(filters.limit ?? 10));
+    const response = await fetch(`/ingestion-jobs?${query}`, { headers: await getHeaders(idToken) });
+    if (!response.ok) throw new Error(`Loading ingestion jobs failed: ${response.statusText}`);
+    const payload = await response.json();
+    return payload.jobs ?? [];
+}
+
+export async function retryIngestionJobApi(jobId: string, idToken: string): Promise<IngestionJob> {
+    const response = await fetch(`/ingestion-jobs/${jobId}/retry`, {
+        method: "POST",
+        headers: await getHeaders(idToken)
+    });
+    if (!response.ok) throw new Error(`Retrying ingestion failed: ${response.statusText}`);
+    const payload = await response.json();
+    return payload.job;
+}
+
 export type ScrapingAPIResponse = {
     message?: string;
     [key: string]: any; // รองรับ fields อื่นๆ จาก backend
@@ -282,7 +307,7 @@ export async function deleteGlobalUploadedFileApi(filename: string, idToken: str
     return dataResponse;
 }
 
-export async function listUploadedFilesApi(idToken: string): Promise<[string, number][]> {
+export async function listUploadedFilesApi(idToken: string): Promise<[string, number, string | null][]> {
     const response = await fetch(`/list_uploaded`, {
         method: "GET",
         headers: await getHeaders(idToken)
@@ -292,11 +317,11 @@ export async function listUploadedFilesApi(idToken: string): Promise<[string, nu
         throw new Error(`Listing files failed: ${response.statusText}`);
     }
 
-    const dataResponse: [string, number][] = await response.json();
+    const dataResponse: [string, number, string | null][] = await response.json();
     return dataResponse;
 }
 
-export async function listUploadedGlobalFilesApi(idToken: string): Promise<string[]> {
+export async function listUploadedGlobalFilesApi(idToken: string): Promise<Array<[string, string, string, number, string | null] | string>> {
     const response = await fetch(`/list_global_uploaded`, {
         method: "GET",
         headers: await getHeaders(idToken)
@@ -306,7 +331,7 @@ export async function listUploadedGlobalFilesApi(idToken: string): Promise<strin
         throw new Error(`Listing files failed: ${response.statusText}`);
     }
 
-    const dataResponse: string[] = await response.json();
+    const dataResponse: Array<[string, string, string, number, string | null] | string> = await response.json();
     return dataResponse;
 }
 
@@ -518,7 +543,7 @@ export async function deleteTeamUploadedFileApi(filename: string, idToken: strin
     return dataResponse;
 }
 
-export async function listUploadedteamFilesApi(team_id: string, idToken: string): Promise<string[]> {
+export async function listUploadedteamFilesApi(team_id: string, idToken: string): Promise<Array<[string, string, string, number, string[], string | null] | string>> {
     const headers = await getHeaders(idToken);
 
     const response = await fetch(`/list_team_uploaded`, {

@@ -6,16 +6,9 @@ import azure.storage.filedatalake.aio
 import pytest
 from azure.search.documents.aio import SearchClient
 from azure.storage.filedatalake.aio import DataLakeDirectoryClient, DataLakeFileClient
-from openai.types.create_embedding_response import (
-    CreateEmbeddingResponse,
-    Embedding,
-    Usage,
-)
 from quart.datastructures import FileStorage
 
-from prepdocslib.embeddings import AzureOpenAIEmbeddingService
-
-from .mocks import MockClient, MockEmbeddingsClient
+import app as app_module
 
 
 # parameterize for directory existing or not
@@ -58,64 +51,57 @@ async def test_upload_file(auth_client, monkeypatch, mock_data_lake_service_clie
 
     monkeypatch.setattr(DataLakeFileClient, "upload_data", mock_upload_file)
 
-    async def mock_create_client(self, *args, **kwargs):
-        # From https://platform.openai.com/docs/api-reference/embeddings/create
-        return MockClient(
-            embeddings_client=MockEmbeddingsClient(
-                create_embedding_response=CreateEmbeddingResponse(
-                    object="list",
-                    data=[
-                        Embedding(
-                            embedding=[
-                                0.0023064255,
-                                -0.009327292,
-                                -0.0028842222,
-                            ],
-                            index=0,
-                            object="embedding",
-                        )
-                    ],
-                    model="text-embedding-3-large",
-                    usage=Usage(prompt_tokens=8, total_tokens=8),
-                )
-            )
-        )
+    created_jobs = []
+    scheduled_jobs = []
+    monkeypatch.setattr(
+        app_module,
+        "_resolve_upload_route",
+        lambda filename, routing_context: {"status": "fallback", "source": "system_fallback"},
+    )
 
-    documents_uploaded = []
+    def mock_create_job(**kwargs):
+        created_jobs.append(kwargs)
+        return {"_id": "job-1"}
 
-    async def mock_upload_documents(self, documents):
-        documents_uploaded.extend(documents)
-
-    monkeypatch.setattr(SearchClient, "upload_documents", mock_upload_documents)
-    monkeypatch.setattr(AzureOpenAIEmbeddingService, "create_client", mock_create_client)
+    monkeypatch.setattr(app_module, "create_ingestion_job", mock_create_job)
+    monkeypatch.setattr(app_module, "serialize_ingestion_job", lambda job: job)
+    monkeypatch.setattr(app_module, "_schedule_ingestion_job", scheduled_jobs.append)
 
     response = await auth_client.post(
         "/upload",
         headers={"Authorization": "Bearer test"},
         files={"file": FileStorage(BytesIO(b"foo;bar"), filename="a.txt")},
     )
-    message = (await response.get_json())["message"]
-    assert message == "File uploaded successfully"
-    assert response.status_code == 200
-    assert len(documents_uploaded) == 1
-    assert documents_uploaded[0]["id"] == "file-a_txt-612E7478747B276F696473273A205B274F49445F58275D7D-page-0"
-    assert documents_uploaded[0]["sourcepage"] == "a.txt"
-    assert documents_uploaded[0]["sourcefile"] == "a.txt"
-    assert documents_uploaded[0]["embedding"] == [0.0023064255, -0.009327292, -0.0028842222]
-    assert documents_uploaded[0]["category"] is None
-    assert documents_uploaded[0]["oids"] == ["OID_X"]
+    payload = await response.get_json()
+    assert payload == {"message": "Upload accepted for processing", "jobs": [{"_id": "job-1"}]}
+    assert response.status_code == 202
+    assert created_jobs[0]["owner_id"] == "OID_X"
+    assert created_jobs[0]["scope"] == "personal"
+    assert created_jobs[0]["storage_path"] == "OID_X/a.txt"
+    assert created_jobs[0]["routing_context"]["scope"] == "personal"
+    assert scheduled_jobs == ["job-1"]
     assert directory_created[0] == (not directory_exists)
 
 
 @pytest.mark.asyncio
 async def test_list_uploaded(auth_client, monkeypatch, mock_data_lake_service_client):
+    monkeypatch.setattr(
+        app_module,
+        "latest_indexed_times",
+        lambda scope, paths, **kwargs: {"OID_X/a.txt": "2026-08-20T13:40:04+00:00"},
+    )
     response = await auth_client.get("/list_uploaded", headers={"Authorization": "Bearer test"})
     assert response.status_code == 200
-    assert (await response.get_json()) == [["a.txt", 1], ["b.txt", 1], ["c.txt", 1]]
+    assert (await response.get_json()) == [
+        ["a.txt", 1, "2026-08-20T13:40:04+00:00"],
+        ["b.txt", 1, None],
+        ["c.txt", 1, None],
+    ]
 
 
 @pytest.mark.asyncio
 async def test_list_uploaded_nopaths(auth_client, monkeypatch, mock_data_lake_service_client):
+    monkeypatch.setattr(app_module, "latest_indexed_times", lambda *args, **kwargs: {})
     class MockResponse:
         def __init__(self):
             self.reason = "No path found"
