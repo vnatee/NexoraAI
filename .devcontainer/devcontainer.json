@@ -1,5 +1,5 @@
 {
-    "name": "Nexora AI Dev Container",
+    "name": "Nexora AI Dev Container.",
     "image": "mcr.microsoft.com/devcontainers/python:3.13-bookworm",
     "containerEnv": {
         "AZURE_OPENAI_API_KEY": "${localEnv:AZURE_OPENAI_API_KEY}"

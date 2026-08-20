@@ -142,6 +142,9 @@ export type LLMProviderModel = {
     model: string;
     deployment?: string | null;
     supports_tools?: boolean;
+    tool_capability_status?: "unknown" | "supported" | "unsupported";
+    tool_capability_checked_at?: string;
+    tool_capability_detail?: string;
 };
 
 export type LLMVendor =
@@ -751,4 +754,13 @@ export interface DocumentProcessingProvider {
 export interface DocumentProcessingProfile {
     _id: string; name: string; provider_id: string; file_types: string[];
     languages: string[]; extract_tables: boolean; is_default: boolean; enabled: boolean;
+}
+export interface DocumentProcessingRoutingRule {
+    _id: string; name: string; scope: "all" | "personal" | "team" | "global";
+    team_id: string; file_types: string[]; profile_id: string; priority: number;
+    enabled: boolean; fallback_behavior: "continue" | "system" | "error";
+}
+export interface DocumentProcessingUploadOptions {
+    can_override: boolean;
+    profiles: DocumentProcessingProfile[];
 }

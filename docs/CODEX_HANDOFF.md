@@ -10,14 +10,16 @@ logs, credentials, attachments, or repetitive conversational text.
 
 - Workspace: `/workspaces/NexoraAI`
 - Branch: `feature/agent-platform-foundation`
-- Latest checkpoint commit: `fba5481 feat: checkpoint agent platform foundation`
+- Latest checkpoint: `feat: checkpoint OCR routing and provider tooling`
+  (the commit containing this handoff state; use `git log -1` for its hash).
 - Azure baseline: `8ee1e8a` / `origin/Release-2.2.0`
-- The working tree is intentionally dirty. It contains substantial post-
-  checkpoint implementation across Agent Runtime, integrations, audit, mail,
-  messaging, and document processing. Do not reset or replace it.
-- No commit was created for the current post-checkpoint work during this
-  handoff. Review the diff and create a new checkpoint only after the current
-  manual smoke tests are accepted.
+- This checkpoint contains OCR Routing Rules/upload overrides, provider
+  capability testing, MCP discovered-tool details, and the pre-existing
+  devcontainer-name edit. The product owner explicitly requested the checkpoint
+  before proceeding to the next slice.
+- Automated validation passed at checkpoint time. The live OCR routing checks
+  in the manual smoke-test section remain deployment acceptance work; do not
+  treat the checkpoint itself as evidence that those external services passed.
 
 ## Product background and fixed decisions
 
@@ -61,6 +63,10 @@ Decisions already made with the product owner:
   Gemini `seed` from being sent.
 - Tool/function-calling support is configured per model because capability
   differs even within one vendor.
+- The LLM Provider **Test** action now tests every configured model and performs
+  a live tool-call probe. Results are stored as `supported`, `unsupported`, or
+  `unknown`. Confirmed unsupported models are forced off and the frontend switch
+  is disabled; inconclusive network/quota/provider errors remain editable.
 - OpenAI, Gemini, and Ollama were manually smoke-tested by the product owner.
 - Azure smoke testing passed earlier in the migration.
 
@@ -91,6 +97,10 @@ See `docs/langgraph-agent-runtime.md`.
 - Encrypted headers, tool allowlists, test/discovery action, timeout isolation.
 - Datadog preset supporting official sites and Bearer PAT/SAT or Datadog
   API/Application keys.
+- After a successful MCP connection test, the connected/tool-count badge opens
+  a searchable dialog containing the discovered tool names and descriptions.
+  This discovery result is held only in the current frontend session and is not
+  persisted; running Test again refreshes it without exposing stored headers.
 - Datadog live behavior was iterated to force tool use when appropriate and to
   handle monitor/log query issues. Treat broader Datadog tool coverage as a
   continuing integration smoke-test area.
@@ -164,37 +174,52 @@ Important validation boundary:
 See `docs/document-processing.md`, `docs/ocr-provider-contract.md`,
 `docker-compose.ocr.yml`, and `services/paddleocr/Dockerfile`.
 
-## Current OCR routing behavior and immediate design gap
+## OCR routing behavior
 
-All Personal, Team, and Global uploads use the same `CONFIG_INGESTER`. The
-managed parser currently resolves only:
+OCR Routing Rules are implemented for Personal, Team, and Global uploads. Rules
+store scope (`all`, `personal`, `team`, `global`), optional team ID, file types,
+processing profile, priority, enabled state, and unavailable-profile behavior.
+
+Resolution is deterministic:
 
 ```text
-default processing profile + file extension
+authorized explicit override
+→ exact team
+→ exact upload scope
+→ all scopes
+→ legacy Default profile
+→ startup Azure/local parser
 ```
 
-The same selected provider therefore applies to all document scopes. Only one
-profile can be marked default because saving a default unsets every other
-default. A non-default profile is stored but is not selected during upload. No
-Provider/Profile selector exists on Personal, Team, or Global upload pages.
+Within a scope, an exact extension outranks `*`, then priority breaks ties.
+Enabled rules at the same scope/file specificity/priority cannot conflict.
+Unavailable profiles may continue to the next rule, use the legacy/system
+fallback chain, or fail the upload.
 
-If the default profile does not include the uploaded extension, the system
-falls back to the startup Azure/local parser configuration.
+The management page includes a Routing Rules tab and an **Explain Route** test.
+The rule list is presented with enabled rules first, then higher priority and
+name, while actual resolution still follows the scope/file-specific precedence
+above. Explain Route disables duplicate submissions and shows a spinner,
+`Checking…` button label, and live status message while the request is running.
+Personal, Team, and Global upload pages default to `Auto — use routing rules`.
+Manual profile selection is currently system-admin-only and is enforced by the
+backend, not only hidden in the UI. Provider/profile/rule management is also
+system-admin-only. Routing context is passed separately from the file stream;
+existing Personal/Team/Global ACL construction was not changed.
+The shared upload selector explicitly renders `Auto — use routing rules` for
+its empty/default value; it no longer appears as an unselected blank field.
 
-Recommended next slice, pending explicit product-owner confirmation:
+The legacy single Default profile remains as a compatibility fallback so an
+existing deployment does not change behavior merely by receiving this update.
 
-1. Replace the single-global-default lookup with OCR Routing Rules containing:
-   scope (`all`, `personal`, `team`, `global`), optional team ID, file types,
-   processing profile/provider, priority, enabled state, and fallback behavior.
-2. Resolve in this order: authorized upload override → team rule → scope rule →
-   file-type/all rule → system fallback.
-3. Add an optional Upload control defaulting to `Auto — use routing rules`.
-   Restrict manual provider/profile override by backend permission.
-4. Pass routing context (`scope`, team, user, explicit profile) into the ingester
-   rather than relying on the file stream alone.
-5. Preserve Personal/Team/Global ACL construction exactly as it is today.
-6. Add conflict validation and an admin “Explain route” test before activating a
-   rule set.
+Processing Profile creation is idempotent in the current frontend. Each opened
+create dialog sends one stable client request UUID, the backend atomically
+upserts on that ID, and the Save button is disabled with a `Saving…` state until
+the request and list refresh complete. Replayed requests return the existing
+profile. New requests with a case-insensitive duplicate profile name are
+rejected. Duplicates created before this protection are not deleted
+automatically; remove the unwanted entry through the UI after confirming that
+no routing rule uses it.
 
 Example target rules:
 
@@ -210,14 +235,13 @@ Example target rules:
 
 ### Near-term document work
 
-1. OCR Routing Rules and upload Auto/Profile selector.
-2. Persistent ingestion jobs and status UI for `Uploaded`, `Extracting`,
+1. Persistent ingestion jobs and status UI for `Uploaded`, `Extracting`,
    `Chunking`, `Embedding`, `Indexed`, and `Failed`, including provider, timing,
    error, and Retry.
-3. Page-aware Docling output so citations use real page numbers rather than one
+2. Page-aware Docling output so citations use real page numbers rather than one
    logical page.
-4. Persist/index selected safe OCR metadata such as provider and confidence.
-5. Chat image attachments: upload/preview/remove, file limits, Agent image
+3. Persist/index selected safe OCR metadata such as provider and confidence.
+4. Chat image attachments: upload/preview/remove, file limits, Agent image
    capability, OCR-only versus multimodal vision, and safe prompt composition.
 
 ### Platform roadmap
@@ -241,14 +265,19 @@ The guardrail/API/dashboard discussion order is documented in
 
 ## Critical known limitations and risks
 
-- **Admin authorization:** several newer management routes use the generic
-  authenticated decorator and may rely partly on UI visibility. Before
-  production, audit every LLM/MCP/OCR/mail/messaging/audit management route and
-  enforce system/team-admin authorization server-side.
-- **OCR routing:** currently one global default profile, extension-only, shared
-  by Personal/Team/Global as described above.
+- **Admin authorization:** OCR provider/profile/rule management now enforces
+  system-admin authorization server-side. Continue auditing mail, messaging and
+  other newer management routes that still use only the generic authenticated
+  decorator or UI visibility.
+- **OCR routing:** automated tests cover precedence, conflicts, fallback and
+  override authorization, but live Personal/Team/Global uploads with multiple
+  providers still require manual smoke testing before checkpointing.
 - **Local mode:** LLM/provider work is ahead of search, storage, authentication,
   and deployment migration; this is not yet a fully local product.
+- **Tool-capability probes:** detection is a live request and can consume a small
+  number of tokens per model. Rate limits or ambiguous provider errors produce
+  `unknown` rather than incorrectly disabling tools. Re-test after changing a
+  model name, deployment, provider version, or compatibility gateway.
 - **Write tools:** mail and messaging execute automatically when allowed. Keep
   narrow bindings, recipient/target constraints, tool policies, and audit.
 - **MCP/REST SSRF:** private REST targets are blocked unless
@@ -301,7 +330,7 @@ Do not put real credentials in this file or examples.
 Latest service-free backend regression on 2026-08-20:
 
 ```text
-450 passed, 1 deselected
+467 passed, 1 deselected
 ```
 
 Command:
@@ -310,10 +339,16 @@ Command:
 .venv/bin/pytest -q -m 'not data_integration'
 ```
 
-Latest focused OCR/config validation:
+Latest focused OCR/upload/profile-idempotency validation:
 
 ```text
-43 passed
+62 passed
+```
+
+Latest focused LLM provider/model-capability validation:
+
+```text
+18 passed
 ```
 
 Frontend typecheck and production build passed. Use:
@@ -323,6 +358,9 @@ cd app/frontend
 npx tsc --noEmit
 NODE_OPTIONS=--max-old-space-size=4096 npm run build
 ```
+
+The default Node heap still exhausted memory during Vite chunk rendering in
+this environment; the documented 4 GB heap command completed successfully.
 
 Compose schemas passed:
 
@@ -340,7 +378,12 @@ Known non-blocking warnings:
 ## Manual smoke-test checklist before the next checkpoint
 
 - Azure startup, Personal/Team/Global upload, search, deletion, and citations.
+- OCR routing precedence for Personal/Team/Global, Auto selection, authorized
+  manual override, conflict rejection, Explain Route, and legacy/system fallback.
 - At least one Agent per OpenAI/Gemini/Ollama provider and a tool-capable model.
+- Run LLM Provider Test for every configured model and verify supported models
+  stay enabled, unsupported switches become disabled, and ambiguous failures
+  remain `unknown` rather than being forced off.
 - LangGraph RAG Auto/Always/Disabled and Legacy rollback.
 - Database schema-first query and full-dataset chart aggregation.
 - Managed MCP discovery, Datadog invocation, allowlist, timeout, and audit.
@@ -356,12 +399,9 @@ Known non-blocking warnings:
 
 ```text
 Read AGENTS.md and docs/CODEX_HANDOFF.md completely. Preserve the dirty working
-tree and do not commit or discard unrelated changes. Inspect the existing OCR
-provider/profile implementation, then propose a focused implementation plan for
-OCR Routing Rules across Personal, Team, and Global uploads. Preserve existing
-ACL behavior and Azure fallback. Add backend authorization, conflict resolution,
-an Explain Route test, optional authorized upload override, focused tests, full
-service-free regression, and frontend production validation. Do not begin a
-different roadmap item until this slice is accepted.
+tree and do not commit or discard unrelated changes. Manually smoke-test OCR
+Routing Rules across Personal, Team, and Global uploads, including Auto,
+system-admin override, Explain Route, conflicts, unavailable-provider fallback,
+ACL-filtered retrieval, deletion, and restart persistence. Do not checkpoint or
+begin persistent ingestion jobs until the routing slice is accepted.
 ```
-

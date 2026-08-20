@@ -10,6 +10,7 @@ from mongo_table_connecters.mongo_connector import get_database
 db = get_database()
 providers_collection = db["document_processing_providers"]
 profiles_collection = db["document_processing_profiles"]
+routing_rules_collection = db["document_processing_routing_rules"]
 PROVIDER_TYPES = {
     "azure_document_intelligence",
     "docling",
@@ -18,6 +19,8 @@ PROVIDER_TYPES = {
     "paddleocr",
     "local_text",
 }
+ROUTING_SCOPES = {"all", "personal", "team", "global"}
+ROUTING_FALLBACK_BEHAVIORS = {"continue", "system", "error"}
 
 
 def _http_endpoint(value: object, label: str) -> str:
@@ -181,24 +184,255 @@ def list_profiles() -> list[dict[str, Any]]:
     return list(profiles_collection.find({"delete_at": None}).sort("name", 1))
 
 
+def get_profile(profile_id: str) -> dict[str, Any] | None:
+    return profiles_collection.find_one({"_id": profile_id, "delete_at": None})
+
+
 def get_default_profile(file_extension: str) -> dict[str, Any] | None:
     return profiles_collection.find_one({"delete_at": None, "enabled": True, "is_default": True, "file_types": file_extension.lower()})
 
 
-def save_profile(data: dict[str, Any], profile_id: str = "") -> dict[str, Any]:
+def save_profile(
+    data: dict[str, Any], profile_id: str = "", create_id: str = ""
+) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
+    target_id = profile_id or create_id
     if data.get("is_default"):
-        profiles_collection.update_many({"delete_at": None, "_id": {"$ne": profile_id}}, {"$set": {"is_default": False}})
+        profiles_collection.update_many({"delete_at": None, "_id": {"$ne": target_id}}, {"$set": {"is_default": False}})
     if profile_id:
         profiles_collection.update_one({"_id": profile_id, "delete_at": None}, {"$set": {**data, "updated_at": now}})
         return profiles_collection.find_one({"_id": profile_id}) or {"_id": profile_id, **data}
-    item = {"_id": str(uuid.uuid4()), **data, "created_at": now, "updated_at": now, "delete_at": None}
+    item_id = create_id or str(uuid.uuid4())
+    item = {"_id": item_id, **data, "created_at": now, "updated_at": now, "delete_at": None}
+    if create_id:
+        profiles_collection.update_one(
+            {"_id": item_id}, {"$setOnInsert": item}, upsert=True
+        )
+        return profiles_collection.find_one({"_id": item_id}) or item
     profiles_collection.insert_one(item)
     return item
 
 
 def delete_profile(profile_id: str) -> bool:
+    if routing_rules_collection.find_one({"profile_id": profile_id, "delete_at": None}):
+        return False
     return profiles_collection.update_one({"_id": profile_id, "delete_at": None}, {"$set": {"enabled": False, "delete_at": datetime.now(timezone.utc)}}).matched_count > 0
+
+
+def _normalize_rule_file_types(value: object) -> list[str]:
+    if not isinstance(value, list):
+        raise ValueError("file_types must be an array")
+    normalized: list[str] = []
+    for item in value:
+        file_type = str(item or "").strip().lower()
+        if file_type != "*" and not file_type.startswith("."):
+            raise ValueError("Routing rule file types must be * or extensions beginning with .")
+        if file_type and file_type not in normalized:
+            normalized.append(file_type)
+    if not normalized:
+        raise ValueError("At least one routing rule file type is required")
+    return normalized
+
+
+def normalize_routing_rule(data: object, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ValueError("Routing rule payload must be an object")
+    old = existing or {}
+    name = str(data.get("name") or old.get("name") or "").strip()
+    if not name:
+        raise ValueError("Routing rule name is required")
+    scope = str(data.get("scope") or old.get("scope") or "all").strip().lower()
+    if scope not in ROUTING_SCOPES:
+        raise ValueError("Routing rule scope must be all, personal, team or global")
+    team_id = str(data.get("team_id") or old.get("team_id") or "").strip()
+    if scope == "team" and not team_id:
+        raise ValueError("A team routing rule requires team_id")
+    if scope != "team":
+        team_id = ""
+    profile_id = str(data.get("profile_id") or old.get("profile_id") or "").strip()
+    if not profile_id or not get_profile(profile_id):
+        raise ValueError("A valid processing profile is required")
+    fallback_behavior = str(
+        data.get("fallback_behavior") or old.get("fallback_behavior") or "continue"
+    ).strip().lower()
+    if fallback_behavior not in ROUTING_FALLBACK_BEHAVIORS:
+        raise ValueError("fallback_behavior must be continue, system or error")
+    try:
+        priority = int(data.get("priority", old.get("priority", 100)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Routing rule priority must be an integer") from exc
+    return {
+        "name": name[:100],
+        "scope": scope,
+        "team_id": team_id,
+        "file_types": _normalize_rule_file_types(data.get("file_types", old.get("file_types", ["*"]))),
+        "profile_id": profile_id,
+        "priority": max(-100000, min(priority, 100000)),
+        "enabled": data.get("enabled", old.get("enabled", True)) is not False,
+        "fallback_behavior": fallback_behavior,
+    }
+
+
+def list_routing_rules(*, enabled_only: bool = False) -> list[dict[str, Any]]:
+    query: dict[str, Any] = {"delete_at": None}
+    if enabled_only:
+        query["enabled"] = True
+    return list(routing_rules_collection.find(query).sort([("priority", -1), ("name", 1)]))
+
+
+def get_routing_rule(rule_id: str) -> dict[str, Any] | None:
+    return routing_rules_collection.find_one({"_id": rule_id, "delete_at": None})
+
+
+def _rule_file_overlap(left: list[str], right: list[str]) -> bool:
+    exact_overlap = (set(left) - {"*"}) & (set(right) - {"*"})
+    return bool(exact_overlap or ("*" in left and "*" in right))
+
+
+def validate_routing_rule_conflicts(
+    candidate: dict[str, Any], rules: list[dict[str, Any]], rule_id: str = ""
+) -> None:
+    if not candidate.get("enabled"):
+        return
+    for rule in rules:
+        if str(rule.get("_id") or "") == rule_id or not rule.get("enabled", True):
+            continue
+        if (
+            rule.get("scope") == candidate.get("scope")
+            and str(rule.get("team_id") or "") == str(candidate.get("team_id") or "")
+            and int(rule.get("priority", 100)) == int(candidate.get("priority", 100))
+            and _rule_file_overlap(rule.get("file_types") or ["*"], candidate.get("file_types") or ["*"])
+        ):
+            raise ValueError(
+                f"Routing rule conflicts with '{rule.get('name') or rule.get('_id')}' at the same scope, file type and priority"
+            )
+
+
+def save_routing_rule(data: dict[str, Any], rule_id: str = "") -> dict[str, Any]:
+    validate_routing_rule_conflicts(data, list_routing_rules(), rule_id)
+    now = datetime.now(timezone.utc)
+    if rule_id:
+        routing_rules_collection.update_one(
+            {"_id": rule_id, "delete_at": None}, {"$set": {**data, "updated_at": now}}
+        )
+        return get_routing_rule(rule_id) or {"_id": rule_id, **data}
+    item = {
+        "_id": str(uuid.uuid4()),
+        **data,
+        "created_at": now,
+        "updated_at": now,
+        "delete_at": None,
+    }
+    routing_rules_collection.insert_one(item)
+    return item
+
+
+def delete_routing_rule(rule_id: str) -> bool:
+    return routing_rules_collection.update_one(
+        {"_id": rule_id, "delete_at": None},
+        {"$set": {"enabled": False, "delete_at": datetime.now(timezone.utc)}},
+    ).matched_count > 0
+
+
+def _matching_rule_sort_key(rule: dict[str, Any], scope: str, team_id: str, extension: str):
+    if rule.get("scope") == "team" and team_id and rule.get("team_id") == team_id:
+        scope_rank = 0
+    elif rule.get("scope") == scope and scope != "team":
+        scope_rank = 1
+    elif rule.get("scope") == "all":
+        scope_rank = 2
+    else:
+        return None
+    file_types = rule.get("file_types") or ["*"]
+    if extension in file_types:
+        file_rank = 0
+    elif "*" in file_types:
+        file_rank = 1
+    else:
+        return None
+    return (scope_rank, file_rank, -int(rule.get("priority", 100)), str(rule.get("name") or rule.get("_id") or ""))
+
+
+def resolve_processing_route(
+    *,
+    file_extension: str,
+    scope: str,
+    team_id: str = "",
+    explicit_profile_id: str = "",
+) -> dict[str, Any]:
+    extension = file_extension.lower()
+    normalized_scope = scope.lower()
+    if normalized_scope not in {"personal", "team", "global"}:
+        raise ValueError("Upload scope must be personal, team or global")
+
+    def available(profile_id: str):
+        profile = get_profile(profile_id)
+        provider = get_provider(str((profile or {}).get("provider_id") or "")) if profile else None
+        if not profile or profile.get("enabled") is False or not provider or provider.get("enabled") is False:
+            return None, None
+        if extension not in (profile.get("file_types") or []):
+            return None, None
+        return profile, provider
+
+    if explicit_profile_id:
+        profile, provider = available(explicit_profile_id)
+        if not profile:
+            return {
+                "source": "explicit_override",
+                "status": "error",
+                "reason": "The selected processing profile is unavailable or does not support this file type",
+                "profile": None,
+                "provider": None,
+                "rule": None,
+                "candidates": [],
+            }
+        return {
+            "source": "explicit_override", "status": "matched", "reason": "Authorized upload override",
+            "profile": profile, "provider": provider, "rule": None, "candidates": [],
+        }
+
+    ranked: list[tuple[tuple, dict[str, Any]]] = []
+    for rule in list_routing_rules(enabled_only=True):
+        key = _matching_rule_sort_key(rule, normalized_scope, team_id, extension)
+        if key is not None:
+            ranked.append((key, rule))
+    ranked.sort(key=lambda item: item[0])
+    candidates: list[dict[str, Any]] = []
+    for _, rule in ranked:
+        profile, provider = available(str(rule.get("profile_id") or ""))
+        candidates.append({
+            "rule_id": rule.get("_id"), "name": rule.get("name"),
+            "profile_id": rule.get("profile_id"), "available": bool(profile),
+            "fallback_behavior": rule.get("fallback_behavior", "continue"),
+        })
+        if profile:
+            return {
+                "source": "routing_rule", "status": "matched", "reason": "Matched enabled routing rule",
+                "profile": profile, "provider": provider, "rule": rule, "candidates": candidates,
+            }
+        fallback_behavior = rule.get("fallback_behavior", "continue")
+        if fallback_behavior == "error":
+            return {
+                "source": "routing_rule", "status": "error",
+                "reason": "The matched routing rule's profile or provider is unavailable",
+                "profile": None, "provider": None, "rule": rule, "candidates": candidates,
+            }
+        if fallback_behavior == "system":
+            break
+
+    legacy_profile = get_default_profile(extension)
+    legacy_provider = get_provider(str((legacy_profile or {}).get("provider_id") or "")) if legacy_profile else None
+    if legacy_profile and legacy_profile.get("enabled") is not False and legacy_provider and legacy_provider.get("enabled") is not False:
+        return {
+            "source": "legacy_default", "status": "matched",
+            "reason": "No active routing rule matched; using the legacy default profile",
+            "profile": legacy_profile, "provider": legacy_provider, "rule": None, "candidates": candidates,
+        }
+    return {
+        "source": "system_fallback", "status": "fallback",
+        "reason": "No active routing rule or legacy default profile matched",
+        "profile": None, "provider": None, "rule": None, "candidates": candidates,
+    }
 
 
 def ensure_system_providers(has_azure: bool) -> None:

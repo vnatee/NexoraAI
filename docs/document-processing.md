@@ -19,9 +19,32 @@ variables.
 - **Generic OCR REST API** connects an internal/local OCR service using
   multipart or Base64 JSON and configurable response-field mappings.
 
-Provider and profile administration is under **Admin Management > Integrations >
-Document Processing & OCR**. Test the provider before assigning it to a default
-profile.
+Provider, profile, and routing-rule administration is under **Admin Management >
+Integrations > Document Processing & OCR** and requires a system administrator.
+Test the provider before assigning it to a profile used by an enabled rule.
+
+## Routing rules
+
+Personal, Team, and Global uploads default to **Auto — use routing rules**.
+Rules resolve an exact team before the upload scope and `all`; exact file
+extensions precede `*`, and priority resolves remaining order. Each rule chooses
+a processing profile and controls whether an unavailable profile continues to
+another rule, uses the fallback chain, or fails the upload.
+
+Use **Explain Route** to preview a filename, scope, and optional team before
+activating a rule. Enabled rules with the same scope, file specificity, and
+priority cannot overlap. A system administrator may manually select a profile
+on an upload; the backend independently enforces this permission.
+
+For compatibility, an unmatched upload uses the legacy Default profile when it
+supports the extension, then the startup Azure/local parser configuration.
+
+Profile creation is protected against accidental double submission. While a
+save is in progress the dialog is locked and displays `Saving…`; repeated HTTP
+requests from the same dialog are idempotent. Profile names must also be unique
+without regard to letter case. Existing duplicates from an older application
+version are left untouched so administrators can first verify routing-rule
+references and then delete only the unwanted profile.
 
 ## Run Docling Serve locally
 

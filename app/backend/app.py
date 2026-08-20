@@ -98,14 +98,20 @@ from mongo_table_connecters.messaging_bindings import (
 from mongo_table_connecters.document_processing import (
     delete_profile as delete_document_profile,
     delete_provider as delete_document_provider,
+    delete_routing_rule as delete_document_routing_rule,
     ensure_system_providers,
+    get_routing_rule as get_document_routing_rule,
     get_provider as get_document_provider,
     list_profiles as list_document_profiles,
     list_providers as list_document_providers,
+    list_routing_rules as list_document_routing_rules,
     normalize_profile as normalize_document_profile,
     normalize_provider as normalize_document_provider,
+    normalize_routing_rule as normalize_document_routing_rule,
+    resolve_processing_route,
     save_profile as save_document_profile,
     save_provider as save_document_provider,
+    save_routing_rule as save_document_routing_rule,
     serialize_provider as serialize_document_provider,
 )
 
@@ -371,11 +377,26 @@ def _require_system_admin(auth_claims: dict[str, Any]) -> dict[str, Any]:
     return user
 
 
-def _normalize_provider_models(models: object) -> list[dict[str, Any]]:
+def _is_system_admin(auth_claims: dict[str, Any]) -> bool:
+    username = (
+        auth_claims.get("preferred_username")
+        or auth_claims.get("email")
+        or auth_claims.get("upn")
+    )
+    user = get_user_by_ad_email(username) if username else None
+    return bool(user and user.get("active", True) and user.get("is_sys_admin"))
+
+
+def _normalize_provider_models(
+    models: object, existing_models: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
     if not isinstance(models, list) or not models:
         raise ValueError("At least one model is required")
     normalized = []
     seen_ids = set()
+    existing_by_id = {
+        str(item.get("id")): item for item in (existing_models or []) if item.get("id")
+    }
     for item in models:
         if not isinstance(item, dict):
             raise ValueError("Each model must be an object")
@@ -390,8 +411,34 @@ def _normalize_provider_models(models: object) -> list[dict[str, Any]]:
         if model_id in seen_ids:
             raise ValueError(f"Duplicate model id '{model_id}'")
         seen_ids.add(model_id)
-        normalized.append({"id": model_id, "label": label, "model": model, "deployment": deployment})
-        normalized[-1]["supports_tools"] = bool(item.get("supports_tools", True))
+        previous = existing_by_id.get(model_id)
+        same_target = bool(
+            previous
+            and previous.get("model") == model
+            and (previous.get("deployment") or None) == deployment
+        )
+        capability_status = (
+            str(previous.get("tool_capability_status") or "unknown")
+            if same_target and previous
+            else "unknown"
+        )
+        supports_tools = bool(item.get("supports_tools", True))
+        if capability_status == "unsupported":
+            supports_tools = False
+        normalized_model = {
+            "id": model_id,
+            "label": label,
+            "model": model,
+            "deployment": deployment,
+            "supports_tools": supports_tools,
+            "tool_capability_status": capability_status,
+        }
+        if same_target and previous:
+            if previous.get("tool_capability_checked_at"):
+                normalized_model["tool_capability_checked_at"] = previous["tool_capability_checked_at"]
+            if previous.get("tool_capability_detail"):
+                normalized_model["tool_capability_detail"] = previous["tool_capability_detail"]
+        normalized.append(normalized_model)
     return normalized
 
 
@@ -434,7 +481,7 @@ def _normalize_llm_provider_payload(body: dict[str, Any], existing: dict[str, An
             else None
         ),
         "organization": str(body.get("organization") or "").strip() or None,
-        "models": _normalize_provider_models(body.get("models")),
+        "models": _normalize_provider_models(body.get("models"), (existing or {}).get("models")),
         "enabled": enabled,
         "api_key_ciphertext": api_key_ciphertext,
     }
@@ -471,6 +518,115 @@ def _settings_for_managed_model(provider: dict[str, Any], model: dict[str, Any])
         api_key=decrypt_provider_secret(provider.get("api_key_ciphertext")),
         organization=provider.get("organization"),
     )
+
+
+def _tool_capability_rejection(error: Exception) -> bool:
+    message = str(error).lower()
+    mentions_tools = "tool" in message or "function" in message
+    rejection = any(
+        phrase in message
+        for phrase in (
+            "not support",
+            "unsupported",
+            "unknown parameter",
+            "unrecognized",
+            "not allowed",
+            "invalid parameter",
+        )
+    )
+    return mentions_tools and rejection
+
+
+async def _probe_model_tool_capability(
+    client: Any,
+    settings: LLMProviderSettings,
+    provider: dict[str, Any],
+) -> tuple[str, str]:
+    completion_options: dict[str, Any] = {}
+    if settings.model in Approach.GPT_REASONING_MODELS:
+        completion_options["max_completion_tokens"] = 32
+    else:
+        completion_options.update({"max_tokens": 32, "temperature": 0})
+    completion_options = apply_llm_vendor_chat_policy(
+        infer_llm_vendor(provider).id, completion_options
+    )
+    messages = [
+        {
+            "role": "user",
+            "content": "Call report_tool_support with supported=true. Do not answer with text.",
+        }
+    ]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "report_tool_support",
+                "description": "Reports that tool calling is available.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"supported": {"type": "boolean"}},
+                    "required": ["supported"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+    ]
+    required_choice = True
+    try:
+        response = await client.chat.completions.create(
+            model=settings.deployment or settings.model,
+            messages=messages,
+            tools=tools,
+            tool_choice="required",
+            **completion_options,
+        )
+    except Exception as error:
+        if "tool_choice" in str(error).lower() and _tool_capability_rejection(error):
+            required_choice = False
+            try:
+                response = await client.chat.completions.create(
+                    model=settings.deployment or settings.model,
+                    messages=messages,
+                    tools=tools,
+                    **completion_options,
+                )
+            except Exception as retry_error:
+                if _tool_capability_rejection(retry_error):
+                    return "unsupported", "provider_rejected_tool_calling"
+                return "unknown", "probe_inconclusive"
+        elif _tool_capability_rejection(error):
+            return "unsupported", "provider_rejected_tool_calling"
+        else:
+            return "unknown", "probe_inconclusive"
+    if response.choices:
+        tool_calls = getattr(response.choices[0].message, "tool_calls", None) or []
+        if any(
+            getattr(getattr(call, "function", None), "name", None) == "report_tool_support"
+            for call in tool_calls
+        ):
+            return "supported", "tool_call_returned"
+    if not required_choice:
+        return "unknown", "tool_choice_not_enforced"
+    return "unsupported", "no_tool_call_returned"
+
+
+def _store_model_tool_capability(
+    provider: dict[str, Any], model_id: str, status: str, detail: str
+) -> dict[str, Any]:
+    checked_at = datetime.now(timezone.utc).isoformat()
+    models = []
+    for item in provider.get("models", []):
+        updated = dict(item)
+        if item.get("id") == model_id:
+            updated["tool_capability_status"] = status
+            updated["tool_capability_checked_at"] = checked_at
+            updated["tool_capability_detail"] = detail
+            if status == "supported":
+                updated["supports_tools"] = True
+            elif status == "unsupported":
+                updated["supports_tools"] = False
+        models.append(updated)
+    return update_llm_provider(str(provider["_id"]), {"models": models}) or provider
 
 
 def _load_managed_profiles(base_profiles: dict[str, LLMProfile]) -> dict[str, LLMProfile]:
@@ -1616,7 +1772,39 @@ async def admin_test_llm_provider(auth_claims: dict[str, Any], provider_id: str)
             **completion_options,
         )
         content = response.choices[0].message.content if response.choices else None
-        return jsonify({"success": True, "model": model["model"], "response": content})
+        capability_status, capability_detail = await _probe_model_tool_capability(
+            client, settings, provider
+        )
+        provider = _store_model_tool_capability(
+            provider, str(model["id"]), capability_status, capability_detail
+        )
+        try:
+            _refresh_llm_profile_registry()
+        except Exception:
+            current_app.logger.exception(
+                "Unable to refresh LLM profiles after tool-capability test"
+            )
+        updated_model = next(
+            (item for item in provider.get("models", []) if item.get("id") == model["id"]),
+            model,
+        )
+        return jsonify(
+            {
+                "success": True,
+                "model": model["model"],
+                "response": content,
+                "tool_capability": {
+                    "status": capability_status,
+                    "supports_tools": (
+                        True
+                        if capability_status == "supported"
+                        else False if capability_status == "unsupported" else None
+                    ),
+                    "detail": capability_detail,
+                    "checked_at": updated_model.get("tool_capability_checked_at"),
+                },
+            }
+        )
     except Exception as error:
         current_app.logger.warning("LLM provider connection test failed: %s", error)
         return jsonify({"success": False, "error": str(error)}), 400
@@ -2098,6 +2286,7 @@ async def remove_messaging_binding(auth_claims: dict[str, Any]):
 @bp.get("/document_processing/providers")
 @authenticated
 async def document_processing_providers(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
     ensure_system_providers(bool(os.getenv("AZURE_DOCUMENTINTELLIGENCE_SERVICE")))
     return jsonify([serialize_document_provider(item) for item in list_document_providers()])
 
@@ -2105,6 +2294,7 @@ async def document_processing_providers(auth_claims: dict[str, Any]):
 @bp.post("/document_processing/providers/save")
 @authenticated
 async def save_document_processing_provider(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
     try:
         body = await request.get_json(); provider_id = str(body.get("provider_id") or "")
         existing = get_document_provider(provider_id) if provider_id else None
@@ -2124,6 +2314,7 @@ async def save_document_processing_provider(auth_claims: dict[str, Any]):
 @bp.post("/document_processing/providers/test")
 @authenticated
 async def test_document_processing_provider(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
     body = await request.get_json(); provider = get_document_provider(str(body.get("provider_id") or ""))
     if not provider: return jsonify({"error": "Provider not found"}), 404
     provider_type = provider.get("provider_type")
@@ -2141,6 +2332,7 @@ async def test_document_processing_provider(auth_claims: dict[str, Any]):
 @bp.post("/document_processing/providers/delete")
 @authenticated
 async def remove_document_processing_provider(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
     body = await request.get_json(); provider_id = str(body.get("provider_id") or "")
     if any(item.get("provider_id") == provider_id for item in list_document_profiles()):
         return jsonify({"error": "Delete profiles using this provider first"}), 409
@@ -2151,22 +2343,51 @@ async def remove_document_processing_provider(auth_claims: dict[str, Any]):
 @bp.get("/document_processing/profiles")
 @authenticated
 async def document_processing_profiles(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
     return jsonify([_mail_binding_response(item) for item in list_document_profiles()])
 
 
 @bp.post("/document_processing/profiles/save")
 @authenticated
 async def save_document_processing_profile(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
     try:
         import importlib.util
         body = await request.get_json(); profile_id = str(body.get("profile_id") or "")
-        existing = next((item for item in list_document_profiles() if str(item.get("_id")) == profile_id), None)
+        client_request_id = str(body.get("client_request_id") or "").strip()
+        profiles = list_document_profiles()
+        existing = next((item for item in profiles if str(item.get("_id")) == profile_id), None)
+        if profile_id and not existing:
+            raise ValueError("Document profile not found")
+        if not profile_id and client_request_id:
+            try:
+                client_request_id = str(uuid.UUID(client_request_id))
+            except ValueError as exc:
+                raise ValueError("client_request_id must be a valid UUID") from exc
+            repeated = next(
+                (item for item in profiles if str(item.get("_id")) == client_request_id),
+                None,
+            )
+            if repeated:
+                return jsonify({"message": "Document profile saved", "profile": _mail_binding_response(repeated)})
         normalized = normalize_document_profile(body, existing)
+        duplicate = next(
+            (
+                item
+                for item in profiles
+                if str(item.get("_id")) != profile_id
+                and str(item.get("name") or "").strip().casefold()
+                == normalized["name"].strip().casefold()
+            ),
+            None,
+        )
+        if duplicate:
+            return jsonify({"error": "A document profile with this name already exists"}), 409
         provider = get_document_provider(normalized["provider_id"])
         provider_config = (provider or {}).get("config") or {}
         if normalized["is_default"] and provider and provider.get("provider_type") == "docling" and provider_config.get("execution_mode", "service") == "embedded" and importlib.util.find_spec("docling") is None:
             raise ValueError("Install the optional local OCR runtime and pass the provider Test before setting Docling as Default")
-        item = save_document_profile(normalized, profile_id)
+        item = save_document_profile(normalized, profile_id, client_request_id)
         return jsonify({"message": "Document profile saved", "profile": _mail_binding_response(item)})
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -2175,9 +2396,101 @@ async def save_document_processing_profile(auth_claims: dict[str, Any]):
 @bp.post("/document_processing/profiles/delete")
 @authenticated
 async def remove_document_processing_profile(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
     body = await request.get_json()
-    if not delete_document_profile(str(body.get("profile_id") or "")): return jsonify({"error": "Profile not found"}), 404
+    profile_id = str(body.get("profile_id") or "")
+    if any(rule.get("profile_id") == profile_id for rule in list_document_routing_rules()):
+        return jsonify({"error": "Delete routing rules using this profile first"}), 409
+    if not delete_document_profile(profile_id): return jsonify({"error": "Profile not found"}), 404
     return jsonify({"message": "Document profile deleted"})
+
+
+@bp.get("/document_processing/routing-rules")
+@authenticated
+async def document_processing_routing_rules(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    return jsonify([_mail_binding_response(item) for item in list_document_routing_rules()])
+
+
+@bp.post("/document_processing/routing-rules/save")
+@authenticated
+async def save_document_processing_routing_rule(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        body = await request.get_json()
+        rule_id = str(body.get("rule_id") or "")
+        existing = get_document_routing_rule(rule_id) if rule_id else None
+        if rule_id and not existing:
+            raise ValueError("Routing rule not found")
+        normalized = normalize_document_routing_rule(body, existing)
+        item = save_document_routing_rule(normalized, rule_id)
+        return jsonify({"message": "Document routing rule saved", "rule": _mail_binding_response(item)})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@bp.post("/document_processing/routing-rules/delete")
+@authenticated
+async def remove_document_processing_routing_rule(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    body = await request.get_json()
+    if not delete_document_routing_rule(str(body.get("rule_id") or "")):
+        return jsonify({"error": "Routing rule not found"}), 404
+    return jsonify({"message": "Document routing rule deleted"})
+
+
+def _document_route_response(route: dict[str, Any]) -> dict[str, Any]:
+    response = {
+        "source": route.get("source"),
+        "status": route.get("status"),
+        "reason": route.get("reason"),
+        "candidates": route.get("candidates") or [],
+    }
+    profile = route.get("profile")
+    provider = route.get("provider")
+    rule = route.get("rule")
+    response["profile"] = _mail_binding_response(profile) if profile else None
+    response["provider"] = serialize_document_provider(provider) if provider else None
+    response["rule"] = _mail_binding_response(rule) if rule else None
+    return response
+
+
+@bp.post("/document_processing/explain-route")
+@authenticated
+async def explain_document_processing_route(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        body = await request.get_json()
+        filename = str(body.get("filename") or body.get("file_extension") or "").strip()
+        extension = filename.lower() if filename.startswith(".") else Path(filename).suffix.lower()
+        if not extension or "/" in extension or "\\" in extension:
+            raise ValueError("A filename or file extension is required")
+        route = resolve_processing_route(
+            file_extension=extension,
+            scope=str(body.get("scope") or "personal"),
+            team_id=str(body.get("team_id") or ""),
+            explicit_profile_id=str(body.get("profile_id") or ""),
+        )
+        return jsonify(_document_route_response(route))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@bp.get("/document_processing/upload-options")
+@authenticated
+async def document_processing_upload_options(auth_claims: dict[str, Any]):
+    can_override = _is_system_admin(auth_claims)
+    profiles = []
+    if can_override:
+        enabled_provider_ids = {
+            str(item.get("_id")) for item in list_document_providers() if item.get("enabled") is not False
+        }
+        profiles = [
+            _mail_binding_response(item)
+            for item in list_document_profiles()
+            if item.get("enabled") is not False and str(item.get("provider_id")) in enabled_provider_ids
+        ]
+    return jsonify({"can_override": can_override, "profiles": profiles})
 
 # ⭐ CHART CAPABILITY: ลบ /generate_chart route เดิมแล้ว
 #    chart generation ทำใน /chat/stream flow ผ่าน chart binding ของ agent แทน
@@ -2187,12 +2500,16 @@ async def remove_document_processing_profile(auth_claims: dict[str, Any]):
 @authenticated
 async def upload(auth_claims: dict[str, Any]):
     request_files = await request.files
+    request_form = await request.form
     if "file" not in request_files:
         # If no files were included in the request, return an error response
         return jsonify({"message": "No file part in the request", "status": "failed"}), 400
 
     user_oid = auth_claims["oid"]
     user_name = auth_claims["preferred_username"]
+    explicit_profile_id = str(request_form.get("processing_profile_id") or "").strip()
+    if explicit_profile_id:
+        _require_system_admin(auth_claims)
     file = request_files.getlist("file")[0]
     user_blob_container_client: FileSystemClient = current_app.config[
         CONFIG_USER_BLOB_CONTAINER_CLIENT]
@@ -2211,7 +2528,15 @@ async def upload(auth_claims: dict[str, Any]):
     await file_client.upload_data(file_io, overwrite=True, metadata={"UploadedBy": user_oid})
     file_io.seek(0)
     ingester: UploadUserFileStrategy = current_app.config[CONFIG_INGESTER]
-    is_docintel, count = await ingester.add_file(File(content=file_io, acls={"oids": [user_oid]}, url=file_client.url))
+    is_docintel, count = await ingester.add_file(
+        File(content=file_io, acls={"oids": [user_oid]}, url=file_client.url),
+        routing_context={
+            "scope": "personal",
+            "team_id": "",
+            "user_id": user_oid,
+            "explicit_profile_id": explicit_profile_id,
+        },
+    )
     if is_docintel:
         insert_docintel_usage(user_name, '', 'personal', count)
     return jsonify({"message": "File uploaded successfully"}), 200
@@ -2237,7 +2562,9 @@ BACKGROUND_TASKS = set()
 INGEST_SEM = asyncio.Semaphore(3)
 
 
-async def run_ingest_task(blob_client, data_groups_tag, data_groups_list, folder, user_name, team_id, filename):
+async def run_ingest_task(
+    blob_client, data_groups_tag, data_groups_list, folder, user_name, team_id, filename, routing_context
+):
     try:
         ingester: UploadUserFileStrategy = current_app.config[CONFIG_INGESTER]
         downloader = await blob_client.download_blob()
@@ -2247,7 +2574,11 @@ async def run_ingest_task(blob_client, data_groups_tag, data_groups_list, folder
         stream.seek(0)
         async with INGEST_SEM:
             await blob_client.set_blob_tags(tags={"status": "InProgress", "data_groups": data_groups_tag})
-            is_docintel, count = await ingester.add_global_file(File(content=stream, acls={"groups": data_groups_list, "oids": []}, url=blob_client.url), folder)
+            is_docintel, count = await ingester.add_global_file(
+                File(content=stream, acls={"groups": data_groups_list, "oids": []}, url=blob_client.url),
+                folder,
+                routing_context=routing_context,
+            )
             if is_docintel:
                 insert_docintel_usage(user_name, team_id, "team", count)
 
@@ -2261,12 +2592,16 @@ async def run_ingest_task(blob_client, data_groups_tag, data_groups_list, folder
 @authenticated
 async def global_upload(auth_claims: dict[str, Any]):
     request_files = await request.files
+    request_form = await request.form
     if "file" not in request_files:
         # If no files were included in the request, return an error response
         return jsonify({"message": "No file part in the request", "status": "failed"}), 400
 
     user_oid = auth_claims["oid"]
     user_name = auth_claims["preferred_username"]
+    explicit_profile_id = str(request_form.get("processing_profile_id") or "").strip()
+    if explicit_profile_id:
+        _require_system_admin(auth_claims)
     # file = request_files.getlist("file")[0]
     container_client: ContainerClient = current_app.config[CONFIG_BLOB_CONTAINER_CLIENT]
 
@@ -2295,7 +2630,16 @@ async def global_upload(auth_claims: dict[str, Any]):
             if status != 'Duplicate':
                 folder = os.path.dirname(blob_path)
                 folder = folder + os.sep if folder else ""
-                is_docintel, count = await ingester.add_global_file(File(content=file_io, acls={"oids": [], "groups": []}, url=blob_client.url), folder)
+                is_docintel, count = await ingester.add_global_file(
+                    File(content=file_io, acls={"oids": [], "groups": []}, url=blob_client.url),
+                    folder,
+                    routing_context={
+                        "scope": "global",
+                        "team_id": "",
+                        "user_id": user_oid,
+                        "explicit_profile_id": explicit_profile_id,
+                    },
+                )
                 if is_docintel:
                     insert_docintel_usage(user_name, '', 'public', count)
         except Exception:
@@ -2319,6 +2663,9 @@ async def teams_upload(auth_claims: dict[str, Any]):
     data_groups_list = json.loads(data_groups_id)
     data_groups_tag = "/".join(data_groups_list)
     user_name = auth_claims["preferred_username"]
+    explicit_profile_id = str(request_form.get("processing_profile_id") or "").strip()
+    if explicit_profile_id:
+        _require_system_admin(auth_claims)
     # file = request_files.getlist("file")[0]
     container_client: ContainerClient = current_app.config[CONFIG_GROUP_BLOB_CONTAINER_CLIENT]
 
@@ -2335,7 +2682,20 @@ async def teams_upload(auth_claims: dict[str, Any]):
         folder = os.path.dirname(blob_path)
         folder = folder + os.sep if folder else ""
         t = asyncio.create_task(run_ingest_task(
-            blob_client, data_groups_tag, data_groups_list, folder, user_name, team_id, file.filename))
+            blob_client,
+            data_groups_tag,
+            data_groups_list,
+            folder,
+            user_name,
+            team_id,
+            file.filename,
+            {
+                "scope": "team",
+                "team_id": str(team_id or ""),
+                "user_id": user_oid,
+                "explicit_profile_id": explicit_profile_id,
+            },
+        ))
         BACKGROUND_TASKS.add(t)
         t.add_done_callback(BACKGROUND_TASKS.discard)
         # ingester: UploadUserFileStrategy = current_app.config[CONFIG_INGESTER]

@@ -27,6 +27,7 @@ async def parse_file(
     file_processors: dict[str, FileProcessor],
     category: Optional[str] = None,
     image_embeddings: Optional[ImageEmbeddings] = None,
+    routing_context: Optional[dict] = None,
 ) -> ParsedFile:
     key = file.file_extension().lower()
     processor = file_processors.get(key)
@@ -35,7 +36,7 @@ async def parse_file(
         raise ValueError("no parser found")
     logger.info("Ingesting '%s'", file.filename())
     selected_parser = (
-        processor.parser.select_parser(file.content)
+        processor.parser.select_parser(file.content, routing_context=routing_context)
         if hasattr(processor.parser, "select_parser")
         else processor.parser
     )
@@ -170,19 +171,19 @@ class UploadUserFileStrategy:
         )
         self.search_field_name_embedding = search_field_name_embedding
 
-    async def add_file(self, file: File):
+    async def add_file(self, file: File, routing_context: Optional[dict] = None):
         if self.image_embeddings:
             logging.warning("Image embeddings are not currently supported for the user upload feature")
-        parsed_file = await parse_file(file, self.file_processors)
+        parsed_file = await parse_file(file, self.file_processors, routing_context=routing_context)
         if not parsed_file.sections:
             raise ValueError(f"No searchable content was extracted from {file.filename()}")
         await self.search_manager.update_content(parsed_file.sections, url=file.url)
         return parsed_file.used_document_intelligence, parsed_file.page_count
 
-    async def add_global_file(self, file: File, folder = ""):
+    async def add_global_file(self, file: File, folder = "", routing_context: Optional[dict] = None):
         if self.image_embeddings:
             logging.warning("Image embeddings are not currently supported for the user upload feature")
-        parsed_file = await parse_file(file, self.file_processors)
+        parsed_file = await parse_file(file, self.file_processors, routing_context=routing_context)
         if not parsed_file.sections:
             raise ValueError(f"No searchable content was extracted from {file.filename()}")
         await self.search_manager.update_global_content(parsed_file.sections, url=file.url,folder=folder)

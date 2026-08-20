@@ -18,6 +18,7 @@ from mongo_table_connecters.document_processing import (
     get_default_profile,
     get_provider,
     normalize_docling_endpoint,
+    resolve_processing_route,
 )
 
 from .page import Page
@@ -403,36 +404,54 @@ class ManagedDocumentParser(Parser):
     def __init__(self, fallback_parsers: dict[str, Parser | None]):
         self.fallback_parsers = fallback_parsers
 
-    def select_parser(self, content: IO) -> Parser:
+    def _profile_parser(self, profile: dict[str, Any], provider: dict[str, Any], extension: str) -> Parser:
+        provider_type = provider.get("provider_type")
+        if provider_type == "docling":
+            config = {**(provider.get("config") or {})}
+            config["extract_tables"] = profile.get("extract_tables", True)
+            config["languages"] = profile.get("languages") or []
+            return DoclingParser(config)
+        if provider_type == "generic_ocr_api":
+            return GenericOCRAPIParser(provider)
+        if provider_type == "paddleocr":
+            return PaddleOCRAPIParser(provider)
+        if provider_type == "google_document_ai":
+            return GoogleDocumentAIParser(provider)
+        if provider_type == "local_text":
+            if extension != ".pdf":
+                raise ValueError("Local text extraction currently supports PDF files only")
+            parser = self.fallback_parsers.get("local_text")
+            if parser:
+                return parser
+        if provider_type == "azure_document_intelligence":
+            parser = self.fallback_parsers.get("azure_document_intelligence")
+            if parser:
+                return parser
+        raise ValueError(f"No parser is available for provider type {provider_type}")
+
+    def select_parser(self, content: IO, routing_context: dict[str, Any] | None = None) -> Parser:
         extension = Path(getattr(content, "name", "")).suffix.lower()
-        try:
-            profile = get_default_profile(extension)
-            provider = get_provider(str(profile.get("provider_id"))) if profile else None
-            if provider and provider.get("enabled") is not False:
-                provider_type = provider.get("provider_type")
-                if provider_type == "docling":
-                    config = {**(provider.get("config") or {})}
-                    config["extract_tables"] = profile.get("extract_tables", True)
-                    config["languages"] = profile.get("languages") or []
-                    return DoclingParser(config)
-                if provider_type == "generic_ocr_api":
-                    return GenericOCRAPIParser(provider)
-                if provider_type == "paddleocr":
-                    return PaddleOCRAPIParser(provider)
-                if provider_type == "google_document_ai":
-                    return GoogleDocumentAIParser(provider)
-                if provider_type == "local_text":
-                    if extension != ".pdf":
-                        raise ValueError("Local text extraction currently supports PDF files only")
-                    parser = self.fallback_parsers.get("local_text")
-                    if parser:
-                        return parser
-                if provider_type == "azure_document_intelligence":
-                    parser = self.fallback_parsers.get("azure_document_intelligence")
-                    if parser:
-                        return parser
-        except Exception as exc:
-            logger.warning("Unable to resolve managed document profile; using startup fallback: %s", exc)
+        if routing_context is not None:
+            route = resolve_processing_route(
+                file_extension=extension,
+                scope=str(routing_context.get("scope") or "personal"),
+                team_id=str(routing_context.get("team_id") or ""),
+                explicit_profile_id=str(routing_context.get("explicit_profile_id") or ""),
+            )
+            if route.get("status") == "error":
+                raise ValueError(str(route.get("reason") or "Document processing route failed"))
+            profile = route.get("profile")
+            provider = route.get("provider")
+            if profile and provider:
+                return self._profile_parser(profile, provider, extension)
+        else:
+            try:
+                profile = get_default_profile(extension)
+                provider = get_provider(str(profile.get("provider_id"))) if profile else None
+                if profile and provider and provider.get("enabled") is not False:
+                    return self._profile_parser(profile, provider, extension)
+            except Exception as exc:
+                logger.warning("Unable to resolve managed document profile; using startup fallback: %s", exc)
         parser = (
             self.fallback_parsers.get(extension)
             if extension in self.fallback_parsers
@@ -442,7 +461,9 @@ class ManagedDocumentParser(Parser):
             raise ValueError(f"No document processor is available for {extension or 'this file type'}")
         return parser
 
-    async def parse(self, content: IO) -> AsyncGenerator[Page, None]:
-        parser = self.select_parser(content)
+    async def parse(
+        self, content: IO, routing_context: dict[str, Any] | None = None
+    ) -> AsyncGenerator[Page, None]:
+        parser = self.select_parser(content, routing_context=routing_context)
         async for page in parser.parse(content):
             yield page

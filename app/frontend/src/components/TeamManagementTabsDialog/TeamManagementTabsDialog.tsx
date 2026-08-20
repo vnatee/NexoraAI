@@ -41,7 +41,7 @@ export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin
         {
             label: "Integrations",
             permission: ["Manage integrations"],
-            element: <IntegrationManagementPage team={selectTeamData} />
+            element: <IntegrationManagementPage team={selectTeamData} isSystemAdmin={is_sys_admin} />
         },
         {
             label: "Data Groups",

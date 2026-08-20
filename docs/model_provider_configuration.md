@@ -110,7 +110,7 @@ System administrators can also manage providers and their model/deployment lists
 Provider API keys are encrypted before being stored in MongoDB. Configure one stable Fernet key for every application replica before saving credentials:
 
 ```bash
-APP_DATA_ENCRYPTION_KEY=mJPRBJx1dek1Gvbrfv1U4gXhuFR7YN8JEe_isdIa0Fc=
+APP_DATA_ENCRYPTION_KEY=<stable-fernet-key>
 ```
 
 Generate the value once and store it as a Docker/Kubernetes secret:
@@ -140,3 +140,25 @@ Admin-managed providers retain their vendor identity separately from the interna
 | Other OpenAI-compatible | Uses a conservative policy that omits `seed`, `n`, and streaming-usage extensions. |
 
 Cloud vendors require an encrypted API key when the provider is enabled. Azure OpenAI can continue to use Azure identity, while local vendors can run without an API key. `Supports tool / function calling` remains a per-model setting because this capability varies by model even within the same vendor.
+
+### Tool/function-calling capability test
+
+The Admin LLM Provider **Test** action checks every configured model in that
+provider. It first verifies a normal Chat Completions request, then sends a
+small tool schema and requests a deterministic function call.
+
+- `supported`: the model returned the expected tool call. The model capability
+  is enabled.
+- `unsupported`: the provider rejected tool/function parameters or accepted the
+  request without returning the required tool call. The capability is disabled
+  and its frontend switch is locked.
+- `unknown`: the probe was inconclusive, for example because of a rate limit,
+  transient provider failure, or a compatibility endpoint that rejects only
+  forced `tool_choice`. The existing manual setting is preserved and remains
+  editable.
+
+The database stores only capability status, a normalized reason code, and the
+check timestamp. Probe prompts and provider responses are not persisted. A
+model/deployment change clears the prior result to `unknown`; run **Test** again
+after changing a model, deployment, API version, or compatibility gateway. Each
+test makes live model requests and may consume a small number of tokens.
