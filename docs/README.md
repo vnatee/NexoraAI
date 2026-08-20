@@ -3,6 +3,7 @@
 Consult the main [README](../README.md) for general information about the project.
 These are advanced topics that are not necessary for a basic deployment.
 
+- [Current Codex engineering handoff](CODEX_HANDOFF.md)
 - [Product backlog](product-backlog.md)
 
 - Deploying:

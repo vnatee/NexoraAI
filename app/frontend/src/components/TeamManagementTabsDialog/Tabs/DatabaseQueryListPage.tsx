@@ -46,6 +46,7 @@ export function DatabaseQueryListPage({ team, onBack }: { team: TeamProfile; onB
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [deletingId, setDeletingId] = useState<string | null>(null);
+    const [testingId, setTestingId] = useState<string | null>(null);
     const [open, setOpen] = useState(false);
     const [editing, setEditing] = useState<DatabaseConnection | null>(null);
 
@@ -117,7 +118,7 @@ export function DatabaseQueryListPage({ team, onBack }: { team: TeamProfile; onB
     };
 
     const handleDelete = async (id: string) => {
-        if (!window.confirm("Are you sure you want to delete this database connection?")) return;
+        if (!window.confirm("Delete this database connection? Agent database bindings that reference it will stop working.")) return;
 
         try {
             setDeletingId(id);
@@ -143,7 +144,7 @@ export function DatabaseQueryListPage({ team, onBack }: { team: TeamProfile; onB
                 <Box>
                     <Typography variant="h6">Database Connections</Typography>
                     <Typography variant="body2" color="text.secondary">
-                        Store database credentials here so backend APIs can use them later.
+                        Connection catalog for read-only Agent database tools. Query profiles and table access are assigned per Agent.
                     </Typography>
                 </Box>
             </Stack>
@@ -180,6 +181,14 @@ export function DatabaseQueryListPage({ team, onBack }: { team: TeamProfile; onB
                                     <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                                         <Typography fontWeight={700}>{conn.name}</Typography>
                                         <Chip size="small" label={DB_TYPES.find(item => item.value === conn.db_type)?.label ?? conn.db_type} />
+                                        <Chip size="small" label="Read-only" color="success" variant="outlined" />
+                                        <Chip size="small" label={`${conn.agent_usage_count ?? 0} Agent(s)`} color="primary" variant="outlined" />
+                                        <Chip
+                                            size="small"
+                                            label={conn.db_type === "sqlite" || conn.has_password ? "Credentials configured" : "Credential status unknown"}
+                                            color={conn.db_type === "sqlite" || conn.has_password ? "success" : "default"}
+                                            variant="outlined"
+                                        />
                                     </Stack>
 
                                     <Typography variant="body2" color="text.secondary" mt={0.75}>
@@ -196,6 +205,27 @@ export function DatabaseQueryListPage({ team, onBack }: { team: TeamProfile; onB
                                 </Box>
 
                                 <Stack direction="row" spacing={1} alignSelf={{ xs: "flex-start", md: "center" }}>
+                                    <Button
+                                        size="small"
+                                        variant="outlined"
+                                        disabled={testingId === conn._id}
+                                        startIcon={testingId === conn._id ? <CircularProgress size={14} /> : undefined}
+                                        onClick={async () => {
+                                            try {
+                                                setTestingId(conn._id);
+                                                const token = await getToken(client);
+                                                if (!token) throw new Error("No authentication token");
+                                                const result = await test_db_connection({ database_id: conn._id }, token);
+                                                showNotification(result.message, "success");
+                                            } catch (error) {
+                                                showNotification(error instanceof Error ? error.message : "Database connection test failed", "error");
+                                            } finally {
+                                                setTestingId(null);
+                                            }
+                                        }}
+                                    >
+                                        {testingId === conn._id ? "Testing..." : "Test"}
+                                    </Button>
                                     <IconButton
                                         onClick={() => {
                                             setEditing(conn);

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import {
+    Alert,
     Box,
     Button,
     Chip,
@@ -19,12 +20,15 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
-import { MailEmailConfig } from "../../../api/models";
+import { MailBindingData, MailEmailConfig } from "../../../api/models";
 
 export interface MailBindingInput {
     email_id: string;
     is_html: boolean;
     enabled: boolean;
+    permissions: Array<"read" | "send">;
+    allowed_recipient_domains: string[];
+    max_recipients: number;
     subject: string;
     body: string;
     default_to: string[];
@@ -35,6 +39,7 @@ export interface MailBindingInput {
 interface MailBindingDialogProps {
     open: boolean;
     mailConfigs: MailEmailConfig[];
+    binding?: MailBindingData | null;
     saving?: boolean;
     onClose: () => void;
     onSave: (binding: MailBindingInput) => void;
@@ -114,10 +119,14 @@ function EmailChipInput({
 }
 
 // ── main dialog ──────────────────────────────────────────────────────────────
-export function MailBindingDialog({ open, mailConfigs, saving, onClose, onSave }: MailBindingDialogProps) {
+export function MailBindingDialog({ open, mailConfigs, binding, saving, onClose, onSave }: MailBindingDialogProps) {
     const [emailId, setEmailId] = useState("");
     const [isHtml, setIsHtml] = useState(false);
     const [enabled, setEnabled] = useState(true);
+    const [canRead, setCanRead] = useState(true);
+    const [canSend, setCanSend] = useState(false);
+    const [allowedDomains, setAllowedDomains] = useState("");
+    const [maxRecipients, setMaxRecipients] = useState(10);
     const [subject, setSubject] = useState("");
     const [body, setBody] = useState("");
     const [defaultTo, setDefaultTo] = useState<string[]>([]);
@@ -127,16 +136,21 @@ export function MailBindingDialog({ open, mailConfigs, saving, onClose, onSave }
 
     useEffect(() => {
         if (!open) return;
-        setEmailId("");
-        setIsHtml(false);
-        setEnabled(true);
-        setSubject("");
-        setBody("");
-        setDefaultTo([]);
-        setDefaultCc([]);
-        setDefaultBcc([]);
+        setEmailId(binding?.email_id ?? "");
+        setIsHtml(binding?.is_html ?? false);
+        setEnabled(binding?.enabled ?? true);
+        const permissions = binding?.permissions ?? ["read"];
+        setCanRead(permissions.includes("read"));
+        setCanSend(permissions.includes("send"));
+        setAllowedDomains((binding?.allowed_recipient_domains ?? []).join(", "));
+        setMaxRecipients(binding?.max_recipients ?? 10);
+        setSubject(binding?.subject ?? "");
+        setBody(binding?.body ?? "");
+        setDefaultTo(binding?.default_to ?? []);
+        setDefaultCc(binding?.default_cc ?? []);
+        setDefaultBcc(binding?.default_bcc ?? []);
         setIsSubmitted(false);
-    }, [open]);
+    }, [binding, open]);
 
     const handleSave = () => {
         setIsSubmitted(true);
@@ -145,6 +159,9 @@ export function MailBindingDialog({ open, mailConfigs, saving, onClose, onSave }
             email_id: emailId,
             is_html: isHtml,
             enabled,
+            permissions: [...(canRead ? ["read" as const] : []), ...(canSend ? ["send" as const] : [])],
+            allowed_recipient_domains: allowedDomains.split(",").map(v => v.trim().toLowerCase()).filter(Boolean),
+            max_recipients: maxRecipients,
             subject,
             body,
             default_to: defaultTo,
@@ -155,7 +172,7 @@ export function MailBindingDialog({ open, mailConfigs, saving, onClose, onSave }
 
     return (
         <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
-            <DialogTitle>Add Mail Binding</DialogTitle>
+            <DialogTitle>{binding ? "Edit Mail Binding" : "Add Mail Binding"}</DialogTitle>
 
             <DialogContent dividers>
                 <Stack spacing={3}>
@@ -185,7 +202,7 @@ export function MailBindingDialog({ open, mailConfigs, saving, onClose, onSave }
                         ) : (
                             mailConfigs.map(cfg => (
                                 <MenuItem key={cfg._id} value={cfg._id}>
-                                    {cfg.name} — {cfg.email} ({cfg.protocol}/{cfg.encryption})
+                                    {cfg.name} — {cfg.email_address} ({cfg.provider})
                                 </MenuItem>
                             ))
                         )}
@@ -216,6 +233,15 @@ export function MailBindingDialog({ open, mailConfigs, saving, onClose, onSave }
                             <MenuItem value="disabled">Disabled</MenuItem>
                         </TextField>
                     </Stack>
+
+                    <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                        <FormControlLabel control={<Switch checked={canRead} onChange={e => setCanRead(e.target.checked)} />} label="Read / search mailbox" />
+                        <FormControlLabel control={<Switch checked={canSend} onChange={e => setCanSend(e.target.checked)} />} label="Send mail" />
+                    </Stack>
+                    {canSend && <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                        <TextField label="Allowed recipient domains" value={allowedDomains} onChange={e => setAllowedDomains(e.target.value)} helperText="Comma-separated; blank allows any domain" fullWidth />
+                        <TextField label="Max recipients" type="number" value={maxRecipients} onChange={e => setMaxRecipients(Math.max(1, Number(e.target.value)))} inputProps={{ min: 1, max: 100 }} sx={{ minWidth: 160 }} />
+                    </Stack>}
 
                     <Divider />
 
@@ -261,6 +287,11 @@ export function MailBindingDialog({ open, mailConfigs, saving, onClose, onSave }
                         </Typography>
                     </Typography>
 
+                    <Alert severity="info">
+                        When a template is configured, the Agent supplies values for each {"{{variable}}"} and the runtime renders the final email.
+                        Leave Subject or Body blank only when you want the Agent to generate that entire field.
+                    </Alert>
+
                     <TextField
                         label="Subject"
                         value={subject}
@@ -301,7 +332,7 @@ export function MailBindingDialog({ open, mailConfigs, saving, onClose, onSave }
                 <Button
                     variant="contained"
                     onClick={handleSave}
-                    disabled={saving || mailConfigs.length === 0}
+                    disabled={saving || mailConfigs.length === 0 || (!canRead && !canSend)}
                 >
                     {saving ? "Saving..." : "Save"}
                 </Button>

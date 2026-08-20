@@ -183,6 +183,62 @@ export type LLMProviderPayload = Omit<ManagedLLMProvider, "_id" | "vendor_label"
     clear_api_key?: boolean;
 };
 
+export interface ManagedMCPServer {
+    _id: string;
+    name: string;
+    url: string;
+    vendor: "generic" | "datadog";
+    category: MCPCategory;
+    auth_type: "headers" | "bearer" | "datadog_keys";
+    enabled: boolean;
+    allowed_tools: string[];
+    timeout_seconds: number;
+    has_headers: boolean;
+    agent_usage_count?: number;
+    create_at?: string;
+    update_at?: string;
+}
+
+export interface MCPServerPayload {
+    name: string;
+    url: string;
+    vendor: "generic" | "datadog";
+    category: MCPCategory;
+    auth_type: "headers" | "bearer" | "datadog_keys";
+    enabled: boolean;
+    allowed_tools: string[];
+    timeout_seconds: number;
+    headers?: Record<string, string>;
+    clear_headers?: boolean;
+}
+
+export type MCPCategory = "observability" | "diagram_collaboration" | "cloud_platform" | "developer_tools" | "data_search" | "custom";
+
+export interface AgentToolPolicy {
+    max_total_calls: number;
+    max_calls_per_tool: number;
+    max_argument_chars: number;
+    max_output_chars: number;
+    max_timeout_seconds: number;
+    blocked_tools: string[];
+    blocked_sources: string[];
+}
+
+export interface AgentAuditEvent {
+    _id: string;
+    run_id: string;
+    parent_run_id?: string;
+    agent_id: string;
+    team_id?: string;
+    actor_id: string;
+    event_type: string;
+    status: string;
+    tool_name?: string;
+    source?: string;
+    details: Record<string, unknown>;
+    created_at: string;
+}
+
 export type SimpleAPIResponse = {
     message?: string;
 };
@@ -373,8 +429,17 @@ export interface AgentToolSettings {
     knowledge_search: "auto" | "always" | "disabled";
     external_database: boolean;
     rest_integrations: boolean;
+    mail: boolean;
+    messaging: boolean;
     mcp: boolean;
+    mcp_execution: "auto" | "required";
     subagents: boolean;
+    mcp_server_ids: string[];
+    mcp_tool_allowlists: Record<string, string[]>;
+    mcp_timeout_seconds: number;
+    subagent_ids: string[];
+    subagent_max_depth: number;
+    tool_policy: AgentToolPolicy;
 }
 
 export interface Prompt {
@@ -503,6 +568,9 @@ export interface MailBindingData {
     email_id: string;
     is_html: boolean;
     enabled: boolean;
+    permissions: Array<"read" | "send">;
+    allowed_recipient_domains: string[];
+    max_recipients: number;
     // Mail template
     subject: string;
     body: string;
@@ -609,6 +677,7 @@ export interface ExternalApi {
     auth: AuthConfig;
 
     endpoints: Endpoint[];
+    agent_usage_count?: number;
 }
 
 export type DbType = "postgresql" | "mysql" | "mssql" | "mongodb" | "sqlite";
@@ -631,21 +700,55 @@ export interface DatabaseConnection {
     username: string;
     password?: string;
     has_password?: boolean;
+    agent_usage_count?: number;
     options?: DatabaseConnectionOptions;
 }
 
-export type MailProtocol = "SMTP" | "IMAP";
+export type MailProvider = "microsoft365" | "gmail" | "generic";
+export type MailReceiveProtocol = "imap" | "pop3";
+export type MailSecurity = "ssl" | "starttls" | "none";
 
-export type MailEncryption = "STARTTLS" | "SSL" | "None";
+export interface MailPublicConfig {
+    tenant_id?: string;
+    client_id?: string;
+    username?: string;
+    receive_protocol?: MailReceiveProtocol;
+    receive_host?: string;
+    receive_port?: number;
+    receive_security?: MailSecurity;
+    smtp_host?: string;
+    smtp_port?: number;
+    smtp_security?: MailSecurity;
+}
 
 export interface MailEmailConfig {
     _id: string;
     team_id: string;
     name: string;
-    email: string;
-    password?: string;
-    server: string;
-    port: number;
-    protocol: MailProtocol;
-    encryption: MailEncryption;
+    provider: MailProvider;
+    email_address: string;
+    public_config: MailPublicConfig;
+    enabled: boolean;
+    has_credentials?: boolean;
+    agent_usage_count?: number;
+}
+
+export type MessagingProvider = "line" | "slack" | "discord";
+export interface MessagingConnection {
+    _id: string; team_id: string; name: string; provider: MessagingProvider;
+    public_config: { default_target?: string }; enabled: boolean;
+    has_credentials?: boolean; agent_usage_count?: number;
+}
+export interface MessagingBindingData {
+    _id: string; agent_id: string; connection_id: string; enabled: boolean;
+    default_target: string; message_template: string;
+}
+export interface DocumentProcessingProvider {
+    _id: string; name: string;
+    provider_type: "azure_document_intelligence" | "docling" | "google_document_ai" | "generic_ocr_api" | "paddleocr" | "local_text";
+    config: Record<string, unknown>; enabled: boolean; system_managed: boolean; has_credentials?: boolean;
+}
+export interface DocumentProcessingProfile {
+    _id: string; name: string; provider_id: string; file_types: string[];
+    languages: string[]; extract_tables: boolean; is_default: boolean; enabled: boolean;
 }

@@ -31,6 +31,7 @@ from openai.types.create_embedding_response import Usage
 # import the application. PyMongo connects lazily for a standard mongodb URI.
 os.environ.setdefault("MONGO_URI", "mongodb://localhost:27017")
 os.environ.setdefault("MONGO_DB_NAME", "nexora_test")
+os.environ.setdefault("DISABLE_AGENT_AUDIT_PERSISTENCE", "true")
 
 import app
 import core

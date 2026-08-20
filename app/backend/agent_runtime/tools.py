@@ -1,12 +1,16 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.tools import StructuredTool
 from pydantic import ConfigDict, Field, create_model
+
+from agent_runtime.observability import AuditTrail
+from agent_runtime.policy import ToolExecutionPolicy, ToolPolicyViolation
 
 ToolHandler = Callable[[dict[str, Any], "ToolRuntimeContext"], Awaitable[Any]]
 
@@ -29,6 +33,7 @@ class ToolSpec:
     source: str = "builtin"
     timeout_seconds: float = 30.0
     max_output_chars: int = 50_000
+    risk_level: str = "read"
 
 
 def _python_type(schema: dict[str, Any]) -> type:
@@ -65,10 +70,20 @@ def _args_model(spec: ToolSpec):
 class ToolRegistry:
     """Canonical registry used by LangGraph, LangChain and MCP adapters."""
 
-    def __init__(self, context: ToolRuntimeContext):
+    def __init__(
+        self,
+        context: ToolRuntimeContext,
+        *,
+        policy: ToolExecutionPolicy | None = None,
+        audit: AuditTrail | None = None,
+    ):
         self.context = context
+        self.policy = policy or ToolExecutionPolicy()
+        self.audit = audit
         self._tools: dict[str, ToolSpec] = {}
         self.execution_log: list[dict[str, Any]] = []
+        self._total_calls = 0
+        self._calls_by_tool: dict[str, int] = {}
 
     @staticmethod
     def normalize_name(name: str) -> str:
@@ -93,6 +108,7 @@ class ToolRegistry:
             source=spec.source,
             timeout_seconds=spec.timeout_seconds,
             max_output_chars=spec.max_output_chars,
+            risk_level=spec.risk_level,
         )
         return name
 
@@ -102,7 +118,7 @@ class ToolRegistry:
     def has(self, name: str) -> bool:
         return self.normalize_name(name) in self._tools
 
-    def openai_tools(self) -> list[dict[str, Any]]:
+    def openai_tools(self, *, source_prefix: str | None = None) -> list[dict[str, Any]]:
         return [
             {
                 "type": "function",
@@ -113,7 +129,25 @@ class ToolRegistry:
                 },
             }
             for spec in self.specs()
+            if source_prefix is None
+            or spec.source == source_prefix
+            or spec.source.startswith(f"{source_prefix}:")
         ]
+
+    def query_mentions_source(self, source_prefix: str, query: str) -> bool:
+        normalized_query = query.casefold()
+        if source_prefix.casefold() in normalized_query:
+            return True
+        for spec in self.specs():
+            if not (
+                spec.source == source_prefix
+                or spec.source.startswith(f"{source_prefix}:")
+            ):
+                continue
+            alias = spec.source.rsplit(":", 1)[-1].strip().casefold()
+            if len(alias) >= 3 and alias in normalized_query:
+                return True
+        return False
 
     def langchain_tools(self) -> list[StructuredTool]:
         result = []
@@ -133,22 +167,44 @@ class ToolRegistry:
         return result
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> str:
-        spec = self._tools.get(self.normalize_name(name))
+        normalized_name = self.normalize_name(name)
+        spec = self._tools.get(normalized_name)
         if spec is None:
-            return json.dumps({"error": f"Unknown tool '{name}'"}, ensure_ascii=False)
+            rendered = json.dumps(
+                {"error": f"Unknown tool '{name}'"}, ensure_ascii=False
+            )
+            if self.audit:
+                await self.audit.emit(
+                    "tool_execution",
+                    status="unknown_tool",
+                    tool_name=normalized_name,
+                    details={"argument_keys": sorted(arguments)},
+                )
+            return rendered
+        started = time.perf_counter()
+        argument_size = 0
         try:
+            argument_size = self.policy.validate(
+                tool_name=spec.name,
+                source=spec.source,
+                arguments=arguments,
+                total_calls=self._total_calls,
+                tool_calls=self._calls_by_tool.get(spec.name, 0),
+            )
+            self._total_calls += 1
+            self._calls_by_tool[spec.name] = self._calls_by_tool.get(spec.name, 0) + 1
             value = await asyncio.wait_for(
-                spec.handler(arguments, self.context), timeout=spec.timeout_seconds
+                spec.handler(arguments, self.context),
+                timeout=min(spec.timeout_seconds, self.policy.max_timeout_seconds),
             )
             rendered = (
                 value
                 if isinstance(value, str)
                 else json.dumps(value, ensure_ascii=False, default=str)
             )
-            if len(rendered) > spec.max_output_chars:
-                rendered = (
-                    rendered[: spec.max_output_chars] + "\n[tool output truncated]"
-                )
+            output_limit = min(spec.max_output_chars, self.policy.max_output_chars)
+            if len(rendered) > output_limit:
+                rendered = rendered[:output_limit] + "\n[tool output truncated]"
             self.execution_log.append(
                 {
                     "name": spec.name,
@@ -156,13 +212,27 @@ class ToolRegistry:
                     "output": rendered,
                     "raw_output": value,
                     "is_error": False,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                 }
             )
+            if self.audit:
+                await self.audit.emit(
+                    "tool_execution",
+                    tool_name=spec.name,
+                    source=spec.source,
+                    details={
+                        "risk_level": spec.risk_level,
+                        "argument_keys": sorted(arguments),
+                        "argument_size": argument_size,
+                        "output_size": len(rendered),
+                        "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                    },
+                )
             return rendered
-        except Exception as error:
-            logging.exception("Agent tool %s (%s) failed", spec.name, spec.source)
+        except ToolPolicyViolation as error:
             rendered = json.dumps(
-                {"error": str(error), "tool": spec.name}, ensure_ascii=False
+                {"error": str(error), "tool": spec.name, "policy_denied": True},
+                ensure_ascii=False,
             )
             self.execution_log.append(
                 {
@@ -170,6 +240,54 @@ class ToolRegistry:
                     "source": spec.source,
                     "output": rendered,
                     "is_error": True,
+                    "policy_denied": True,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                 }
             )
+            if self.audit:
+                await self.audit.emit(
+                    "tool_execution",
+                    status="policy_denied",
+                    tool_name=spec.name,
+                    source=spec.source,
+                    details={
+                        "reason": str(error),
+                        "argument_keys": sorted(arguments),
+                        "argument_size": argument_size,
+                    },
+                )
+            return rendered
+        except Exception as error:
+            logging.exception("Agent tool %s (%s) failed", spec.name, spec.source)
+            rendered = json.dumps(
+                {
+                    "error": str(error),
+                    "error_type": type(error).__name__,
+                    "tool": spec.name,
+                },
+                ensure_ascii=False,
+            )
+            self.execution_log.append(
+                {
+                    "name": spec.name,
+                    "source": spec.source,
+                    "output": rendered,
+                    "is_error": True,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                }
+            )
+            if self.audit:
+                await self.audit.emit(
+                    "tool_execution",
+                    status="error",
+                    tool_name=spec.name,
+                    source=spec.source,
+                    details={
+                        "error_type": type(error).__name__,
+                        "error": str(error)[:2000],
+                        "argument_keys": sorted(arguments),
+                        "argument_size": argument_size,
+                        "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                    },
+                )
             return rendered

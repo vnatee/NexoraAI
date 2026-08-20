@@ -30,12 +30,17 @@ async def parse_file(
 ) -> ParsedFile:
     key = file.file_extension().lower()
     processor = file_processors.get(key)
-    is_docintel = 'DocumentAnalysisParser' in str(processor)
     if processor is None:
         logger.info("Skipping '%s', no parser found.", file.filename())
         raise ValueError("no parser found")
     logger.info("Ingesting '%s'", file.filename())
-    pages = [page async for page in processor.parser.parse(content=file.content)]
+    selected_parser = (
+        processor.parser.select_parser(file.content)
+        if hasattr(processor.parser, "select_parser")
+        else processor.parser
+    )
+    is_docintel = selected_parser.__class__.__name__ == "DocumentAnalysisParser"
+    pages = [page async for page in selected_parser.parse(content=file.content)]
     docintel_pages = len(pages)
     logger.info("Splitting '%s' into sections", file.filename())
     if image_embeddings:

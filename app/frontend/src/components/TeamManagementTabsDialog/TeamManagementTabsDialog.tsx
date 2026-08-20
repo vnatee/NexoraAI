@@ -11,6 +11,8 @@ import { hasPermission } from "../../utill/hasPermission";
 import { TeamProfile } from "../../api/models";
 import { IntegrationManagementPage } from "./Tabs/IntegrationManagementPage";
 import { LLMProviderManagement } from "../LLMProviderManagement";
+import { MCPServerManagement } from "../MCPServerManagement";
+import { AgentAuditManagement } from "../AgentAuditManagement";
 
 interface Props {
     open: boolean;
@@ -61,6 +63,18 @@ export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin
             permission: ["Manage users", "Manage teams"],
             systemAdminOnly: true,
             element: <LLMProviderManagement />
+        },
+        {
+            label: "MCP Servers",
+            permission: ["Manage users", "Manage teams"],
+            systemAdminOnly: true,
+            element: <MCPServerManagement />
+        },
+        {
+            label: "Agent Audit",
+            permission: ["Manage users", "Manage teams"],
+            systemAdminOnly: true,
+            element: <AgentAuditManagement />
         }
     ];
 

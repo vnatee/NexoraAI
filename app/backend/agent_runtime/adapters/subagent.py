@@ -23,31 +23,46 @@ def register_subagent_tools(
 ) -> None:
     """Expose selected agents as bounded tools; persistence/binding can be added without changing the graph."""
     current_depth = int(registry.context.metadata.get("subagent_depth") or 0)
+    current_stack = tuple(registry.context.metadata.get("subagent_stack") or ())
     if current_depth >= max_depth:
         return
     for subagent in subagents:
-        if subagent.agent_id == registry.context.agent_id:
+        if (
+            subagent.agent_id == registry.context.agent_id
+            or subagent.agent_id in current_stack
+        ):
             continue
 
         async def delegate(arguments, context, _subagent=subagent):
             task = str(arguments.get("task") or "").strip()
             if not task:
                 raise ValueError("task is required")
-            child_context = {**context.metadata, "subagent_depth": current_depth + 1, "parent_agent_id": context.agent_id}
+            child_context = {
+                **context.metadata,
+                "subagent_depth": current_depth + 1,
+                "parent_agent_id": context.agent_id,
+                "subagent_stack": [*current_stack, context.agent_id],
+            }
             return await runner(_subagent.agent_id, task, child_context)
 
         registry.register(
             ToolSpec(
-                name=f"delegate_{subagent.name}",
+                name=f"delegate_{subagent.name}_{subagent.agent_id[:8]}",
                 description=f"Delegate a focused task to {_subagent_label(subagent)}. {subagent.description}",
                 input_schema={
                     "type": "object",
-                    "properties": {"task": {"type": "string", "description": "A self-contained task for the sub-agent"}},
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "A self-contained task for the sub-agent",
+                        }
+                    },
                     "required": ["task"],
                     "additionalProperties": False,
                 },
                 handler=delegate,
                 source=f"subagent:{subagent.agent_id}",
+                risk_level="delegation",
             )
         )
 

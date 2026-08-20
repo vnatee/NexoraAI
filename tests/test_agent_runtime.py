@@ -6,6 +6,8 @@ from openai.types.chat import ChatCompletion
 
 from agent_runtime.adapters.mcp import load_mcp_servers
 from agent_runtime.adapters.rag import register_rag_tool
+from agent_runtime.adapters.subagent import SubagentSpec, register_subagent_tools
+from agent_runtime.factory import _effective_mcp_allowed_tools
 from agent_runtime.runtime import AgentRuntime, AgentRuntimeConfig
 from agent_runtime.tools import ToolRegistry, ToolRuntimeContext, ToolSpec
 from approaches.approach import Document
@@ -31,6 +33,18 @@ def completion(*, content="", tool_calls=None):
             ],
         }
     )
+
+
+def test_agent_mcp_allowlist_cannot_expand_admin_allowlist():
+    assert _effective_mcp_allowed_tools(
+        ("search_logs", "search_monitors"),
+        ("search_logs", "delete_monitor"),
+    ) == ("search_logs",)
+    assert _effective_mcp_allowed_tools(
+        ("search_logs",), ("delete_monitor",)
+    ) is None
+    assert _effective_mcp_allowed_tools((), ("search_logs",)) == ("search_logs",)
+    assert _effective_mcp_allowed_tools(("search_logs",), ()) == ("search_logs",)
 
 
 @pytest.mark.asyncio
@@ -84,6 +98,62 @@ async def test_langgraph_runtime_executes_registered_tool():
         for message in second_messages
     )
     assert result["artifacts"] == {}
+
+
+@pytest.mark.asyncio
+async def test_explicit_mcp_request_requires_mcp_tool_on_first_iteration():
+    registry = ToolRegistry(
+        ToolRuntimeContext(agent_id="agent-1", auth_claims={"oid": "user-1"})
+    )
+    mcp_handler = AsyncMock(return_value={"monitors": []})
+    registry.register(
+        ToolSpec(
+            name="mcp_datadog_search_datadog_monitors",
+            description="Search Datadog monitors",
+            input_schema={"type": "object", "properties": {}},
+            handler=mcp_handler,
+            source="mcp:server-1:Datadog",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="unrelated_tool",
+            description="An unrelated tool",
+            input_schema={"type": "object", "properties": {}},
+            handler=AsyncMock(return_value={}),
+            source="builtin",
+        )
+    )
+    model = AsyncMock(
+        side_effect=[
+            completion(
+                tool_calls=[
+                    {
+                        "id": "call-datadog",
+                        "type": "function",
+                        "function": {
+                            "name": "mcp_datadog_search_datadog_monitors",
+                            "arguments": "{}",
+                        },
+                    }
+                ]
+            ),
+            completion(content="No alerting monitors were returned."),
+        ]
+    )
+
+    result = await AgentRuntime(model, registry).run(
+        [{"role": "user", "content": "Check Datadog monitor alerts"}]
+    )
+
+    assert result["content"] == "No alerting monitors were returned."
+    assert model.await_args_list[0].args[2] == "required"
+    first_tool_names = {
+        item["function"]["name"] for item in model.await_args_list[0].args[1]
+    }
+    assert first_tool_names == {"mcp_datadog_search_datadog_monitors"}
+    assert model.await_args_list[1].args[2] is None
+    mcp_handler.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -200,3 +270,74 @@ def test_load_mcp_servers_applies_allowlist_and_disabled_filter():
     assert len(servers) == 1
     assert servers[0].name == "drawio"
     assert servers[0].allowed_tools == ("draw",)
+
+
+@pytest.mark.asyncio
+async def test_subagent_tool_delegates_with_bounded_context():
+    registry = ToolRegistry(
+        ToolRuntimeContext(
+            agent_id="parent-agent",
+            auth_claims={"oid": "user-1"},
+            metadata={"subagent_depth": 0},
+        )
+    )
+    runner = AsyncMock(return_value={"content": "specialist result"})
+
+    register_subagent_tools(
+        registry,
+        [SubagentSpec("child-agent", "Risk Analyst", "Review purchasing risk")],
+        runner,
+        max_depth=2,
+    )
+
+    result = json.loads(
+        await registry.execute(
+            "delegate_risk_analyst_child_ag", {"task": "Review PO-1001"}
+        )
+    )
+
+    assert result["content"] == "specialist result"
+    runner.assert_awaited_once()
+    child_metadata = runner.await_args.args[2]
+    assert child_metadata["subagent_depth"] == 1
+    assert child_metadata["parent_agent_id"] == "parent-agent"
+    assert child_metadata["subagent_stack"] == ["parent-agent"]
+
+
+def test_subagent_tools_prevent_cycles_and_stop_at_max_depth():
+    cycle_registry = ToolRegistry(
+        ToolRuntimeContext(
+            agent_id="child-agent",
+            auth_claims={},
+            metadata={
+                "subagent_depth": 1,
+                "subagent_stack": ["parent-agent"],
+            },
+        )
+    )
+    runner = AsyncMock()
+    register_subagent_tools(
+        cycle_registry,
+        [
+            SubagentSpec("parent-agent", "Parent", "Parent agent"),
+            SubagentSpec("child-agent", "Self", "Current agent"),
+        ],
+        runner,
+        max_depth=2,
+    )
+    assert cycle_registry.specs() == []
+
+    depth_registry = ToolRegistry(
+        ToolRuntimeContext(
+            agent_id="child-agent",
+            auth_claims={},
+            metadata={"subagent_depth": 2},
+        )
+    )
+    register_subagent_tools(
+        depth_registry,
+        [SubagentSpec("other-agent", "Other", "Other agent")],
+        runner,
+        max_depth=2,
+    )
+    assert depth_registry.specs() == []

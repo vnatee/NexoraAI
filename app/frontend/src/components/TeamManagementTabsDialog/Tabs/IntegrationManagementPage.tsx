@@ -1,17 +1,20 @@
 import React, { useEffect, useState } from "react";
-import { Box, Typography, Card, CardContent, Stack } from "@mui/material";
+import { Box, Typography, Card, CardContent, Stack, Chip } from "@mui/material";
 import ApiIcon from "@mui/icons-material/Api";
 import ChatIcon from "@mui/icons-material/Chat";
 import EmailIcon from "@mui/icons-material/Email";
 import TableChartIcon from "@mui/icons-material/TableChart";
 import StorageIcon from "@mui/icons-material/Storage";
+import DocumentScannerIcon from "@mui/icons-material/DocumentScanner";
 
 import { ExternalApiListPage } from "./ExternalApiListPage";
 import { DatabaseQueryListPage } from "./DatabaseQueryListPage";
 import { MailIntegrationListPage } from "./MailIntegrationListPage";
+import { MessagingIntegrationListPage } from "./MessagingIntegrationListPage";
+import { DocumentProcessingPage } from "./DocumentProcessingPage";
 import { TeamProfile } from "../../../api/models";
 
-type ViewMode = "types" | "external_api" | "database" | "mail";
+type ViewMode = "types" | "external_api" | "database" | "mail" | "messaging" | "document_processing";
 
 interface Props {
     team: TeamProfile | null;
@@ -44,43 +47,81 @@ export function IntegrationManagementPage({ team }: Props) {
     if (view === "mail") {
         return <MailIntegrationListPage key={team._id} team={team} onBack={() => setView("types")} />;
     }
+    if (view === "messaging") return <MessagingIntegrationListPage key={team._id} team={team} onBack={() => setView("types")} />;
+    if (view === "document_processing") return <DocumentProcessingPage onBack={() => setView("types")} />;
 
     // ✅ scalable integration type config
     const integrationTypes = [
         {
             key: "external_api",
-            title: "External API",
-            description: "Connect REST services",
+            title: "REST APIs",
+            description: "Manage REST connections, authentication and endpoints",
             icon: <ApiIcon fontSize="large" />,
-            enabled: true
+            enabled: true,
+            badges: [
+                { label: "Read / Write", color: "warning" as const },
+                { label: "Connection catalog", color: "default" as const }
+            ]
         },
         {
-            key: "line",
-            title: "LINE",
-            description: "Connect LINE Bot",
+            key: "database",
+            title: "Databases",
+            description: "Manage read-only database connections used by Agent query tools",
+            icon: <StorageIcon fontSize="large" />,
+            enabled: true,
+            badges: [
+                { label: "Read-only", color: "success" as const },
+                { label: "Connection catalog", color: "default" as const }
+            ]
+        },
+        {
+            key: "mail",
+            title: "Mail",
+            description: "Manage Microsoft 365, Gmail and IMAP/POP3 + SMTP connections",
+            icon: <EmailIcon fontSize="large" />,
+            enabled: true,
+            badges: [
+                { label: "Read / Write", color: "warning" as const },
+                { label: "Connection catalog", color: "default" as const }
+            ]
+        },
+        {
+            key: "document_processing",
+            title: "Document Processing & OCR",
+            description: "Manage Azure and local extraction providers used by RAG ingestion",
+            icon: <DocumentScannerIcon fontSize="large" />,
+            enabled: true,
+            badges: [
+                { label: "Azure DI", color: "primary" as const },
+                { label: "Docling", color: "success" as const },
+                { label: "PaddleOCR", color: "info" as const },
+                { label: "Google Document AI", color: "warning" as const }
+            ]
+        },
+        {
+            key: "visualization",
+            title: "Visualization",
+            description: "Chart output capabilities are configured per Agent",
+            icon: <TableChartIcon fontSize="large" />,
+            enabled: false,
+            statusLabel: "Managed per Agent",
+            badges: [{ label: "Output capability", color: "info" as const }]
+        },
+        {
+            key: "messaging",
+            title: "Messaging & Chat",
+            description: "Manage LINE, Slack and Discord messaging channels",
             icon: <ChatIcon fontSize="large" />,
-            enabled: false
+            enabled: true,
+            badges: [{ label: "LINE", color: "success" as const }, { label: "Slack", color: "primary" as const }, { label: "Discord", color: "info" as const }]
         },
         {
             key: "google_sheet",
             title: "Google Sheet",
             description: "Connect Google Sheets",
             icon: <TableChartIcon fontSize="large" />,
-            enabled: false
-        },
-        {
-            key: "database",
-            title: "Database Query",
-            description: "Connect database queries",
-            icon: <StorageIcon fontSize="large" />,
-            enabled: true
-        },
-        {
-            key: "mail",
-            title: "Mail",
-            description: "Configure SMTP/IMAP email connections",
-            icon: <EmailIcon fontSize="large" />,
-            enabled: false
+            enabled: false,
+            badges: []
         }
     ];
 
@@ -108,6 +149,8 @@ export function IntegrationManagementPage({ team }: Props) {
                         title={type.title}
                         description={type.description}
                         disabled={!type.enabled}
+                        statusLabel={type.statusLabel}
+                        badges={type.badges}
                         onClick={type.enabled ? () => setView(type.key as ViewMode) : undefined}
                     />
                 ))}
@@ -121,13 +164,17 @@ function IntegrationCard({
     title,
     description,
     onClick,
-    disabled
+    disabled,
+    statusLabel,
+    badges
 }: {
     icon: React.ReactNode;
     title: string;
     description: string;
     onClick?: () => void;
     disabled?: boolean;
+    statusLabel?: string;
+    badges?: Array<{ label: string; color: "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning" }>;
 }) {
     return (
         <Card
@@ -152,13 +199,21 @@ function IntegrationCard({
                         <Typography variant="body2" color="text.secondary">
                             {description}
                         </Typography>
+                        {badges && badges.length > 0 && (
+                            <Stack direction="row" spacing={0.75} mt={1} flexWrap="wrap" useFlexGap>
+                                {badges.map(badge => (
+                                    <Chip key={badge.label} size="small" variant="outlined" label={badge.label} color={badge.color} />
+                                ))}
+                            </Stack>
+                        )}
                     </Box>
 
-                    {/* {!disabled && (
-                        <Typography variant="body2" color="primary" fontWeight={500}>
-                            Manage →
-                        </Typography>
-                    )} */}
+                    <Chip
+                        size="small"
+                        label={disabled ? statusLabel || "Coming soon" : "Manage"}
+                        color={disabled ? "default" : "primary"}
+                        variant={disabled ? "outlined" : "filled"}
+                    />
                 </Stack>
             </CardContent>
         </Card>

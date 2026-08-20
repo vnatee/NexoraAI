@@ -19,6 +19,16 @@ if [ $out -ne 0 ]; then
     exit $out
 fi
 
+if [ "${INSTALL_LOCAL_OCR:-false}" = "true" ]; then
+    echo "Installing optional local OCR packages"
+    ./.venv/bin/python -m pip install -r app/backend/requirements-ocr.txt
+    out=$?
+    if [ $out -ne 0 ]; then
+        echo "Failed to restore local OCR packages"
+        exit $out
+    fi
+fi
+
 echo ""
 echo "Restoring frontend npm packages"
 echo ""

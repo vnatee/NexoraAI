@@ -12,6 +12,8 @@ import {
     DialogActions,
     TextField,
     CircularProgress,
+    Chip,
+    Alert,
     MenuItem,
     Skeleton
 } from "@mui/material";
@@ -101,7 +103,7 @@ export function ExternalApiListPage({ team, onBack }: { team: TeamProfile; onBac
     };
 
     const handleDelete = async (id: string) => {
-        if (!window.confirm("Are you sure you want to delete this external API?")) return;
+        if (!window.confirm("Delete this REST API connection? Agent endpoint bindings that reference it will stop working.")) return;
 
         try {
             setDeletingId(id);
@@ -127,11 +129,16 @@ export function ExternalApiListPage({ team, onBack }: { team: TeamProfile; onBac
                 <IconButton onClick={onBack}>
                     <ArrowBackIcon />
                 </IconButton>
-                <Typography variant="h6">External API</Typography>
+                <Box>
+                    <Typography variant="h6">REST APIs</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                        Connection catalog for REST endpoints. Agents receive only endpoints explicitly assigned from Agent → Integrations.
+                    </Typography>
+                </Box>
             </Stack>
 
             <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpen(true)} sx={{ mb: 2 }}>
-                Add External API
+                Add REST API
             </Button>
 
             {loading ? (
@@ -149,15 +156,31 @@ export function ExternalApiListPage({ team, onBack }: { team: TeamProfile; onBac
                                 alignItems: "center"
                             }}
                         >
-                            <Box>
+                            <Box minWidth={0}>
                                 <Typography fontWeight={600}>{api.name}</Typography>
                                 <Typography variant="body2" color="text.secondary">
                                     {api.base_url}
                                 </Typography>
 
-                                <Typography variant="caption" color="text.secondary">
-                                    Endpoints: {api.endpoints.length}
-                                </Typography>
+                                <Stack direction="row" spacing={0.75} mt={1} flexWrap="wrap" useFlexGap>
+                                    <Chip size="small" label={`${api.endpoints.length} endpoint${api.endpoints.length === 1 ? "" : "s"}`} />
+                                    <Chip size="small" color="primary" variant="outlined" label={`${api.agent_usage_count ?? 0} Agent(s)`} />
+                                    <Chip
+                                        size="small"
+                                        variant="outlined"
+                                        color={api.auth?.type && api.auth.type !== "none" ? "success" : "default"}
+                                        label={api.auth?.type && api.auth.type !== "none" ? "Credentials configured" : "No authentication"}
+                                    />
+                                    {api.endpoints.map((endpoint, index) => (
+                                        <Chip
+                                            key={`${api._id}-${endpoint.name}-${index}`}
+                                            size="small"
+                                            variant="outlined"
+                                            color={endpoint.method === "GET" ? "success" : "warning"}
+                                            label={`${endpoint.method} ${endpoint.name || endpoint.path}`}
+                                        />
+                                    ))}
+                                </Stack>
                             </Box>
 
                             <Box>
@@ -256,7 +279,7 @@ function ExternalApiDialog({
 
     return (
         <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
-            <DialogTitle>{api ? "Edit External API" : "Add External API"}</DialogTitle>
+            <DialogTitle>{api ? "Edit REST API" : "Add REST API"}</DialogTitle>
 
             <DialogContent dividers>
                 <Stack spacing={3}>
@@ -274,7 +297,15 @@ function ExternalApiDialog({
                         <>
                             <TextField label="Header" disabled={saving} value={authHeader} onChange={e => setAuthHeader(e.target.value)} />
 
-                            <TextField label="Value" disabled={saving} value={authValue} onChange={e => setAuthValue(e.target.value)} />
+                            <TextField
+                                label="Credential Value"
+                                type="password"
+                                disabled={saving}
+                                value={authValue}
+                                onChange={e => setAuthValue(e.target.value)}
+                                autoComplete="new-password"
+                                helperText="Credentials are managed centrally and are never copied into an Agent binding"
+                            />
                         </>
                     )}
 
@@ -289,7 +320,15 @@ function ExternalApiDialog({
                                     <Stack spacing={2}>
                                         {/* Header */}
                                         <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                            <Typography fontWeight={600}>Endpoint {idx + 1}</Typography>
+                                            <Stack direction="row" spacing={1} alignItems="center">
+                                                <Typography fontWeight={600}>Endpoint {idx + 1}</Typography>
+                                                <Chip
+                                                    size="small"
+                                                    variant="outlined"
+                                                    color={ep.method === "GET" ? "success" : "warning"}
+                                                    label={ep.method === "GET" ? "Read action" : "Write action"}
+                                                />
+                                            </Stack>
 
                                             <IconButton
                                                 size="small"
@@ -320,6 +359,11 @@ function ExternalApiDialog({
                                         </TextField>
 
                                         <TextField label="Path" disabled={saving} value={ep.path} onChange={e => updateEndpoint(idx, "path", e.target.value)} />
+                                        {ep.method !== "GET" && (
+                                            <Alert severity="warning">
+                                                This endpoint can change an external system. Assign it only to Agents that require this action.
+                                            </Alert>
+                                        )}
                                     </Stack>
                                 </Paper>
                             ))}

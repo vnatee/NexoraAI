@@ -6,7 +6,9 @@ from approaches.approach import Approach
 
 def _client_with_create_mock():
     create = MagicMock(return_value="completion-request")
-    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
     return client, create
 
 
@@ -65,10 +67,39 @@ def test_create_chat_completion_omits_tools_for_model_without_tool_support():
         messages=[{"role": "user", "content": "hello"}],
         overrides={"_llm_supports_tools": False},
         response_token_limit=100,
-        tools=[{"type": "function", "function": {"name": "search_sources", "parameters": {}}}],
+        tools=[
+            {
+                "type": "function",
+                "function": {"name": "search_sources", "parameters": {}},
+            }
+        ],
     )
 
     assert "tools" not in create.call_args.kwargs
+
+
+def test_create_chat_completion_forwards_required_tool_choice():
+    approach = object.__new__(Approach)
+    client, create = _client_with_create_mock()
+    approach.openai_client = client
+    approach.reasoning_effort = None
+
+    approach.create_chat_completion(
+        chatgpt_deployment=None,
+        chatgpt_model="gpt-4.1-mini",
+        messages=[{"role": "user", "content": "check Datadog"}],
+        overrides={"_llm_vendor": "openai"},
+        response_token_limit=100,
+        tools=[
+            {
+                "type": "function",
+                "function": {"name": "mcp_datadog", "parameters": {}},
+            }
+        ],
+        tool_choice="required",
+    )
+
+    assert create.call_args.kwargs["tool_choice"] == "required"
 
 
 def test_create_chat_completion_omits_seed_for_gemini():
