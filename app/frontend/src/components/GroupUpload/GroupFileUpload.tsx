@@ -13,6 +13,7 @@ import { STORAGE_KEYS } from "../../utill/storageKeys";
 import { Storage } from "../../utill/storage";
 import { TeamProfile } from "../../api";
 import { DocumentProcessingUploadSelector } from "../DocumentProcessingUploadSelector/DocumentProcessingUploadSelector";
+import { IngestionJobStatus } from "../IngestionJobStatus";
 
 interface DataGroup {
     _id: string;
@@ -31,6 +32,7 @@ interface FileRow {
     fullPath?: string;
     depth?: number;
     uploadedAt?: string;
+    indexedAt?: string;
     size?: number;
     dataGroups?: string[];
 }
@@ -66,6 +68,7 @@ export const GroupFileUpload: React.FC = () => {
     const handleRemoveSelectedFile = (index: number) => setSelectedFiles(prev => prev.filter((_, i) => i !== index));
     const [loadedTeamId, setLoadedTeamId] = useState<string | null>(null);
     const [processingProfileId, setProcessingProfileId] = useState("");
+    const [jobRefreshKey, setJobRefreshKey] = useState(0);
 
     const generateRowsForGrid = (node: { files: FileRow[]; folders: Record<string, FileTreeNode> }, depth = 0): FileRow[] => {
         let rows: FileRow[] = [];
@@ -169,12 +172,13 @@ export const GroupFileUpload: React.FC = () => {
 
             const result = await listUploadedteamFilesApi(teamId, token);
 
-            const rows: FileRow[] = result.map((fileData: [string, string, string, number, string[]] | string, index: number) => {
+            const rows: FileRow[] = result.map((fileData, index: number) => {
                 let fileName: string;
                 let status: string = "";
                 let uploadedAt: string = "";
                 let size: number = 0;
                 let dataGroups: string[] = [];
+                let indexedAt: string = "";
 
                 // ✅ รองรับทั้ง string[] และ [filename, status][]
                 if (Array.isArray(fileData)) {
@@ -183,6 +187,7 @@ export const GroupFileUpload: React.FC = () => {
                     uploadedAt = fileData[2];
                     size = fileData[3];
                     dataGroups = fileData[4] ?? []; // ✅ data group
+                    indexedAt = fileData[5] ?? "";
                 } else {
                     fileName = fileData;
                 }
@@ -198,6 +203,7 @@ export const GroupFileUpload: React.FC = () => {
                     baseName,
                     status,
                     uploadedAt,
+                    indexedAt,
                     size,
                     dataGroups
                 };
@@ -342,9 +348,8 @@ export const GroupFileUpload: React.FC = () => {
             }
             if (processingProfileId) formData.append("processing_profile_id", processingProfileId);
 
-            uploadTeamFileApi(formData, selectedDataGroupIds, team_id, token).catch(err => {
-                console.error("Background upload error", err);
-            });
+            await uploadTeamFileApi(formData, selectedDataGroupIds, team_id, token);
+            setJobRefreshKey(value => value + 1);
 
             setMessage("🚀 Upload job submitted. Processing in background.");
             setOpenSuccess(true);
@@ -518,6 +523,12 @@ export const GroupFileUpload: React.FC = () => {
                     second: "2-digit"
                 });
             }) as GridValueFormatter
+        },
+        {
+            field: "indexedAt",
+            headerName: "Indexed Time",
+            width: 200,
+            valueFormatter: ((value: any) => value ? new Date(value).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }) : "Not indexed") as GridValueFormatter
         },
         {
             field: "size",
@@ -784,6 +795,8 @@ export const GroupFileUpload: React.FC = () => {
                     ))}
                 </Box>
             )}
+
+            {teamId && <Box sx={{ mb: 2 }}><IngestionJobStatus scope="team" teamId={teamId} refreshKey={jobRefreshKey} /></Box>}
 
             {/* File Table */}
             <Box sx={{ minHeight: 400, width: "100%" }}>

@@ -23,6 +23,11 @@ Provider, profile, and routing-rule administration is under **Admin Management >
 Integrations > Document Processing & OCR** and requires a system administrator.
 Test the provider before assigning it to a profile used by an enabled rule.
 
+Uploads create persistent processing jobs and expose the current OCR, chunking,
+embedding, indexing, or failure state in Personal, Team, and Global upload UI.
+See `docs/ingestion-jobs.md` for status, recovery, Retry, and access-control
+details.
+
 ## Routing rules
 
 Personal, Team, and Global uploads default to **Auto — use routing rules**.

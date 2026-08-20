@@ -244,7 +244,34 @@ export interface AgentAuditEvent {
 
 export type SimpleAPIResponse = {
     message?: string;
+    jobs?: IngestionJob[];
 };
+
+export type IngestionJobStatus = "uploaded" | "extracting" | "chunking" | "embedding" | "indexed" | "failed";
+
+export interface IngestionJob {
+    _id: string;
+    scope: "personal" | "team" | "global";
+    team_id: string;
+    filename: string;
+    file_size: number;
+    status: IngestionJobStatus;
+    attempt: number;
+    route_source: string;
+    profile_id: string;
+    profile_name: string;
+    provider_id: string;
+    provider_name: string;
+    rule_id: string;
+    rule_name: string;
+    error?: { code: string; message: string } | null;
+    result_message?: string;
+    stage_history: Array<{ status: IngestionJobStatus; at: string | null }>;
+    created_at: string;
+    updated_at: string;
+    started_at?: string | null;
+    completed_at?: string | null;
+}
 
 export interface SpeechConfig {
     speechUrls: (string | null)[];

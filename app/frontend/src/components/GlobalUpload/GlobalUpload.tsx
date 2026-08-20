@@ -40,6 +40,7 @@ import { STORAGE_KEYS } from "../../utill/storageKeys";
 import { AuthStorage } from "../../utill/authStorage";
 import { hasPermission } from "../../utill/hasPermission";
 import { DocumentProcessingUploadSelector } from "../DocumentProcessingUploadSelector/DocumentProcessingUploadSelector";
+import { IngestionJobStatus } from "../IngestionJobStatus";
 
 interface Props {
     disabled?: boolean;
@@ -58,6 +59,7 @@ interface FileRow {
     depth?: number;
     fullPath?: string;
     uploadedAt?: string;
+    indexedAt?: string;
     size?: number;
 }
 
@@ -98,6 +100,7 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
     const [hasLoaded, setHasLoaded] = useState(false);
     const [sysPers, setSysPers] = useState<string[] | null>(null);
     const [processingProfileId, setProcessingProfileId] = useState("");
+    const [jobRefreshKey, setJobRefreshKey] = useState(0);
     const totalUsed = storedSize + selectedSize;
 
     const [userData, setUserData] = useState<User | null>(null);
@@ -183,17 +186,19 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
             const result = await listUploadedGlobalFilesApi(token);
 
             // Updated to handle new data format with status
-            const rows: FileRow[] = result.map((fileData: [string, string, string, number, string[]] | string, index: number) => {
+            const rows: FileRow[] = result.map((fileData, index: number) => {
                 let fileName = "";
                 let status = "";
                 let uploadedAt = "";
                 let size = 0;
+                let indexedAt = "";
 
                 if (Array.isArray(fileData)) {
                     fileName = fileData[0];
                     status = fileData[1];
                     uploadedAt = fileData[2];
                     size = fileData[3];
+                    indexedAt = fileData[4] ?? "";
                 } else {
                     fileName = fileData;
                 }
@@ -209,6 +214,7 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
                     baseName,
                     status,
                     uploadedAt,
+                    indexedAt,
                     size
                 };
             });
@@ -416,6 +422,7 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
             }
             if (processingProfileId) formData.append("processing_profile_id", processingProfileId);
             await uploadGlobalFileApi(formData, token);
+            setJobRefreshKey(value => value + 1);
             setHasLoaded(false);
             await fetchFiles();
             setMessage("Upload success");
@@ -535,6 +542,12 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
                     second: "2-digit"
                 });
             }) as GridValueFormatter
+        },
+        {
+            field: "indexedAt",
+            headerName: "Indexed Time",
+            width: 200,
+            valueFormatter: ((value: any) => value ? new Date(value).toLocaleString("th-TH", { timeZone: "Asia/Bangkok" }) : "Not indexed") as GridValueFormatter
         },
         {
             field: "size",
@@ -791,6 +804,7 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
                                             ))}
                                         </Box>
                                     )}
+                                    <Box sx={{ mb: 2 }}><IngestionJobStatus scope="global" refreshKey={jobRefreshKey} /></Box>
                                     <Box sx={{ minHeight: 400, width: "100%" }}>
                                         {loadingFiles ? (
                                             <DataGridSkeleton />

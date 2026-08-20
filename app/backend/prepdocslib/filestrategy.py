@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Optional
 
@@ -13,6 +14,7 @@ from .searchmanager import SearchManager, Section
 from .strategy import DocumentAction, SearchInfo, Strategy
 
 logger = logging.getLogger("scripts")
+StatusCallback = Callable[[str], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,7 @@ async def parse_file(
     category: Optional[str] = None,
     image_embeddings: Optional[ImageEmbeddings] = None,
     routing_context: Optional[dict] = None,
+    status_callback: Optional[StatusCallback] = None,
 ) -> ParsedFile:
     key = file.file_extension().lower()
     processor = file_processors.get(key)
@@ -41,9 +44,13 @@ async def parse_file(
         else processor.parser
     )
     is_docintel = selected_parser.__class__.__name__ == "DocumentAnalysisParser"
+    if status_callback:
+        await status_callback("extracting")
     pages = [page async for page in selected_parser.parse(content=file.content)]
     docintel_pages = len(pages)
     logger.info("Splitting '%s' into sections", file.filename())
+    if status_callback:
+        await status_callback("chunking")
     if image_embeddings:
         logger.warning("Each page will be split into smaller chunks of text, but images will be of the entire page.")
     sections = [
@@ -171,21 +178,46 @@ class UploadUserFileStrategy:
         )
         self.search_field_name_embedding = search_field_name_embedding
 
-    async def add_file(self, file: File, routing_context: Optional[dict] = None):
+    async def add_file(
+        self,
+        file: File,
+        routing_context: Optional[dict] = None,
+        status_callback: Optional[StatusCallback] = None,
+    ):
         if self.image_embeddings:
             logging.warning("Image embeddings are not currently supported for the user upload feature")
-        parsed_file = await parse_file(file, self.file_processors, routing_context=routing_context)
+        parsed_file = await parse_file(
+            file,
+            self.file_processors,
+            routing_context=routing_context,
+            status_callback=status_callback,
+        )
         if not parsed_file.sections:
             raise ValueError(f"No searchable content was extracted from {file.filename()}")
+        if status_callback:
+            await status_callback("embedding")
         await self.search_manager.update_content(parsed_file.sections, url=file.url)
         return parsed_file.used_document_intelligence, parsed_file.page_count
 
-    async def add_global_file(self, file: File, folder = "", routing_context: Optional[dict] = None):
+    async def add_global_file(
+        self,
+        file: File,
+        folder = "",
+        routing_context: Optional[dict] = None,
+        status_callback: Optional[StatusCallback] = None,
+    ):
         if self.image_embeddings:
             logging.warning("Image embeddings are not currently supported for the user upload feature")
-        parsed_file = await parse_file(file, self.file_processors, routing_context=routing_context)
+        parsed_file = await parse_file(
+            file,
+            self.file_processors,
+            routing_context=routing_context,
+            status_callback=status_callback,
+        )
         if not parsed_file.sections:
             raise ValueError(f"No searchable content was extracted from {file.filename()}")
+        if status_callback:
+            await status_callback("embedding")
         await self.search_manager.update_global_content(parsed_file.sections, url=file.url,folder=folder)
         return parsed_file.used_document_intelligence, parsed_file.page_count
 

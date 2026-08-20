@@ -25,6 +25,7 @@ def minimal_env(monkeypatch):
         monkeypatch.setenv("SKIP_STARTUP_BOOTSTRAP", "true")
         monkeypatch.setenv("SKIP_MANAGED_LLM_PROVIDER_LOAD", "true")
         monkeypatch.setenv("DISABLE_USAGE_PERSISTENCE", "true")
+        monkeypatch.setenv("DISABLE_INGESTION_JOB_RECOVERY", "true")
         yield
 
 
