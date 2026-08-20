@@ -1,0 +1,3 @@
+# Optional local document processing stack. Kept separate because Docling
+# installs large ML dependencies that Azure-only deployments do not need.
+docling>=2,<3

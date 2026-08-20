@@ -16,6 +16,9 @@ import {
     AgentConfig,
     LLMProviderPayload,
     ManagedLLMProvider,
+    ManagedMCPServer,
+    MCPServerPayload,
+    AgentAuditEvent,
     User,
     RegisterUserPayload,
     Prompt,
@@ -1466,7 +1469,8 @@ export async function delete_external_api(api_id: string, idToken: string): Prom
         body: JSON.stringify({ api_id })
     });
     if (!response.ok) {
-        throw new Error(`delete external api failed: ${response.statusText}`);
+        const errorResponse = await response.json().catch(() => ({}));
+        throw new Error(errorResponse.error || `delete external api failed: ${response.statusText}`);
     }
     const dataResponse: any = await response.json();
     return dataResponse;
@@ -1545,6 +1549,69 @@ export async function toggle_database_binding_by_id(database_binding_id: string,
     }
     const dataResponse: any = await response.json();
     return dataResponse;
+}
+
+async function parseMCPResponse(response: Response): Promise<any> {
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `MCP request failed (${response.status})`);
+    return data;
+}
+
+export async function listMCPServersApi(idToken: string): Promise<ManagedMCPServer[]> {
+    const response = await fetch("/admin/mcp-servers", { headers: await getHeaders(idToken) });
+    return (await parseMCPResponse(response)).servers;
+}
+
+export async function listAvailableMCPServersApi(idToken: string): Promise<ManagedMCPServer[]> {
+    const response = await fetch("/mcp-servers/available", { headers: await getHeaders(idToken) });
+    return (await parseMCPResponse(response)).servers;
+}
+
+export async function createMCPServerApi(payload: MCPServerPayload, idToken: string): Promise<ManagedMCPServer> {
+    const response = await fetch("/admin/mcp-servers", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    return parseMCPResponse(response);
+}
+
+export async function updateMCPServerApi(serverId: string, payload: MCPServerPayload, idToken: string): Promise<ManagedMCPServer> {
+    const response = await fetch(`/admin/mcp-servers/${serverId}`, {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    return parseMCPResponse(response);
+}
+
+export async function deleteMCPServerApi(serverId: string, idToken: string): Promise<void> {
+    const response = await fetch(`/admin/mcp-servers/${serverId}`, {
+        method: "DELETE",
+        headers: await getHeaders(idToken)
+    });
+    await parseMCPResponse(response);
+}
+
+export async function testMCPServerApi(serverId: string, idToken: string): Promise<{ success: boolean; tools: Array<{ name: string; description?: string }> }> {
+    const response = await fetch(`/admin/mcp-servers/${serverId}/test`, {
+        method: "POST",
+        headers: await getHeaders(idToken)
+    });
+    return parseMCPResponse(response);
+}
+
+export async function listAgentAuditEventsApi(
+    filters: { agent_id?: string; run_id?: string; event_type?: string; status?: string; hours?: number; limit?: number },
+    idToken: string
+): Promise<AgentAuditEvent[]> {
+    const query = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+        if (value !== undefined && value !== "") query.set(key, String(value));
+    });
+    const response = await fetch(`/admin/agent-audit-events?${query}`, { headers: await getHeaders(idToken) });
+    const data = await parseMCPResponse(response);
+    return data.events ?? [];
 }
 
 export async function update_database_binding(payload: any, idToken: string): Promise<any> {
@@ -1680,7 +1747,8 @@ export async function delete_db_connection(connection_id: string, idToken: strin
         body: JSON.stringify({ database_id: connection_id })
     });
     if (!response.ok) {
-        throw new Error(`delete database connection failed: ${response.statusText}`);
+        const errorResponse = await response.json().catch(() => ({}));
+        throw new Error(errorResponse.error || `delete database connection failed: ${response.statusText}`);
     }
     const dataResponse: any = await response.json();
     return dataResponse;
@@ -1709,7 +1777,8 @@ export async function get_mail_configs(team_id: string, idToken: string): Promis
         headers: await getHeaders(idToken)
     });
     if (!response.ok) {
-        throw new Error(`get mail configs failed: ${response.statusText}`);
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || `get mail configs failed: ${response.statusText}`);
     }
     const dataResponse: MailEmailConfig[] = await response.json();
     return dataResponse;
@@ -1723,7 +1792,8 @@ export async function insert_mail_config(payload: any, idToken: string): Promise
         body: JSON.stringify(payload)
     });
     if (!response.ok) {
-        throw new Error(`insert mail config failed: ${response.statusText}`);
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || `insert mail config failed: ${response.statusText}`);
     }
     const dataResponse: SimpleAPIResponse = await response.json();
     return dataResponse;
@@ -1737,7 +1807,8 @@ export async function edit_mail_config(payload: any, idToken: string): Promise<S
         body: JSON.stringify(payload)
     });
     if (!response.ok) {
-        throw new Error(`edit mail config failed: ${response.statusText}`);
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || `edit mail config failed: ${response.statusText}`);
     }
     const dataResponse: SimpleAPIResponse = await response.json();
     return dataResponse;
@@ -1751,10 +1822,23 @@ export async function delete_mail_config(config_id: string, idToken: string): Pr
         body: JSON.stringify({ config_id })
     });
     if (!response.ok) {
-        throw new Error(`delete mail config failed: ${response.statusText}`);
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || `delete mail config failed: ${response.statusText}`);
     }
     const dataResponse: SimpleAPIResponse = await response.json();
     return dataResponse;
+}
+
+export async function test_mail_connection(config_id: string, idToken: string): Promise<{ ok: boolean; message: string }> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/test_mail_connection", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ connection_id: config_id })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `test mail connection failed: ${response.statusText}`);
+    return result;
 }
 
 // ─── Mail Binding ────────────────────────────────────────────────────────────
@@ -1802,6 +1886,64 @@ export async function toggle_mail_binding_by_id(binding_id: string, enabled: boo
     if (!response.ok) throw new Error(`toggle mail binding failed: ${response.statusText}`);
     return response.json();
 }
+
+export async function update_mail_binding(
+    binding_id: string,
+    payload: Omit<MailBindingData, "_id">,
+    idToken: string
+): Promise<SimpleAPIResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/update_mail_binding", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ binding_id, ...payload })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `update mail binding failed: ${response.statusText}`);
+    return result;
+}
+
+export async function get_messaging_connections(team_id: string, idToken: string) {
+    const response = await fetch(`/messaging_connections?team_id=${encodeURIComponent(team_id)}`, { headers: await getHeaders(idToken) });
+    const result = await response.json().catch(() => []);
+    if (!response.ok) throw new Error(result.error || "Failed to load messaging connections");
+    return result;
+}
+export async function save_messaging_connection(payload: any, idToken: string) {
+    const response = await fetch("/save_messaging_connection", { method: "POST", headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.error || "Failed to save messaging connection"); return result;
+}
+export async function test_messaging_connection(connection_id: string, idToken: string) {
+    const response = await fetch("/test_messaging_connection", { method: "POST", headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" }, body: JSON.stringify({ connection_id }) });
+    const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.error || "Messaging test failed"); return result;
+}
+export async function delete_messaging_connection(connection_id: string, idToken: string) {
+    const response = await fetch("/delete_messaging_connection", { method: "POST", headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" }, body: JSON.stringify({ connection_id }) });
+    const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.error || "Delete failed"); return result;
+}
+export async function get_messaging_bindings(agent_id: string, idToken: string) {
+    const response = await fetch(`/messaging_bindings?agent_id=${encodeURIComponent(agent_id)}`, { headers: await getHeaders(idToken) });
+    if (!response.ok) throw new Error("Failed to load messaging bindings"); return response.json();
+}
+export async function save_messaging_binding(payload: any, idToken: string) {
+    const response = await fetch("/save_messaging_binding", { method: "POST", headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.error || "Save binding failed"); return result;
+}
+export async function delete_messaging_binding(binding_id: string, idToken: string) {
+    const response = await fetch("/delete_messaging_binding", { method: "POST", headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" }, body: JSON.stringify({ binding_id }) });
+    const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.error || "Delete binding failed"); return result;
+}
+async function documentProcessingRequest(path: string, idToken: string, body?: unknown) {
+    const response = await fetch(path, { method: body ? "POST" : "GET", headers: { ...(await getHeaders(idToken)), ...(body ? { "Content-Type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined });
+    const result = await response.json().catch(() => ({})); if (!response.ok) throw new Error(result.error || "Document processing request failed"); return result;
+}
+export const get_document_processing_providers = (token: string) => documentProcessingRequest("/document_processing/providers", token);
+export const save_document_processing_provider = (payload: any, token: string) => documentProcessingRequest("/document_processing/providers/save", token, payload);
+export const test_document_processing_provider = (provider_id: string, token: string) => documentProcessingRequest("/document_processing/providers/test", token, { provider_id });
+export const delete_document_processing_provider = (provider_id: string, token: string) => documentProcessingRequest("/document_processing/providers/delete", token, { provider_id });
+export const get_document_processing_profiles = (token: string) => documentProcessingRequest("/document_processing/profiles", token);
+export const save_document_processing_profile = (payload: any, token: string) => documentProcessingRequest("/document_processing/profiles/save", token, payload);
+export const delete_document_processing_profile = (profile_id: string, token: string) => documentProcessingRequest("/document_processing/profiles/delete", token, { profile_id });
 
 // ─── Chart Capability Binding ────────────────────────────────────────────────
 // ⭐ CHART CAPABILITY: CRUD สำหรับผูก "ความสามารถสร้างกราฟ" เข้ากับ agent

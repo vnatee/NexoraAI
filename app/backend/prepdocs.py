@@ -180,6 +180,7 @@ def setup_file_processors(
     use_content_understanding: bool = False,
     content_understanding_endpoint: Union[str, None] = None,
 ):
+    from prepdocslib.documentprocessing import ManagedDocumentParser
     sentence_text_splitter = SentenceTextSplitter()
 
     doc_int_parser: Optional[DocumentAnalysisParser] = None
@@ -204,6 +205,25 @@ def setup_file_processors(
     else:
         logger.warning("No PDF parser available")
 
+    local_text_pdf_parser = LocalPdfParser()
+    managed_document_parser = ManagedDocumentParser(
+        {
+            "default": pdf_parser,
+            ".pdf": pdf_parser,
+            "local_text": local_text_pdf_parser,
+            "azure_document_intelligence": doc_int_parser,
+            ".docx": doc_int_parser,
+            ".pptx": doc_int_parser,
+            ".xlsx": doc_int_parser,
+            ".png": doc_int_parser,
+            ".jpg": doc_int_parser,
+            ".jpeg": doc_int_parser,
+            ".tiff": doc_int_parser,
+            ".bmp": doc_int_parser,
+            ".heic": doc_int_parser,
+        }
+    )
+
     html_parser: Optional[Parser] = None
     if local_html_parser or document_intelligence_service is None:
         html_parser = LocalHTMLParser()
@@ -221,24 +241,12 @@ def setup_file_processors(
     }
     # These require either a Python package or Document Intelligence
     if pdf_parser is not None:
-        file_processors.update({".pdf": FileProcessor(pdf_parser, sentence_text_splitter)})
+        file_processors.update({".pdf": FileProcessor(managed_document_parser, sentence_text_splitter)})
     if html_parser is not None:
         file_processors.update({".html": FileProcessor(html_parser, sentence_text_splitter)})
     # These file formats require Document Intelligence
-    if doc_int_parser is not None:
-        file_processors.update(
-            {
-                ".docx": FileProcessor(doc_int_parser, sentence_text_splitter),
-                ".pptx": FileProcessor(doc_int_parser, sentence_text_splitter),
-                ".xlsx": FileProcessor(doc_int_parser, sentence_text_splitter),
-                ".png": FileProcessor(doc_int_parser, sentence_text_splitter),
-                ".jpg": FileProcessor(doc_int_parser, sentence_text_splitter),
-                ".jpeg": FileProcessor(doc_int_parser, sentence_text_splitter),
-                ".tiff": FileProcessor(doc_int_parser, sentence_text_splitter),
-                ".bmp": FileProcessor(doc_int_parser, sentence_text_splitter),
-                ".heic": FileProcessor(doc_int_parser, sentence_text_splitter),
-            }
-        )
+    for extension in (".docx", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".heic"):
+        file_processors[extension] = FileProcessor(managed_document_parser, sentence_text_splitter)
     return file_processors
 
 

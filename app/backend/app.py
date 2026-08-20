@@ -10,6 +10,7 @@ import re
 import time
 import random
 import uuid
+
 import requests
 # Scraping import
 from bs4 import BeautifulSoup
@@ -36,6 +37,17 @@ from mongo_table_connecters.llm_providers import (
     soft_delete_llm_provider,
     update_llm_provider,
 )
+from mongo_table_connecters.mcp_servers import (
+    decrypt_mcp_headers,
+    get_mcp_server,
+    insert_mcp_server,
+    list_mcp_servers,
+    normalize_mcp_server_payload,
+    serialize_mcp_server,
+    soft_delete_mcp_server,
+    update_mcp_server,
+)
+from mongo_table_connecters.agent_audit import list_agent_audit_events
 from mongo_table_connecters.data_group import get_data_group_by_id, insert_data_group, delete_data_group_by_id, get_all_data_groups_by_user_id, update_data_group
 from mongo_table_connecters.permissions import insert_permission, get_all_permissions, get_permission_by_name
 from mongo_table_connecters.user_permission import get_user_permission_by_user_id, get_user_permission_by_team_id, delete_user_permission_by_id, get_user_permission_by_user_team_id, insert_user_permission, update_user_permission
@@ -52,6 +64,50 @@ from db_retrieval import get_agent_mongodb_sources
 from database_connectors import normalize_database_config, test_database_connection
 from smtp.send_mail import send_approve_mail, approved_mail, rejected_mail
 from mongo_table_connecters.mail_template import insert_mail_template, get_all_mail_template
+from mongo_table_connecters.mail_connections import (
+    decrypt_mail_secrets,
+    get_mail_connection,
+    insert_mail_connection,
+    list_mail_connections,
+    normalize_mail_connection,
+    serialize_mail_connection,
+    soft_delete_mail_connection,
+    update_mail_connection,
+)
+from mongo_table_connecters.mail_bindings import (
+    collection as mail_bindings_collection,
+    delete_mail_binding,
+    get_mail_binding,
+    insert_mail_binding,
+    list_mail_bindings,
+    normalize_mail_binding,
+    update_mail_binding,
+)
+from email_connectors import test_mail_connection
+from messaging_connectors import test_messaging_connection
+from mongo_table_connecters.messaging_connections import (
+    decrypt_messaging_secrets, delete_messaging_connection, get_messaging_connection,
+    insert_messaging_connection, list_messaging_connections, normalize_messaging_connection,
+    serialize_messaging_connection, update_messaging_connection,
+)
+from mongo_table_connecters.messaging_bindings import (
+    collection as messaging_bindings_collection, delete_messaging_binding,
+    get_messaging_binding, insert_messaging_binding, list_messaging_bindings,
+    normalize_messaging_binding, update_messaging_binding,
+)
+from mongo_table_connecters.document_processing import (
+    delete_profile as delete_document_profile,
+    delete_provider as delete_document_provider,
+    ensure_system_providers,
+    get_provider as get_document_provider,
+    list_profiles as list_document_profiles,
+    list_providers as list_document_providers,
+    normalize_profile as normalize_document_profile,
+    normalize_provider as normalize_document_provider,
+    save_profile as save_document_profile,
+    save_provider as save_document_provider,
+    serialize_provider as serialize_document_provider,
+)
 
 from azure.cognitiveservices.speech import (
     ResultReason,
@@ -103,6 +159,7 @@ from approaches.retrievethenread import RetrieveThenReadApproach
 from approaches.retrievethenreadvision import RetrieveThenReadVisionApproach
 from agent_runtime.factory import create_agent_runtime
 from agent_runtime.charting import ChartValidationError, validate_echarts_spec
+from agent_runtime.adapters.mcp import MCPServerConfig, discover_mcp_tools
 from chat_history.cosmosdb import chat_history_cosmosdb_bp
 from config import (
     CONFIG_AGENT_CLIENT,
@@ -157,6 +214,7 @@ from core.model_profiles import (
 )
 from core.provider_secrets import decrypt_provider_secret, encrypt_provider_secret
 from core.runtime_settings import LLMProviderSettings, ModelProvider, RuntimeSettings, parse_model_provider
+from agent_runtime.policy import normalize_tool_policy
 from core.sessionhelper import create_session_id
 from decorators import authenticated, authenticated_path
 from error import error_dict, error_response
@@ -194,12 +252,40 @@ def _validate_agent_model_config(config: object) -> dict[str, Any]:
     knowledge_search = str(raw_tool_settings.get("knowledge_search") or "auto").strip().lower()
     if knowledge_search not in ("auto", "always", "disabled"):
         raise ValueError("Knowledge Search must be 'auto', 'always', or 'disabled'")
+    mcp_execution = str(raw_tool_settings.get("mcp_execution") or "auto").strip().lower()
+    if mcp_execution not in ("auto", "required"):
+        raise ValueError("MCP execution must be 'auto' or 'required'")
+    raw_mcp_allowlists = raw_tool_settings.get("mcp_tool_allowlists") or {}
+    if not isinstance(raw_mcp_allowlists, dict):
+        raise ValueError("MCP tool allowlists must be an object keyed by server ID")
+    mcp_tool_allowlists = {
+        str(server_id): _normalize_id_list(tool_names, f"mcp_tool_allowlists.{server_id}")
+        for server_id, tool_names in raw_mcp_allowlists.items()
+        if str(server_id).strip()
+    }
     tool_settings = {
         "knowledge_search": knowledge_search,
         "external_database": raw_tool_settings.get("external_database", True) is not False,
         "rest_integrations": raw_tool_settings.get("rest_integrations", True) is not False,
+        "mail": raw_tool_settings.get("mail", True) is not False,
+        "messaging": raw_tool_settings.get("messaging", True) is not False,
         "mcp": raw_tool_settings.get("mcp", True) is not False,
+        "mcp_execution": mcp_execution,
         "subagents": raw_tool_settings.get("subagents", False) is True,
+        "mcp_server_ids": _normalize_id_list(
+            raw_tool_settings.get("mcp_server_ids"), "mcp_server_ids"
+        ),
+        "mcp_tool_allowlists": mcp_tool_allowlists,
+        "mcp_timeout_seconds": max(
+            1, min(int(raw_tool_settings.get("mcp_timeout_seconds") or 60), 300)
+        ),
+        "subagent_ids": _normalize_id_list(
+            raw_tool_settings.get("subagent_ids"), "subagent_ids"
+        ),
+        "subagent_max_depth": max(
+            1, min(int(raw_tool_settings.get("subagent_max_depth") or 2), 5)
+        ),
+        "tool_policy": normalize_tool_policy(raw_tool_settings.get("tool_policy")),
     }
     return {
         **config,
@@ -207,6 +293,19 @@ def _validate_agent_model_config(config: object) -> dict[str, Any]:
         "runtime": runtime,
         "tool_settings": tool_settings,
     }
+
+
+def _normalize_id_list(value: object, field: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{field} must be an array")
+    result = []
+    for item in value[:100]:
+        normalized = str(item or "").strip()
+        if normalized and normalized not in result:
+            result.append(normalized)
+    return result
 
 
 def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> None:
@@ -243,6 +342,21 @@ def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> N
             "endpoint": profile.settings.endpoint,
         }
     ).id
+    # Kept inside the request-local overrides so delegated sub-agents can select
+    # their own configured model without touching Quart globals during stream execution.
+    overrides["_llm_profiles"] = profiles
+    overrides["_llm_clients"] = clients
+    overrides["_llm_profile_vendors"] = {
+        item_id: infer_llm_vendor(
+            {
+                "provider": item.settings.provider.value,
+                "name": item.label,
+                "base_url": item.settings.base_url,
+                "endpoint": item.settings.endpoint,
+            }
+        ).id
+        for item_id, item in profiles.items()
+    }
 
 
 def _require_system_admin(auth_claims: dict[str, Any]) -> dict[str, Any]:
@@ -611,6 +725,7 @@ async def _run_langgraph_as_chat_stream(
                         "iterations": result["iterations"],
                         "tools": [event["name"] for event in result.get("tool_trace", [])],
                         "rag": rag_diagnostics,
+                        "trace": result.get("trace"),
                     },
                 }
             ],
@@ -1510,6 +1625,139 @@ async def admin_test_llm_provider(auth_claims: dict[str, Any], provider_id: str)
             await client.close()
 
 
+@bp.get("/admin/mcp-servers")
+@authenticated
+async def admin_list_mcp_servers(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    servers = []
+    for item in list_mcp_servers():
+        serialized = serialize_mcp_server(item)
+        serialized["agent_usage_count"] = get_database().agents.count_documents(
+            {
+                "delete_at": None,
+                "config.tool_settings.mcp_server_ids": str(item["_id"]),
+            }
+        )
+        servers.append(serialized)
+    return jsonify(
+        {"servers": servers}
+    )
+
+
+@bp.get("/mcp-servers/available")
+@authenticated
+async def available_mcp_servers(auth_claims: dict[str, Any]):
+    return jsonify(
+        {
+            "servers": [
+                serialize_mcp_server(item)
+                for item in list_mcp_servers(enabled_only=True)
+            ]
+        }
+    )
+
+
+@bp.post("/admin/mcp-servers")
+@authenticated
+async def admin_create_mcp_server(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        body = await request.get_json() or {}
+        server = insert_mcp_server(normalize_mcp_server_payload(body))
+        return jsonify(serialize_mcp_server(server)), 201
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.put("/admin/mcp-servers/<server_id>")
+@authenticated
+async def admin_update_mcp_server(auth_claims: dict[str, Any], server_id: str):
+    _require_system_admin(auth_claims)
+    existing = get_mcp_server(server_id)
+    if not existing:
+        return jsonify({"error": "MCP server not found"}), 404
+    try:
+        body = await request.get_json() or {}
+        server = update_mcp_server(
+            server_id, normalize_mcp_server_payload(body, existing=existing)
+        )
+        return jsonify(serialize_mcp_server(server or existing))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.delete("/admin/mcp-servers/<server_id>")
+@authenticated
+async def admin_delete_mcp_server(auth_claims: dict[str, Any], server_id: str):
+    _require_system_admin(auth_claims)
+    if not get_mcp_server(server_id):
+        return jsonify({"error": "MCP server not found"}), 404
+    reference_count = get_database().agents.count_documents(
+        {
+            "delete_at": None,
+            "config.tool_settings.mcp_server_ids": server_id,
+        }
+    )
+    if reference_count:
+        return jsonify(
+            {"error": f"MCP server is used by {reference_count} agent(s); disable it instead"}
+        ), 409
+    soft_delete_mcp_server(server_id)
+    return jsonify({"success": True})
+
+
+@bp.post("/admin/mcp-servers/<server_id>/test")
+@authenticated
+async def admin_test_mcp_server(auth_claims: dict[str, Any], server_id: str):
+    _require_system_admin(auth_claims)
+    server = get_mcp_server(server_id)
+    if not server:
+        return jsonify({"error": "MCP server not found"}), 404
+    try:
+        config = MCPServerConfig(
+            server_id=str(server["_id"]),
+            name=str(server["name"]),
+            url=str(server["url"]),
+            headers=decrypt_mcp_headers(server),
+            allowed_tools=tuple(server.get("allowed_tools") or ()),
+            timeout_seconds=float(server.get("timeout_seconds") or 60),
+        )
+        tools = await discover_mcp_tools(config)
+        return jsonify(
+            {
+                "success": True,
+                "tools": [
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                    }
+                    for tool in tools
+                ],
+            }
+        )
+    except Exception as error:
+        current_app.logger.warning("MCP server connection test failed: %s", error)
+        return jsonify({"success": False, "error": str(error)}), 400
+
+
+@bp.get("/admin/agent-audit-events")
+@authenticated
+async def admin_agent_audit_events(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        events = list_agent_audit_events(
+            agent_id=request.args.get("agent_id"),
+            run_id=request.args.get("run_id"),
+            event_type=request.args.get("event_type"),
+            status=request.args.get("status"),
+            hours=int(request.args.get("hours") or 24),
+            limit=int(request.args.get("limit") or 200),
+        )
+    except ValueError:
+        return jsonify({"error": "hours and limit must be integers"}), 400
+    return jsonify({"events": events})
+
+
 @bp.route("/config", methods=["GET"])
 async def config():
     runtime_settings: RuntimeSettings = current_app.config[CONFIG_RUNTIME_SETTINGS]
@@ -1613,6 +1861,323 @@ def extract_parameters(text: str):
             value = convert_value(value)
             params[key] = value
     return params
+
+
+def _mail_binding_response(document: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in document.items()
+        if key not in {"created_at", "updated_at", "delete_at"}
+    }
+
+
+@bp.get("/mail_configs")
+@authenticated
+async def mail_configs(auth_claims: dict[str, Any]):
+    team_id = str(request.args.get("team_id") or "")
+    if not team_id:
+        return jsonify({"error": "team_id is required"}), 400
+    results = []
+    for document in list_mail_connections(team_id):
+        usage_count = mail_bindings_collection.count_documents(
+            {"email_id": str(document["_id"]), "delete_at": None}
+        )
+        results.append(serialize_mail_connection(document, usage_count=usage_count))
+    return jsonify(results)
+
+
+@bp.post("/insert_mail_config")
+@authenticated
+async def create_mail_config(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        normalized = normalize_mail_connection(body)
+        if not normalized["team_id"]:
+            raise ValueError("team_id is required")
+        document = insert_mail_connection(normalized)
+        return jsonify({"message": "Mail connection created", "connection": serialize_mail_connection(document)}), 201
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@bp.post("/edit_mail_config")
+@authenticated
+async def edit_mail_config(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        connection_id = str(body.get("config_id") or "")
+        existing = get_mail_connection(connection_id)
+        if not existing:
+            return jsonify({"error": "Mail connection not found"}), 404
+        document = update_mail_connection(
+            connection_id, normalize_mail_connection(body, existing=existing)
+        )
+        return jsonify({"message": "Mail connection updated", "connection": serialize_mail_connection(document or existing)})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@bp.post("/delete_mail_config")
+@authenticated
+async def remove_mail_config(auth_claims: dict[str, Any]):
+    body = await request.get_json()
+    connection_id = str(body.get("config_id") or "")
+    in_use = mail_bindings_collection.count_documents({"email_id": connection_id, "delete_at": None})
+    if in_use:
+        return jsonify({"error": f"Connection is assigned to {in_use} Agent(s); remove those bindings first"}), 409
+    if not soft_delete_mail_connection(connection_id):
+        return jsonify({"error": "Mail connection not found"}), 404
+    return jsonify({"message": "Mail connection deleted"})
+
+
+@bp.post("/test_mail_connection")
+@authenticated
+async def test_mail_config(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        connection = get_mail_connection(str(body.get("connection_id") or body.get("config_id") or ""))
+        if not connection:
+            raise ValueError("Save the mail connection before testing it")
+        result = await test_mail_connection(connection, decrypt_mail_secrets(connection))
+        return jsonify(result)
+    except (ValueError, OSError) as exc:
+        current_app.logger.warning("Mail connection test failed: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@bp.get("/mail_bindings")
+@authenticated
+async def mail_bindings(auth_claims: dict[str, Any]):
+    agent_id = str(request.args.get("agent_id") or "")
+    return jsonify([_mail_binding_response(item) for item in list_mail_bindings(agent_id)])
+
+
+@bp.post("/insert_mail_binding")
+@authenticated
+async def create_mail_binding(auth_claims: dict[str, Any]):
+    try:
+        normalized = normalize_mail_binding(await request.get_json())
+        if not normalized["agent_id"] or not get_agent_by_id(normalized["agent_id"]):
+            raise ValueError("A valid agent_id is required")
+        if not get_mail_connection(normalized["email_id"]):
+            raise ValueError("A valid email_id is required")
+        existing = mail_bindings_collection.find_one({
+            "agent_id": normalized["agent_id"], "email_id": normalized["email_id"], "delete_at": None
+        })
+        if existing:
+            return jsonify({"error": "This mail connection is already assigned to the Agent"}), 409
+        document = insert_mail_binding(normalized)
+        return jsonify({"message": "Mail binding created", "binding": _mail_binding_response(document)}), 201
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@bp.post("/toggle_mail_binding")
+@authenticated
+async def toggle_mail_binding(auth_claims: dict[str, Any]):
+    body = await request.get_json()
+    if not update_mail_binding(str(body.get("binding_id") or ""), enabled=body.get("enabled") is True):
+        return jsonify({"error": "Mail binding not found or unchanged"}), 404
+    return jsonify({"message": "Mail binding updated"})
+
+
+@bp.post("/update_mail_binding")
+@authenticated
+async def edit_mail_binding(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        binding_id = str(body.get("binding_id") or "")
+        existing = get_mail_binding(binding_id)
+        if not existing:
+            return jsonify({"error": "Mail binding not found"}), 404
+        normalized = normalize_mail_binding({**existing, **body})
+        if not get_mail_connection(normalized["email_id"]):
+            raise ValueError("A valid email_id is required")
+        duplicate = mail_bindings_collection.find_one({
+            "_id": {"$ne": binding_id}, "agent_id": normalized["agent_id"],
+            "email_id": normalized["email_id"], "delete_at": None,
+        })
+        if duplicate:
+            return jsonify({"error": "This mail connection is already assigned to the Agent"}), 409
+        update_mail_binding(binding_id, **normalized)
+        return jsonify({"message": "Mail binding updated"})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@bp.post("/delete_mail_binding")
+@authenticated
+async def remove_mail_binding(auth_claims: dict[str, Any]):
+    body = await request.get_json()
+    if not delete_mail_binding(str(body.get("binding_id") or "")):
+        return jsonify({"error": "Mail binding not found"}), 404
+    return jsonify({"message": "Mail binding deleted"})
+
+
+@bp.get("/messaging_connections")
+@authenticated
+async def messaging_connections(auth_claims: dict[str, Any]):
+    team_id = str(request.args.get("team_id") or "")
+    results = []
+    for item in list_messaging_connections(team_id):
+        count = messaging_bindings_collection.count_documents({"connection_id": str(item["_id"]), "delete_at": None})
+        results.append(serialize_messaging_connection(item, count))
+    return jsonify(results)
+
+
+@bp.post("/save_messaging_connection")
+@authenticated
+async def save_messaging_connection(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        connection_id = str(body.get("connection_id") or "")
+        existing = get_messaging_connection(connection_id) if connection_id else None
+        normalized = normalize_messaging_connection(body, existing=existing)
+        if not normalized["team_id"]: raise ValueError("team_id is required")
+        document = update_messaging_connection(connection_id, normalized) if existing else insert_messaging_connection(normalized)
+        return jsonify({"message": "Messaging connection saved", "connection": serialize_messaging_connection(document or existing)})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@bp.post("/test_messaging_connection")
+@authenticated
+async def test_messaging_config(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        connection = get_messaging_connection(str(body.get("connection_id") or ""))
+        if not connection: raise ValueError("Messaging connection not found")
+        return jsonify(await test_messaging_connection(connection, decrypt_messaging_secrets(connection)))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@bp.post("/delete_messaging_connection")
+@authenticated
+async def remove_messaging_connection(auth_claims: dict[str, Any]):
+    body = await request.get_json(); connection_id = str(body.get("connection_id") or "")
+    if messaging_bindings_collection.count_documents({"connection_id": connection_id, "delete_at": None}):
+        return jsonify({"error": "Remove Agent bindings before deleting this connection"}), 409
+    if not delete_messaging_connection(connection_id): return jsonify({"error": "Connection not found"}), 404
+    return jsonify({"message": "Messaging connection deleted"})
+
+
+@bp.get("/messaging_bindings")
+@authenticated
+async def messaging_bindings(auth_claims: dict[str, Any]):
+    return jsonify([_mail_binding_response(item) for item in list_messaging_bindings(str(request.args.get("agent_id") or ""))])
+
+
+@bp.post("/save_messaging_binding")
+@authenticated
+async def save_messaging_binding(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json(); binding_id = str(body.get("binding_id") or "")
+        existing = get_messaging_binding(binding_id) if binding_id else None
+        normalized = normalize_messaging_binding({**(existing or {}), **body})
+        if not get_agent_by_id(normalized["agent_id"]): raise ValueError("A valid agent_id is required")
+        if not get_messaging_connection(normalized["connection_id"]): raise ValueError("A valid connection_id is required")
+        duplicate = messaging_bindings_collection.find_one({"_id": {"$ne": binding_id}, "agent_id": normalized["agent_id"], "connection_id": normalized["connection_id"], "delete_at": None})
+        if duplicate: return jsonify({"error": "Connection is already assigned to this Agent"}), 409
+        document = existing
+        if existing: update_messaging_binding(binding_id, normalized)
+        else: document = insert_messaging_binding(normalized)
+        return jsonify({"message": "Messaging binding saved", "binding": _mail_binding_response(document or normalized)})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@bp.post("/delete_messaging_binding")
+@authenticated
+async def remove_messaging_binding(auth_claims: dict[str, Any]):
+    body = await request.get_json()
+    if not delete_messaging_binding(str(body.get("binding_id") or "")): return jsonify({"error": "Binding not found"}), 404
+    return jsonify({"message": "Messaging binding deleted"})
+
+
+@bp.get("/document_processing/providers")
+@authenticated
+async def document_processing_providers(auth_claims: dict[str, Any]):
+    ensure_system_providers(bool(os.getenv("AZURE_DOCUMENTINTELLIGENCE_SERVICE")))
+    return jsonify([serialize_document_provider(item) for item in list_document_providers()])
+
+
+@bp.post("/document_processing/providers/save")
+@authenticated
+async def save_document_processing_provider(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json(); provider_id = str(body.get("provider_id") or "")
+        existing = get_document_provider(provider_id) if provider_id else None
+        if provider_id and not existing:
+            raise ValueError("Document provider not found")
+        requested_type = str(body.get("provider_type") or "").strip().lower()
+        if not existing and requested_type not in {"docling", "google_document_ai", "generic_ocr_api", "paddleocr"}:
+            raise ValueError("Azure and Local Text are system-managed providers")
+        if existing and existing.get("system_managed") and requested_type != existing.get("provider_type"):
+            raise ValueError("The type of a system-managed provider cannot be changed")
+        item = save_document_provider(normalize_document_provider(body, existing), provider_id)
+        return jsonify({"message": "Document provider saved", "provider": serialize_document_provider(item)})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@bp.post("/document_processing/providers/test")
+@authenticated
+async def test_document_processing_provider(auth_claims: dict[str, Any]):
+    body = await request.get_json(); provider = get_document_provider(str(body.get("provider_id") or ""))
+    if not provider: return jsonify({"error": "Provider not found"}), 404
+    provider_type = provider.get("provider_type")
+    if provider_type == "azure_document_intelligence" and not os.getenv("AZURE_DOCUMENTINTELLIGENCE_SERVICE"):
+        return jsonify({"ok": False, "error": "AZURE_DOCUMENTINTELLIGENCE_SERVICE is not configured"}), 400
+    try:
+        from prepdocslib.documentprocessing import check_document_provider
+
+        message = await check_document_provider(provider)
+        return jsonify({"ok": True, "message": message})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@bp.post("/document_processing/providers/delete")
+@authenticated
+async def remove_document_processing_provider(auth_claims: dict[str, Any]):
+    body = await request.get_json(); provider_id = str(body.get("provider_id") or "")
+    if any(item.get("provider_id") == provider_id for item in list_document_profiles()):
+        return jsonify({"error": "Delete profiles using this provider first"}), 409
+    if not delete_document_provider(provider_id): return jsonify({"error": "Provider is system managed or not found"}), 409
+    return jsonify({"message": "Document provider deleted"})
+
+
+@bp.get("/document_processing/profiles")
+@authenticated
+async def document_processing_profiles(auth_claims: dict[str, Any]):
+    return jsonify([_mail_binding_response(item) for item in list_document_profiles()])
+
+
+@bp.post("/document_processing/profiles/save")
+@authenticated
+async def save_document_processing_profile(auth_claims: dict[str, Any]):
+    try:
+        import importlib.util
+        body = await request.get_json(); profile_id = str(body.get("profile_id") or "")
+        existing = next((item for item in list_document_profiles() if str(item.get("_id")) == profile_id), None)
+        normalized = normalize_document_profile(body, existing)
+        provider = get_document_provider(normalized["provider_id"])
+        provider_config = (provider or {}).get("config") or {}
+        if normalized["is_default"] and provider and provider.get("provider_type") == "docling" and provider_config.get("execution_mode", "service") == "embedded" and importlib.util.find_spec("docling") is None:
+            raise ValueError("Install the optional local OCR runtime and pass the provider Test before setting Docling as Default")
+        item = save_document_profile(normalized, profile_id)
+        return jsonify({"message": "Document profile saved", "profile": _mail_binding_response(item)})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@bp.post("/document_processing/profiles/delete")
+@authenticated
+async def remove_document_processing_profile(auth_claims: dict[str, Any]):
+    body = await request.get_json()
+    if not delete_document_profile(str(body.get("profile_id") or "")): return jsonify({"error": "Profile not found"}), 404
+    return jsonify({"message": "Document profile deleted"})
 
 # ⭐ CHART CAPABILITY: ลบ /generate_chart route เดิมแล้ว
 #    chart generation ทำใน /chat/stream flow ผ่าน chart binding ของ agent แทน
@@ -3242,6 +3807,18 @@ async def delete_database_connection(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         database_id = body.get("database_id", None)
+        reference_count = get_database().database_bindings.count_documents(
+            {"integration_id": database_id, "delete_at": None}
+        )
+        if reference_count:
+            return (
+                jsonify(
+                    {
+                        "error": f"Database connection is used by {reference_count} Agent binding(s); remove those bindings first"
+                    }
+                ),
+                409,
+            )
         delete_external_database_by_id(database_id)
         return jsonify({"success": f"Delete external database success"}), 200
     except Exception as error_txt:
@@ -3289,7 +3866,16 @@ async def get_database_connection_by_team(auth_claims: dict[str, Any]):
         body = await request.get_json()
         team_id = body.get("team_id", None)
         all_database_connections = get_external_databases_by_team_id(team_id)
-        return jsonify({"result": [serialize_external_database(item) for item in all_database_connections]}), 200
+        serialized_connections = []
+        for item in all_database_connections:
+            serialized = serialize_external_database(item)
+            serialized["agent_usage_count"] = len(
+                get_database().database_bindings.distinct(
+                    "agent_id", {"integration_id": str(item["_id"]), "delete_at": None}
+                )
+            )
+            serialized_connections.append(serialized)
+        return jsonify({"result": serialized_connections}), 200
     except Exception as error_txt:
         return jsonify({"error": str(error_txt)}), 400
 
@@ -3494,6 +4080,18 @@ async def delete_external_api(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         api_id = body.get("api_id", None)
+        reference_count = get_database().agent_bindings.count_documents(
+            {"integration_id": api_id, "delete_at": None}
+        )
+        if reference_count:
+            return (
+                jsonify(
+                    {
+                        "error": f"REST API is used by {reference_count} Agent binding(s); remove those bindings first"
+                    }
+                ),
+                409,
+            )
         delete_apis_by_id(api_id)
         return jsonify({"success": f"Delete external api success"}), 200
     except Exception as error_txt:
@@ -3523,6 +4121,12 @@ async def get_external_apis_by_team(auth_claims: dict[str, Any]):
         body = await request.get_json()
         team_id = body.get("team_id", None)
         all_apis = get_all_apis_by_team_id(team_id)
+        for api in all_apis:
+            api["agent_usage_count"] = len(
+                get_database().agent_bindings.distinct(
+                    "agent_id", {"integration_id": str(api["_id"]), "delete_at": None}
+                )
+            )
         return jsonify({"result": all_apis}), 200
     except Exception as error_txt:
         return jsonify({"error": str(error_txt)}), 400

@@ -6,7 +6,9 @@ from agent_runtime.tools import ToolRegistry, ToolSpec
 from approaches.approach import Approach
 
 
-def register_rag_tool(registry: ToolRegistry, approach: Approach, overrides: dict[str, Any]) -> None:
+def register_rag_tool(
+    registry: ToolRegistry, approach: Approach, overrides: dict[str, Any]
+) -> None:
     async def search_knowledge(arguments, context):
         query = str(arguments.get("query") or "").strip()
         if not query:
@@ -48,7 +50,10 @@ def register_rag_tool(registry: ToolRegistry, approach: Approach, overrides: dic
             input_schema={
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "A concise semantic search query"},
+                    "query": {
+                        "type": "string",
+                        "description": "A concise semantic search query",
+                    },
                     "top": {"type": "integer", "minimum": 1, "maximum": 20},
                 },
                 "required": ["query"],

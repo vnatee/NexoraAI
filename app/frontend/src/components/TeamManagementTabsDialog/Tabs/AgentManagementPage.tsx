@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
+    Alert,
     Box,
     Typography,
     Divider,
@@ -42,7 +43,9 @@ import {
     DatabaseBindingData,
     MailBindingData,
     MailEmailConfig,
-    ChartBindingData
+    ChartBindingData,
+    ManagedMCPServer
+    ,MessagingConnection, MessagingBindingData
 } from "../../../api";
 import { getToken, getUsername } from "../../../authConfig";
 import { STORAGE_KEYS } from "../../../utill/storageKeys";
@@ -51,6 +54,7 @@ import { useNotification } from "../../../utill/NotificationProvider";
 import { AgentBindingDialog } from "../dialog/AgentBindingDialog";
 import { DatabaseBindingDialog, DatabaseBindingInput } from "../dialog/DatabaseBindingDialog";
 import { MailBindingDialog, MailBindingInput } from "../dialog/MailBindingDialog";
+import { MessagingBindingDialog } from "../dialog/MessagingBindingDialog";
 import { ChartBindingDialog, ChartBindingInput } from "../dialog/ChartBindingDialog";
 import { getIntegrationIcon } from "../utils/integrationIcons";
 import {
@@ -68,6 +72,7 @@ import {
     get_mail_configs,
     get_mail_bindings_by_agent,
     insert_mail_binding,
+    update_mail_binding,
     delete_mail_binding_by_id,
     toggle_mail_binding_by_id,
     // ⭐ CHART CAPABILITY
@@ -75,15 +80,49 @@ import {
     insert_chart_binding,
     delete_chart_binding_by_id,
     toggle_chart_binding_by_id,
-    update_chart_binding
+    update_chart_binding,
+    listAvailableMCPServersApi,
+    test_db_connection
+    ,get_messaging_connections, get_messaging_bindings, save_messaging_binding, delete_messaging_binding
 } from "../../../api/api";
+
+const DEFAULT_TOOL_POLICY = {
+    max_total_calls: 24,
+    max_calls_per_tool: 8,
+    max_argument_chars: 20000,
+    max_output_chars: 100000,
+    max_timeout_seconds: 90,
+    blocked_tools: [] as string[],
+    blocked_sources: [] as string[]
+};
 
 const DEFAULT_AGENT_TOOL_SETTINGS = {
     knowledge_search: "auto" as const,
     external_database: true,
     rest_integrations: true,
+    mail: true,
+    messaging: true,
     mcp: true,
-    subagents: false
+    mcp_execution: "auto" as const,
+    subagents: false,
+    mcp_server_ids: [] as string[],
+    mcp_tool_allowlists: {} as Record<string, string[]>,
+    mcp_timeout_seconds: 60,
+    subagent_ids: [] as string[],
+    subagent_max_depth: 2,
+    tool_policy: { ...DEFAULT_TOOL_POLICY }
+};
+
+const normalizeRuntimeToolName = (value: string) => {
+    let normalized = value
+        .trim()
+        .toLowerCase()
+        .replace(/[^\p{L}\p{N}_]/gu, "_")
+        .split("_")
+        .filter(Boolean)
+        .join("_");
+    if (!normalized || !/^\p{L}/u.test(normalized)) normalized = `tool_${normalized}`;
+    return normalized.slice(0, 64);
 };
 
 /* =========================
@@ -323,6 +362,7 @@ export function AgentManagementPage({ onAgentsChanged }: { onAgentsChanged?: () 
                 teamId={team?._id}
                 onClose={() => setOpenDialog(false)}
                 onSave={handleSave}
+                availableAgents={agents}
             />
             <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)}>
                 <DialogTitle>Confirm Delete</DialogTitle>
@@ -364,7 +404,8 @@ function AgentDialog({
     teamId,
     loading,
     onClose,
-    onSave
+    onSave,
+    availableAgents
 }: {
     open: boolean;
     mode: AgentDialogMode;
@@ -373,6 +414,7 @@ function AgentDialog({
     loading: boolean;
     onClose: () => void;
     onSave: (agent: Agent) => void;
+    availableAgents: Agent[];
 }) {
     const { instance } = useMsal();
     const isViewMode = mode === "view";
@@ -381,13 +423,18 @@ function AgentDialog({
     const isCreate = mode === "new";
 
     // Tab state — always reset to "info" when dialog opens
-    const [activeTab, setActiveTab] = useState<"info" | "integrations">("info");
+    const [activeTab, setActiveTab] = useState<"info" | "integrations" | "mcp">("info");
+    const [integrationSection, setIntegrationSection] = useState<"rest" | "database" | "mail" | "messaging" | "visualization">("rest");
 
     useEffect(() => {
-        if (open) setActiveTab("info");
+        if (open) {
+            setActiveTab("info");
+            setIntegrationSection("rest");
+        }
     }, [open]);
 
     const [llmProfiles, setLlmProfiles] = useState<Array<{ id: string; label: string; provider: string; model: string }>>([]);
+    const [mcpServers, setMcpServers] = useState<ManagedMCPServer[]>([]);
 
     useEffect(() => {
         if (!open) return;
@@ -395,6 +442,14 @@ function AgentDialog({
             .then(appConfig => setLlmProfiles(appConfig.llmProfiles ?? []))
             .catch(error => console.error("load LLM profiles failed", error));
     }, [open]);
+
+    useEffect(() => {
+        if (!open) return;
+        getToken(instance)
+            .then(token => (token ? listAvailableMCPServersApi(token) : []))
+            .then(setMcpServers)
+            .catch(error => console.error("load MCP servers failed", error));
+    }, [open, instance]);
 
     const [agentName, setAgentName] = useState("");
 
@@ -428,17 +483,22 @@ function AgentDialog({
     const [bindings, setBindings] = useState<Binding[]>([]);
     const [databaseBindings, setDatabaseBindings] = useState<DatabaseBindingData[]>([]);
     const [mailBindings, setMailBindings] = useState<MailBindingData[]>([]);
+    const [messagingBindings, setMessagingBindings] = useState<MessagingBindingData[]>([]);
     const [chartBindings, setChartBindings] = useState<ChartBindingData[]>([]); // ⭐ CHART CAPABILITY
     const [bindingDialogOpen, setBindingDialogOpen] = useState(false);
     const [databaseBindingDialogOpen, setDatabaseBindingDialogOpen] = useState(false);
     const [selectedDatabaseBinding, setSelectedDatabaseBinding] = useState<DatabaseBindingData | null>(null);
     const [mailBindingDialogOpen, setMailBindingDialogOpen] = useState(false);
+    const [messagingBindingDialogOpen, setMessagingBindingDialogOpen] = useState(false);
+    const [selectedMessagingBinding, setSelectedMessagingBinding] = useState<MessagingBindingData | null>(null);
+    const [selectedMailBinding, setSelectedMailBinding] = useState<MailBindingData | null>(null);
     const [chartBindingDialogOpen, setChartBindingDialogOpen] = useState(false); // ⭐ CHART CAPABILITY
     const [selectedChartBinding, setSelectedChartBinding] = useState<ChartBindingData | null>(null); // ⭐ CHART CAPABILITY
     const [bindingSaving, setBindingSaving] = useState(false);
     const [bindingsLoading, setBindingsLoading] = useState(false);
     const [deletingBindingId, setDeletingBindingId] = useState<string | null>(null);
     const [deletingDatabaseBindingId, setDeletingDatabaseBindingId] = useState<string | null>(null);
+    const [testingDatabaseConnectionId, setTestingDatabaseConnectionId] = useState<string | null>(null);
     const [deletingMailBindingId, setDeletingMailBindingId] = useState<string | null>(null);
     const [deletingChartBindingId, setDeletingChartBindingId] = useState<string | null>(null); // ⭐ CHART CAPABILITY
     const { showNotification } = useNotification();
@@ -446,6 +506,7 @@ function AgentDialog({
     const [integrations, setIntegrations] = useState<Integration[]>([]);
     const [databaseConnections, setDatabaseConnections] = useState<DatabaseConnection[]>([]);
     const [mailConfigs, setMailConfigs] = useState<MailEmailConfig[]>([]);
+    const [messagingConnections, setMessagingConnections] = useState<MessagingConnection[]>([]);
 
     useEffect(() => {
         const loadIntegrations = async () => {
@@ -496,6 +557,11 @@ function AgentDialog({
         loadMailConfigs();
     }, [open, teamId, instance]);
 
+    useEffect(() => {
+        if (!open || !teamId) return;
+        getToken(instance).then(token => token ? get_messaging_connections(teamId, token) : []).then(setMessagingConnections).catch(e => console.error("load messaging connections failed", e));
+    }, [open, teamId, instance]);
+
     const loadBindings = async () => {
         if (agent?._id && mode !== "new") {
             try {
@@ -526,6 +592,13 @@ function AgentDialog({
                     console.error("load mail bindings error", mailErr);
                     setMailBindings([]);
                 }
+                try {
+                    const messageRes = await get_messaging_bindings(agent._id, token);
+                    setMessagingBindings(Array.isArray(messageRes) ? messageRes : []);
+                } catch (messageErr) {
+                    console.error("load messaging bindings error", messageErr);
+                    setMessagingBindings([]);
+                }
 
                 // ⭐ CHART CAPABILITY: Load Chart bindings
                 try {
@@ -544,6 +617,7 @@ function AgentDialog({
             setBindings([]);
             setDatabaseBindings([]);
             setMailBindings([]);
+            setMessagingBindings([]);
             setChartBindings([]); // ⭐ CHART CAPABILITY
         }
     };
@@ -561,7 +635,14 @@ function AgentDialog({
                 ...agent.config,
                 llm_profile_id: agent.config.llm_profile_id ?? "system",
                 runtime: agent.config.runtime ?? "legacy",
-                tool_settings: { ...DEFAULT_AGENT_TOOL_SETTINGS, ...(agent.config.tool_settings ?? {}) }
+                tool_settings: {
+                    ...DEFAULT_AGENT_TOOL_SETTINGS,
+                    ...(agent.config.tool_settings ?? {}),
+                    tool_policy: {
+                        ...DEFAULT_TOOL_POLICY,
+                        ...(agent.config.tool_settings?.tool_policy ?? {})
+                    }
+                }
             });
             setPrompt(agent.prompt ?? EMPTY_PROMPT); // ✅ FIX
         } else {
@@ -612,6 +693,7 @@ function AgentDialog({
                         disabled={integrationsTabDisabled}
                         title={integrationsTabDisabled ? "Save the agent first to manage integrations" : undefined}
                     />
+                    <Tab label="MCP Tools" value="mcp" />
                 </Tabs>
             </Box>
 
@@ -684,6 +766,8 @@ function AgentDialog({
                                             {[
                                                 ["external_database", "External Database"],
                                                 ["rest_integrations", "REST Integrations"],
+                                                ["mail", "Mail"],
+                                                ["messaging", "Messaging & Chat"],
                                                 ["mcp", "MCP Tools"],
                                                 ["subagents", "Sub-agents"]
                                             ].map(([key, label]) => (
@@ -693,7 +777,7 @@ function AgentDialog({
                                                         <Switch
                                                             disabled={isFieldDisabled}
                                                             checked={Boolean(
-                                                                config.tool_settings?.[key as "external_database" | "rest_integrations" | "mcp" | "subagents"]
+                                                                config.tool_settings?.[key as "external_database" | "rest_integrations" | "mail" | "messaging" | "mcp" | "subagents"]
                                                             )}
                                                             onChange={(_, checked) =>
                                                                 setConfig({
@@ -710,6 +794,175 @@ function AgentDialog({
                                                     label={label}
                                                 />
                                             ))}
+                                            {config.tool_settings?.subagents && (
+                                                <Stack spacing={1}>
+                                                    <TextField
+                                                        select
+                                                        SelectProps={{ multiple: true }}
+                                                        size="small"
+                                                        label="Allowed Sub-agents"
+                                                        disabled={isFieldDisabled}
+                                                        value={config.tool_settings.subagent_ids ?? []}
+                                                        onChange={event => {
+                                                            const value =
+                                                                typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value;
+                                                            setConfig({
+                                                                ...config,
+                                                                tool_settings: {
+                                                                    ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                                    ...(config.tool_settings ?? {}),
+                                                                    subagent_ids: value as string[]
+                                                                }
+                                                            });
+                                                        }}
+                                                        helperText="Delegation is limited to selected agents in the same team"
+                                                    >
+                                                        {availableAgents
+                                                            .filter(item => item._id !== agent?._id && item.config.runtime === "langgraph")
+                                                            .map(item => (
+                                                                <MenuItem key={item._id} value={item._id}>
+                                                                    {item.agent_name}
+                                                                </MenuItem>
+                                                            ))}
+                                                    </TextField>
+                                                    <TextField
+                                                        size="small"
+                                                        label="Maximum Delegation Depth"
+                                                        type="number"
+                                                        disabled={isFieldDisabled}
+                                                        value={config.tool_settings.subagent_max_depth ?? 2}
+                                                        onChange={event =>
+                                                            setConfig({
+                                                                ...config,
+                                                                tool_settings: {
+                                                                    ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                                    ...(config.tool_settings ?? {}),
+                                                                    subagent_max_depth: Number(event.target.value)
+                                                                }
+                                                            })
+                                                        }
+                                                        inputProps={{ min: 1, max: 5 }}
+                                                    />
+                                                </Stack>
+                                            )}
+                                            <Divider />
+                                            <Typography variant="subtitle2">Tool Execution Policy</Typography>
+                                            <Stack direction={{ xs: "column", md: "row" }} spacing={1}>
+                                                {[
+                                                    ["max_total_calls", "Total Calls", 1, 100],
+                                                    ["max_calls_per_tool", "Calls / Tool", 1, 50],
+                                                    ["max_timeout_seconds", "Timeout Seconds", 1, 300]
+                                                ].map(([field, label, min, max]) => (
+                                                    <TextField
+                                                        key={field as string}
+                                                        size="small"
+                                                        type="number"
+                                                        label={label as string}
+                                                        disabled={isFieldDisabled}
+                                                        value={
+                                                            (config.tool_settings?.tool_policy as any)?.[field as string] ??
+                                                            (DEFAULT_TOOL_POLICY as any)[field as string]
+                                                        }
+                                                        inputProps={{ min, max }}
+                                                        onChange={event =>
+                                                            setConfig({
+                                                                ...config,
+                                                                tool_settings: {
+                                                                    ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                                    ...(config.tool_settings ?? {}),
+                                                                    tool_policy: {
+                                                                        ...DEFAULT_TOOL_POLICY,
+                                                                        ...(config.tool_settings?.tool_policy ?? {}),
+                                                                        [field as string]: Number(event.target.value)
+                                                                    }
+                                                                }
+                                                            })
+                                                        }
+                                                    />
+                                                ))}
+                                            </Stack>
+                                            <Stack direction={{ xs: "column", md: "row" }} spacing={1}>
+                                                {[
+                                                    ["max_argument_chars", "Max Argument Characters", 1000, 200000],
+                                                    ["max_output_chars", "Max Output Characters", 1000, 1000000]
+                                                ].map(([field, label, min, max]) => (
+                                                    <TextField
+                                                        key={field as string}
+                                                        size="small"
+                                                        type="number"
+                                                        fullWidth
+                                                        label={label as string}
+                                                        disabled={isFieldDisabled}
+                                                        value={
+                                                            (config.tool_settings?.tool_policy as any)?.[field as string] ??
+                                                            (DEFAULT_TOOL_POLICY as any)[field as string]
+                                                        }
+                                                        inputProps={{ min, max }}
+                                                        onChange={event =>
+                                                            setConfig({
+                                                                ...config,
+                                                                tool_settings: {
+                                                                    ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                                    ...(config.tool_settings ?? {}),
+                                                                    tool_policy: {
+                                                                        ...DEFAULT_TOOL_POLICY,
+                                                                        ...(config.tool_settings?.tool_policy ?? {}),
+                                                                        [field as string]: Number(event.target.value)
+                                                                    }
+                                                                }
+                                                            })
+                                                        }
+                                                    />
+                                                ))}
+                                            </Stack>
+                                            <TextField
+                                                size="small"
+                                                label="Blocked Tool Names"
+                                                disabled={isFieldDisabled}
+                                                value={(config.tool_settings?.tool_policy?.blocked_tools ?? []).join(", ")}
+                                                onChange={event =>
+                                                    setConfig({
+                                                        ...config,
+                                                        tool_settings: {
+                                                            ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                            ...(config.tool_settings ?? {}),
+                                                            tool_policy: {
+                                                                ...DEFAULT_TOOL_POLICY,
+                                                                ...(config.tool_settings?.tool_policy ?? {}),
+                                                                blocked_tools: event.target.value
+                                                                    .split(",")
+                                                                    .map(value => value.trim())
+                                                                    .filter(Boolean)
+                                                            }
+                                                        }
+                                                    })
+                                                }
+                                                helperText="Optional exact normalized tool names, separated by commas"
+                                            />
+                                            <TextField
+                                                size="small"
+                                                label="Blocked Tool Sources"
+                                                disabled={isFieldDisabled}
+                                                value={(config.tool_settings?.tool_policy?.blocked_sources ?? []).join(", ")}
+                                                onChange={event =>
+                                                    setConfig({
+                                                        ...config,
+                                                        tool_settings: {
+                                                            ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                            ...(config.tool_settings ?? {}),
+                                                            tool_policy: {
+                                                                ...DEFAULT_TOOL_POLICY,
+                                                                ...(config.tool_settings?.tool_policy ?? {}),
+                                                                blocked_sources: event.target.value
+                                                                    .split(",")
+                                                                    .map(value => value.trim())
+                                                                    .filter(Boolean)
+                                                            }
+                                                        }
+                                                    })
+                                                }
+                                                helperText="Optional prefixes: rag, mcp, external_api, external_database, subagent, chart"
+                                            />
                                         </Stack>
                                     </Paper>
                                 )}
@@ -793,219 +1046,667 @@ function AgentDialog({
                 )}
 
                 {/* ══════════════════════════════════
+                    TAB 3 — MCP Tools
+                    Connections and credentials remain
+                    centrally managed by administrators.
+                ══════════════════════════════════ */}
+                {activeTab === "mcp" && (
+                    <Stack spacing={3}>
+                        {config.runtime !== "langgraph" && (
+                            <Alert severity="warning">MCP tools require the LangGraph runtime. Change Agent Runtime in Agent Info before use.</Alert>
+                        )}
+                        {!config.tool_settings?.mcp && (
+                            <Alert severity="info">
+                                MCP Tools is currently disabled for this agent. Assignments below are saved but no MCP tool will be exposed until it is enabled
+                                in Agent Info.
+                            </Alert>
+                        )}
+
+                        <Paper variant="outlined" sx={{ p: 2 }}>
+                            <Typography fontWeight={600}>MCP Execution</Typography>
+                            <Typography variant="body2" color="text.secondary" mb={2}>
+                                Control when this agent invokes MCP and cap the remote call timeout. Global execution limits remain in Agent Info.
+                            </Typography>
+                            <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                                <TextField
+                                    select
+                                    fullWidth
+                                    label="Invocation Mode"
+                                    disabled={isFieldDisabled}
+                                    value={config.tool_settings?.mcp_execution ?? "auto"}
+                                    onChange={event =>
+                                        setConfig({
+                                            ...config,
+                                            tool_settings: {
+                                                ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                ...(config.tool_settings ?? {}),
+                                                mcp_execution: event.target.value as "auto" | "required"
+                                            }
+                                        })
+                                    }
+                                    helperText="Required is suitable for dedicated agents that must consult MCP before answering"
+                                >
+                                    <MenuItem value="auto">Auto — call when relevant or when the server is named</MenuItem>
+                                    <MenuItem value="required">Required — always call an assigned MCP server first</MenuItem>
+                                </TextField>
+                                <TextField
+                                    fullWidth
+                                    type="number"
+                                    label="Agent MCP Timeout (seconds)"
+                                    disabled={isFieldDisabled}
+                                    value={config.tool_settings?.mcp_timeout_seconds ?? 60}
+                                    inputProps={{ min: 1, max: 300 }}
+                                    onChange={event =>
+                                        setConfig({
+                                            ...config,
+                                            tool_settings: {
+                                                ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                ...(config.tool_settings ?? {}),
+                                                mcp_timeout_seconds: Number(event.target.value)
+                                            }
+                                        })
+                                    }
+                                    helperText="The lower value between this setting and the server timeout is enforced"
+                                />
+                            </Stack>
+                        </Paper>
+
+                        <Paper variant="outlined" sx={{ p: 2 }}>
+                            <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2}>
+                                <Box>
+                                    <Typography fontWeight={600}>Assigned MCP Servers</Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                        Select connections and optionally restrict the tools exposed to this agent
+                                    </Typography>
+                                </Box>
+                                <Chip
+                                    size="small"
+                                    color={(config.tool_settings?.mcp_server_ids?.length ?? 0) > 0 ? "primary" : "default"}
+                                    label={`${config.tool_settings?.mcp_server_ids?.length ?? 0} assigned`}
+                                />
+                            </Stack>
+
+                            {mcpServers.length === 0 ? (
+                                <Alert severity="info">No enabled MCP servers are available. Add one from Admin Management → MCP Servers.</Alert>
+                            ) : (
+                                <Stack spacing={1.5}>
+                                    {mcpServers.map(server => {
+                                        const assigned = (config.tool_settings?.mcp_server_ids ?? []).includes(server._id);
+                                        const agentAllowlist = config.tool_settings?.mcp_tool_allowlists?.[server._id] ?? [];
+                                        return (
+                                            <Paper key={server._id} variant="outlined" sx={{ p: 2, bgcolor: assigned ? "action.hover" : "background.paper" }}>
+                                                <Stack spacing={1.5}>
+                                                    <Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={2}>
+                                                        <Box minWidth={0}>
+                                                            <Stack direction="row" spacing={1} alignItems="center">
+                                                                <Typography fontWeight={600}>{server.name}</Typography>
+                                                                <Chip size="small" variant="outlined" label={server.vendor || "generic"} />
+                                                            </Stack>
+                                                            <Typography variant="caption" color="text.secondary" noWrap display="block">
+                                                                {server.url}
+                                                            </Typography>
+                                                        </Box>
+                                                        <FormControlLabel
+                                                            label={assigned ? "Assigned" : "Not assigned"}
+                                                            labelPlacement="start"
+                                                            control={
+                                                                <Switch
+                                                                    checked={assigned}
+                                                                    disabled={isFieldDisabled}
+                                                                    onChange={(_, checked) => {
+                                                                        const currentIds = config.tool_settings?.mcp_server_ids ?? [];
+                                                                        const nextIds = checked
+                                                                            ? [...currentIds.filter(id => id !== server._id), server._id]
+                                                                            : currentIds.filter(id => id !== server._id);
+                                                                        const nextAllowlists = {
+                                                                            ...(config.tool_settings?.mcp_tool_allowlists ?? {})
+                                                                        };
+                                                                        if (!checked) delete nextAllowlists[server._id];
+                                                                        setConfig({
+                                                                            ...config,
+                                                                            tool_settings: {
+                                                                                ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                                                ...(config.tool_settings ?? {}),
+                                                                                mcp_server_ids: nextIds,
+                                                                                mcp_tool_allowlists: nextAllowlists
+                                                                            }
+                                                                        });
+                                                                    }}
+                                                                />
+                                                            }
+                                                        />
+                                                    </Stack>
+
+                                                    {assigned && (
+                                                        <>
+                                                            {server.allowed_tools.length > 0 && (
+                                                                <Box>
+                                                                    <Typography variant="caption" color="text.secondary">
+                                                                        Admin allowlist
+                                                                    </Typography>
+                                                                    <Box mt={0.5} display="flex" gap={0.5} flexWrap="wrap">
+                                                                        {server.allowed_tools.map(tool => (
+                                                                            <Chip key={tool} size="small" label={tool} variant="outlined" />
+                                                                        ))}
+                                                                    </Box>
+                                                                </Box>
+                                                            )}
+                                                            <TextField
+                                                                fullWidth
+                                                                size="small"
+                                                                label="Agent Tool Allowlist"
+                                                                disabled={isFieldDisabled}
+                                                                value={agentAllowlist.join(", ")}
+                                                                onChange={event => {
+                                                                    const tools = event.target.value
+                                                                        .split(",")
+                                                                        .map(value => value.trim())
+                                                                        .filter(Boolean);
+                                                                    setConfig({
+                                                                        ...config,
+                                                                        tool_settings: {
+                                                                            ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                                            ...(config.tool_settings ?? {}),
+                                                                            mcp_tool_allowlists: {
+                                                                                ...(config.tool_settings?.mcp_tool_allowlists ?? {}),
+                                                                                [server._id]: tools
+                                                                            }
+                                                                        }
+                                                                    });
+                                                                }}
+                                                                placeholder="search_logs, search_monitors"
+                                                                helperText={
+                                                                    server.allowed_tools.length
+                                                                        ? "Blank uses the Admin allowlist. Agent tools cannot exceed the Admin allowlist."
+                                                                        : "Comma-separated exact tool names; blank exposes all tools discovered from this server."
+                                                                }
+                                                            />
+                                                        </>
+                                                    )}
+                                                </Stack>
+                                            </Paper>
+                                        );
+                                    })}
+                                </Stack>
+                            )}
+                        </Paper>
+
+                        <Alert severity="info">
+                            Server URLs and credentials are read-only here. Administrators manage them centrally in Admin Management → MCP Servers.
+                        </Alert>
+                    </Stack>
+                )}
+
+                {/* ══════════════════════════════════
                     TAB 2 — Integrations
                     Designed to be extensible: add new
                     integration sections here as needed.
                 ══════════════════════════════════ */}
                 {activeTab === "integrations" && !isCreate && (
                     <Stack spacing={3}>
-                        {/* ── External API ── */}
-                        <Paper variant="outlined" sx={{ p: 2 }}>
-                            <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                <Box>
-                                    <Typography fontWeight={600}>External API Capabilities</Typography>
-                                    <Typography variant="body2" color="text.secondary">
-                                        APIs that the agent can call automatically
-                                    </Typography>
-                                </Box>
-
-                                {!isViewMode && (
-                                    <Button size="small" onClick={() => setBindingDialogOpen(true)}>
-                                        + Add Integration
-                                    </Button>
-                                )}
-                            </Stack>
-
-                            {bindingsLoading ? (
-                                <AgentBindingListSkeleton count={2} />
-                            ) : apiBindings.length === 0 ? (
-                                <Typography variant="body2" color="text.secondary" mt={2}>
-                                    No integrations linked
-                                </Typography>
-                            ) : (
-                                <Box mt={2} sx={{ maxHeight: 460, overflowY: "auto", pr: 0.5 }}>
-                                    <Stack spacing={2}>
-                                        {apiBindings.map(b => {
-                                            const integration = integrations.find(i => i._id === b.integration_id);
-                                            const endpoint = integration?.endpoints.find(e => e.name === b.endpoint_name);
-
-                                            return (
-                                                <BindingCard
-                                                    key={b._id}
-                                                    binding={b}
-                                                    title={integration?.name ?? b.integration_id}
-                                                    subtitle={endpoint ? `${endpoint.method} ${endpoint.path}` : undefined}
-                                                    chips={[
-                                                        endpoint?.method
-                                                            ? { label: endpoint.method, color: endpoint.method === "GET" ? "success" : "primary" }
-                                                            : null,
-                                                        endpoint?.path ? { label: endpoint.path, sx: { fontFamily: "monospace" } } : null,
-                                                        { label: b.async ? "Async" : "Sync", color: b.async ? "warning" : "default" }
-                                                    ]}
-                                                    detailLabel="Triggers"
-                                                    detailValues={b.trigger_keywords}
-                                                    deletingBindingId={deletingBindingId}
-                                                    isViewMode={isViewMode}
-                                                    instance={instance}
-                                                    setBindings={setBindings}
-                                                    setDeletingBindingId={setDeletingBindingId}
-                                                    showNotification={showNotification}
-                                                >
-                                                    {b.request_fields?.length > 0 && (
-                                                        <Box>
-                                                            <Typography variant="caption" color="text.secondary">
-                                                                Request
-                                                            </Typography>
-                                                            {b.request_fields.map((f, idx) => (
-                                                                <Typography key={idx} variant="body2">
-                                                                    {f.field} ({f.location}) : {f.description}
-                                                                </Typography>
-                                                            ))}
-                                                        </Box>
-                                                    )}
-                                                    {b.response_fields?.length > 0 && (
-                                                        <Box>
-                                                            <Typography variant="caption" color="text.secondary">
-                                                                Response
-                                                            </Typography>
-                                                            {b.response_fields.map((f, idx) => (
-                                                                <Typography key={idx} variant="body2">
-                                                                    {f.field} : {f.description}
-                                                                </Typography>
-                                                            ))}
-                                                        </Box>
-                                                    )}
-                                                </BindingCard>
-                                            );
-                                        })}
-                                    </Stack>
-                                </Box>
-                            )}
+                        <Paper variant="outlined">
+                            <Tabs
+                                value={integrationSection}
+                                onChange={(_, value) => setIntegrationSection(value)}
+                                variant="scrollable"
+                                scrollButtons="auto"
+                                aria-label="agent integration categories"
+                            >
+                                <Tab label={`REST APIs (${apiBindings.length})`} value="rest" />
+                                <Tab label={`Databases (${databaseBindings.length})`} value="database" />
+                                <Tab label={`Mail (${mailBindings.length})`} value="mail" />
+                                <Tab label={`Messaging (${messagingBindings.length})`} value="messaging" />
+                                <Tab label={`Visualization (${chartBindings.length})`} value="visualization" />
+                            </Tabs>
                         </Paper>
+
+                        <Alert severity="info">
+                            Integration bindings are saved immediately. Credentials and connection definitions remain centrally managed and are not copied into
+                            the Agent configuration.
+                        </Alert>
+
+                        {integrationSection === "rest" && !config.tool_settings?.rest_integrations && (
+                            <Alert severity="warning">
+                                REST Integrations is disabled in Agent Info. Existing bindings remain saved but are not exposed to the Agent runtime.
+                            </Alert>
+                        )}
+                        {integrationSection === "database" && !config.tool_settings?.external_database && (
+                            <Alert severity="warning">
+                                External Database is disabled in Agent Info. Existing database bindings remain saved but are not exposed to the Agent runtime.
+                            </Alert>
+                        )}
+
+                        {/* ── External API ── */}
+                        {integrationSection === "rest" && (
+                            <Paper variant="outlined" sx={{ p: 2 }}>
+                                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                    <Box>
+                                        <Typography fontWeight={600}>External API Capabilities</Typography>
+                                        <Typography variant="body2" color="text.secondary">
+                                            APIs that the agent can call automatically
+                                        </Typography>
+                                    </Box>
+
+                                    {!isViewMode && (
+                                        <Button size="small" onClick={() => setBindingDialogOpen(true)}>
+                                            + Add Integration
+                                        </Button>
+                                    )}
+                                </Stack>
+
+                                {bindingsLoading ? (
+                                    <AgentBindingListSkeleton count={2} />
+                                ) : apiBindings.length === 0 ? (
+                                    <Typography variant="body2" color="text.secondary" mt={2}>
+                                        No integrations linked
+                                    </Typography>
+                                ) : (
+                                    <Box mt={2} sx={{ maxHeight: 460, overflowY: "auto", pr: 0.5 }}>
+                                        <Stack spacing={2}>
+                                            {apiBindings.map(b => {
+                                                const integration = integrations.find(i => i._id === b.integration_id);
+                                                const endpoint = integration?.endpoints.find(e => e.name === b.endpoint_name);
+                                                const runtimeToolName = normalizeRuntimeToolName(
+                                                    `api_${integration?.name ?? b.integration_id}_${b.endpoint_name}_${String(b._id).slice(0, 8)}`
+                                                );
+
+                                                return (
+                                                    <BindingCard
+                                                        key={b._id}
+                                                        binding={b}
+                                                        title={integration?.name ?? b.integration_id}
+                                                        subtitle={endpoint ? `${endpoint.method} ${endpoint.path}` : undefined}
+                                                        chips={[
+                                                            endpoint?.method
+                                                                ? { label: endpoint.method, color: endpoint.method === "GET" ? "success" : "primary" }
+                                                                : null,
+                                                            endpoint?.path ? { label: endpoint.path, sx: { fontFamily: "monospace" } } : null,
+                                                            endpoint?.method
+                                                                ? {
+                                                                      label: endpoint.method === "GET" ? "Read action" : "Write action",
+                                                                      color: endpoint.method === "GET" ? ("success" as const) : ("warning" as const)
+                                                                  }
+                                                                : null,
+                                                            { label: b.async ? "Async" : "Sync", color: b.async ? "warning" : "default" }
+                                                        ]}
+                                                        detailLabel="Triggers"
+                                                        detailValues={b.trigger_keywords}
+                                                        deletingBindingId={deletingBindingId}
+                                                        isViewMode={isViewMode}
+                                                        instance={instance}
+                                                        setBindings={setBindings}
+                                                        setDeletingBindingId={setDeletingBindingId}
+                                                        showNotification={showNotification}
+                                                    >
+                                                        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "monospace" }}>
+                                                            Runtime tool: {runtimeToolName}
+                                                        </Typography>
+                                                        {b.request_fields?.length > 0 && (
+                                                            <Box>
+                                                                <Typography variant="caption" color="text.secondary">
+                                                                    Request
+                                                                </Typography>
+                                                                {b.request_fields.map((f, idx) => (
+                                                                    <Typography key={idx} variant="body2">
+                                                                        {f.field} ({f.location}) : {f.description}
+                                                                    </Typography>
+                                                                ))}
+                                                            </Box>
+                                                        )}
+                                                        {b.response_fields?.length > 0 && (
+                                                            <Box>
+                                                                <Typography variant="caption" color="text.secondary">
+                                                                    Response
+                                                                </Typography>
+                                                                {b.response_fields.map((f, idx) => (
+                                                                    <Typography key={idx} variant="body2">
+                                                                        {f.field} : {f.description}
+                                                                    </Typography>
+                                                                ))}
+                                                            </Box>
+                                                        )}
+                                                    </BindingCard>
+                                                );
+                                            })}
+                                        </Stack>
+                                    </Box>
+                                )}
+                            </Paper>
+                        )}
 
                         {/* ── Database Connections ── */}
-                        <Paper variant="outlined" sx={{ p: 2 }}>
-                            <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                <Box>
-                                    <Typography fontWeight={600}>Database Connections</Typography>
-                                    <Typography variant="body2" color="text.secondary">
-                                        Databases that the agent can use for query generation
+                        {integrationSection === "database" && (
+                            <Paper variant="outlined" sx={{ p: 2 }}>
+                                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                    <Box>
+                                        <Typography fontWeight={600}>Database Connections</Typography>
+                                        <Typography variant="body2" color="text.secondary">
+                                            Databases that the agent can use for query generation
+                                        </Typography>
+                                    </Box>
+
+                                    {!isViewMode && (
+                                        <Button
+                                            size="small"
+                                            onClick={() => {
+                                                setSelectedDatabaseBinding(null);
+                                                setDatabaseBindingDialogOpen(true);
+                                            }}
+                                        >
+                                            + Add Database
+                                        </Button>
+                                    )}
+                                </Stack>
+
+                                {bindingsLoading ? (
+                                    <AgentBindingListSkeleton count={2} />
+                                ) : databaseBindings.length === 0 ? (
+                                    <Typography variant="body2" color="text.secondary" mt={2}>
+                                        No database connections linked
                                     </Typography>
-                                </Box>
+                                ) : (
+                                    <Box mt={2} sx={{ maxHeight: 460, overflowY: "auto", pr: 0.5 }}>
+                                        <Stack spacing={2}>
+                                            {databaseBindings.map(binding => {
+                                                const databaseConnection = databaseConnections.find(connection => connection._id === binding.integration_id);
+                                                const alias = binding.alias?.trim();
+                                                const title = alias || databaseConnection?.name || binding.integration_id;
+                                                const subtitle = databaseConnection
+                                                    ? `${databaseConnection.db_type} • ${databaseConnection.host}:${databaseConnection.port} • ${databaseConnection.database}`
+                                                    : undefined;
+                                                const runtimeToolName = normalizeRuntimeToolName(
+                                                    `database_${title}_${String(binding._id || binding.integration_id).slice(0, 8)}`
+                                                );
 
-                                {!isViewMode && (
-                                    <Button
-                                        size="small"
-                                        onClick={() => {
-                                            setSelectedDatabaseBinding(null);
-                                            setDatabaseBindingDialogOpen(true);
-                                        }}
-                                    >
-                                        + Add Database
-                                    </Button>
-                                )}
-                            </Stack>
-
-                            {bindingsLoading ? (
-                                <AgentBindingListSkeleton count={2} />
-                            ) : databaseBindings.length === 0 ? (
-                                <Typography variant="body2" color="text.secondary" mt={2}>
-                                    No database connections linked
-                                </Typography>
-                            ) : (
-                                <Box mt={2} sx={{ maxHeight: 460, overflowY: "auto", pr: 0.5 }}>
-                                    <Stack spacing={2}>
-                                        {databaseBindings.map(binding => {
-                                            const databaseConnection = databaseConnections.find(connection => connection._id === binding.integration_id);
-                                            const alias = binding.alias?.trim();
-                                            const title = alias || databaseConnection?.name || binding.integration_id;
-                                            const subtitle = databaseConnection
-                                                ? `${databaseConnection.db_type} • ${databaseConnection.host}:${databaseConnection.port} • ${databaseConnection.database}`
-                                                : undefined;
-
-                                            return (
-                                                <DatabaseBindingCard
-                                                    key={binding._id}
-                                                    binding={binding}
-                                                    title={title}
-                                                    subtitle={subtitle}
-                                                    chips={[
-                                                        databaseConnection?.db_type ? { label: databaseConnection.db_type } : null,
-                                                        databaseConnection?.database ? { label: databaseConnection.database } : null,
-                                                        binding.query_profile?.business_context || binding.query_profile?.allowed_objects?.length
-                                                            ? { label: "Query profile configured", color: "success" as const }
-                                                            : null
-                                                    ]}
-                                                    deletingBindingId={deletingDatabaseBindingId}
-                                                    isViewMode={isViewMode}
-                                                    instance={instance}
-                                                    setBindings={setDatabaseBindings}
-                                                    setDeletingBindingId={setDeletingDatabaseBindingId}
-                                                    showNotification={showNotification}
-                                                    onEdit={() => {
-                                                        setSelectedDatabaseBinding(binding);
-                                                        setDatabaseBindingDialogOpen(true);
-                                                    }}
-                                                >
-                                                    {databaseConnection && (
-                                                        <Stack spacing={0.5}>
-                                                            <Typography variant="caption" color="text.secondary">
-                                                                User: {databaseConnection.username}
-                                                            </Typography>
-                                                            {binding.query_profile?.allowed_objects?.length ? (
+                                                return (
+                                                    <DatabaseBindingCard
+                                                        key={binding._id}
+                                                        binding={binding}
+                                                        title={title}
+                                                        subtitle={subtitle}
+                                                        chips={[
+                                                            databaseConnection?.db_type ? { label: databaseConnection.db_type } : null,
+                                                            databaseConnection?.database ? { label: databaseConnection.database } : null,
+                                                            { label: "Read-only", color: "success" as const },
+                                                            binding.query_profile?.business_context || binding.query_profile?.allowed_objects?.length
+                                                                ? { label: "Query profile configured", color: "success" as const }
+                                                                : null
+                                                        ]}
+                                                        deletingBindingId={deletingDatabaseBindingId}
+                                                        isViewMode={isViewMode}
+                                                        instance={instance}
+                                                        setBindings={setDatabaseBindings}
+                                                        setDeletingBindingId={setDeletingDatabaseBindingId}
+                                                        showNotification={showNotification}
+                                                        onEdit={() => {
+                                                            setSelectedDatabaseBinding(binding);
+                                                            setDatabaseBindingDialogOpen(true);
+                                                        }}
+                                                    >
+                                                        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "monospace" }}>
+                                                            Runtime tool: {runtimeToolName}
+                                                        </Typography>
+                                                        {databaseConnection && (
+                                                            <Stack spacing={0.5}>
                                                                 <Typography variant="caption" color="text.secondary">
-                                                                    Allowed: {binding.query_profile.allowed_objects.join(", ")}
+                                                                    User: {databaseConnection.username}
                                                                 </Typography>
-                                                            ) : null}
-                                                        </Stack>
-                                                    )}
-                                                </DatabaseBindingCard>
-                                            );
-                                        })}
-                                    </Stack>
-                                </Box>
-                            )}
-                        </Paper>
+                                                                {binding.query_profile?.allowed_objects?.length ? (
+                                                                    <Typography variant="caption" color="text.secondary">
+                                                                        Allowed: {binding.query_profile.allowed_objects.join(", ")}
+                                                                    </Typography>
+                                                                ) : null}
+                                                                <Typography variant="caption" color="text.secondary">
+                                                                    Runtime actions: schema, query
+                                                                    {databaseConnection.db_type !== "mongodb" ? ", chart_aggregate" : ""}
+                                                                </Typography>
+                                                                {!isViewMode && (
+                                                                    <Box mt={0.5}>
+                                                                        <Button
+                                                                            size="small"
+                                                                            variant="outlined"
+                                                                            disabled={testingDatabaseConnectionId === databaseConnection._id}
+                                                                            startIcon={
+                                                                                testingDatabaseConnectionId === databaseConnection._id ? (
+                                                                                    <CircularProgress size={14} />
+                                                                                ) : undefined
+                                                                            }
+                                                                            onClick={async () => {
+                                                                                try {
+                                                                                    setTestingDatabaseConnectionId(databaseConnection._id);
+                                                                                    const token = await getToken(instance);
+                                                                                    if (!token) return;
+                                                                                    const result = await test_db_connection(
+                                                                                        { database_id: databaseConnection._id },
+                                                                                        token
+                                                                                    );
+                                                                                    showNotification(result.message || "Connection succeeded", "success");
+                                                                                } catch (error) {
+                                                                                    showNotification(
+                                                                                        error instanceof Error
+                                                                                            ? error.message
+                                                                                            : "Database connection test failed",
+                                                                                        "error"
+                                                                                    );
+                                                                                } finally {
+                                                                                    setTestingDatabaseConnectionId(null);
+                                                                                }
+                                                                            }}
+                                                                        >
+                                                                            {testingDatabaseConnectionId === databaseConnection._id
+                                                                                ? "Testing..."
+                                                                                : "Test Connection"}
+                                                                        </Button>
+                                                                    </Box>
+                                                                )}
+                                                            </Stack>
+                                                        )}
+                                                    </DatabaseBindingCard>
+                                                );
+                                            })}
+                                        </Stack>
+                                    </Box>
+                                )}
+                            </Paper>
+                        )}
 
                         {/* ── Mail Capabilities ── */}
-                        <Paper variant="outlined" sx={{ p: 2 }}>
-                            <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                <Box>
-                                    <Typography fontWeight={600}>Mail Capabilities</Typography>
-                                    <Typography variant="body2" color="text.secondary">
-                                        Email accounts the agent can send mail through
+                        {integrationSection === "mail" && (
+                            <Paper variant="outlined" sx={{ p: 2 }}>
+                                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                    <Box>
+                                        <Typography fontWeight={600}>Mail Capabilities</Typography>
+                                        <Typography variant="body2" color="text.secondary">
+                                            Email accounts the agent can read/search or send mail through
+                                        </Typography>
+                                    </Box>
+                                    {!isViewMode && (
+                                        <Button size="small" onClick={() => { setSelectedMailBinding(null); setMailBindingDialogOpen(true); }}>
+                                            + Add Mail
+                                        </Button>
+                                    )}
+                                </Stack>
+
+                                {!config.tool_settings?.mail && <Alert severity="warning" sx={{ mt: 2 }}>Mail tools are disabled in Agent Info. Bindings remain saved but are not exposed at runtime.</Alert>}
+                                <Alert severity="warning" sx={{ mt: 2 }}>
+                                    Sending mail is a write action. Keep only the required account enabled and control automatic execution through the Agent
+                                    tool policy.
+                                </Alert>
+
+                                {bindingsLoading ? (
+                                    <AgentBindingListSkeleton count={2} />
+                                ) : mailBindings.length === 0 ? (
+                                    <Typography variant="body2" color="text.secondary" mt={2}>
+                                        No mail accounts linked
                                     </Typography>
-                                </Box>
-                                {!isViewMode && (
-                                    <Button size="small" onClick={() => setMailBindingDialogOpen(true)}>
-                                        + Add Mail
-                                    </Button>
+                                ) : (
+                                    <Box mt={2} sx={{ maxHeight: 460, overflowY: "auto", pr: 0.5 }}>
+                                        <Stack spacing={2}>
+                                            {mailBindings.map(binding => {
+                                                const cfg = mailConfigs.find(c => c._id === binding.email_id);
+                                                const title = cfg?.name ?? binding.email_id;
+                                                const subtitle = cfg ? `${cfg.email_address} — ${cfg.provider}` : undefined;
+
+                                                return (
+                                                    <Paper key={binding._id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
+                                                        <Stack spacing={1.5}>
+                                                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                                                <Stack direction="row" spacing={1} alignItems="center">
+                                                                    {getIntegrationIcon("mail")}
+                                                                    <Typography fontWeight={600}>{title}</Typography>
+                                                                    <Chip size="small" label="mail" sx={{ ml: 1 }} />
+                                                                    <Chip size="small" label={(binding.permissions ?? ["read", "send"]).join(" / ")} color={(binding.permissions ?? []).includes("send") ? "warning" : "success"} variant="outlined" />
+                                                                    <Chip size="small" label={binding.is_html ? "HTML" : "Plain text"} variant="outlined" />
+                                                                </Stack>
+
+                                                                <Stack direction="row" spacing={1} alignItems="center">
+                                                                    <Typography variant="caption">Enabled</Typography>
+                                                                    <Switch
+                                                                        size="small"
+                                                                        checked={binding.enabled !== false}
+                                                                        disabled={isViewMode}
+                                                                        onChange={async () => {
+                                                                            const newValue = !binding.enabled;
+                                                                            setMailBindings(prev =>
+                                                                                prev.map(x => (x._id === binding._id ? { ...x, enabled: newValue } : x))
+                                                                            );
+                                                                            try {
+                                                                                const token = await getToken(instance);
+                                                                                if (token) {
+                                                                                    await toggle_mail_binding_by_id(binding._id, newValue, token);
+                                                                                    showNotification(
+                                                                                        `Mail binding ${newValue ? "enabled" : "disabled"}`,
+                                                                                        "success"
+                                                                                    );
+                                                                                }
+                                                                            } catch (err) {
+                                                                                setMailBindings(prev =>
+                                                                                    prev.map(x => (x._id === binding._id ? { ...x, enabled: !newValue } : x))
+                                                                                );
+                                                                                showNotification("Failed to toggle mail binding", "error");
+                                                                            }
+                                                                        }}
+                                                                    />
+                                                                    {!isViewMode && (
+                                                                        <IconButton
+                                                                            size="small"
+                                                                            aria-label="Edit mail binding"
+                                                                            onClick={() => {
+                                                                                setSelectedMailBinding(binding);
+                                                                                setMailBindingDialogOpen(true);
+                                                                            }}
+                                                                        >
+                                                                            <EditIcon fontSize="small" />
+                                                                        </IconButton>
+                                                                    )}
+                                                                    {!isViewMode && (
+                                                                        <IconButton
+                                                                            size="small"
+                                                                            color="error"
+                                                                            disabled={deletingMailBindingId === binding._id}
+                                                                            onClick={async () => {
+                                                                                if (!window.confirm("Delete this mail binding?")) return;
+                                                                                try {
+                                                                                    setDeletingMailBindingId(binding._id);
+                                                                                    const token = await getToken(instance);
+                                                                                    if (token) {
+                                                                                        await delete_mail_binding_by_id(binding._id, token);
+                                                                                        setMailBindings(prev => prev.filter(x => x._id !== binding._id));
+                                                                                        showNotification("Mail binding deleted", "success");
+                                                                                    }
+                                                                                } catch (err) {
+                                                                                    showNotification("Failed to delete mail binding", "error");
+                                                                                } finally {
+                                                                                    setDeletingMailBindingId(null);
+                                                                                }
+                                                                            }}
+                                                                        >
+                                                                            {deletingMailBindingId === binding._id ? (
+                                                                                <CircularProgress size={20} color="inherit" />
+                                                                            ) : (
+                                                                                <DeleteIcon fontSize="small" />
+                                                                            )}
+                                                                        </IconButton>
+                                                                    )}
+                                                                </Stack>
+                                                            </Stack>
+
+                                                            {subtitle && (
+                                                                <Typography variant="body2" color="text.secondary">
+                                                                    {subtitle}
+                                                                </Typography>
+                                                            )}
+                                                        </Stack>
+                                                    </Paper>
+                                                );
+                                            })}
+                                        </Stack>
+                                    </Box>
                                 )}
-                            </Stack>
+                            </Paper>
+                        )}
 
-                            {bindingsLoading ? (
-                                <AgentBindingListSkeleton count={2} />
-                            ) : mailBindings.length === 0 ? (
-                                <Typography variant="body2" color="text.secondary" mt={2}>
-                                    No mail accounts linked
-                                </Typography>
-                            ) : (
-                                <Box mt={2} sx={{ maxHeight: 460, overflowY: "auto", pr: 0.5 }}>
-                                    <Stack spacing={2}>
-                                        {mailBindings.map(binding => {
-                                            const cfg = mailConfigs.find(c => c._id === binding.email_id);
-                                            const title = cfg?.name ?? binding.email_id;
-                                            const subtitle = cfg ? `${cfg.email} — ${cfg.protocol}/${cfg.encryption}` : undefined;
+                        {integrationSection === "messaging" && (
+                            <Paper variant="outlined" sx={{ p: 2 }}>
+                                <Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography fontWeight={600}>Messaging & Chat</Typography><Typography variant="body2" color="text.secondary">LINE, Slack and Discord destinations the Agent may post to</Typography></Box>{!isViewMode && <Button size="small" onClick={() => { setSelectedMessagingBinding(null); setMessagingBindingDialogOpen(true); }}>+ Add Messaging</Button>}</Stack>
+                                {!config.tool_settings?.messaging && <Alert severity="warning" sx={{ mt: 2 }}>Messaging tools are disabled in Agent Info.</Alert>}
+                                <Alert severity="warning" sx={{ mt: 2 }}>Posting messages is a write action.</Alert>
+                                <Stack spacing={2} mt={2}>{messagingBindings.length === 0 ? <Typography variant="body2" color="text.secondary">No messaging connections linked</Typography> : messagingBindings.map(binding => { const conn = messagingConnections.find(v => v._id === binding.connection_id); return <Paper key={binding._id} variant="outlined" sx={{ p: 2 }}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Stack direction="row" spacing={1} alignItems="center"><Typography fontWeight={600}>{conn?.name ?? binding.connection_id}</Typography><Chip size="small" label={conn?.provider ?? "messaging"} color="primary" variant="outlined" /></Stack><Typography variant="body2" color="text.secondary" mt={.5}>Target: {binding.default_target || conn?.public_config.default_target || "Agent supplies at runtime"}</Typography></Box>{!isViewMode && <Box><IconButton size="small" onClick={() => { setSelectedMessagingBinding(binding); setMessagingBindingDialogOpen(true); }}><EditIcon fontSize="small" /></IconButton><IconButton size="small" color="error" onClick={async () => { try { const t = await getToken(instance); if (!t) return; await delete_messaging_binding(binding._id, t); await loadBindings(); } catch (e) { showNotification(e instanceof Error ? e.message : "Delete failed", "error"); } }}><DeleteIcon fontSize="small" /></IconButton></Box>}</Stack></Paper>; })}</Stack>
+                            </Paper>
+                        )}
 
-                                            return (
+                        {/* ⭐ CHART CAPABILITY: Chart Capabilities section */}
+                        {integrationSection === "visualization" && (
+                            <Paper variant="outlined" sx={{ p: 2 }}>
+                                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                    <Box>
+                                        <Typography fontWeight={600}>Chart Capabilities</Typography>
+                                        <Typography variant="body2" color="text.secondary">
+                                            Allow the agent to generate charts from data
+                                        </Typography>
+                                    </Box>
+                                    {!isViewMode && chartBindings.length === 0 && (
+                                        <Button
+                                            size="small"
+                                            onClick={() => {
+                                                setSelectedChartBinding(null);
+                                                setChartBindingDialogOpen(true);
+                                            }}
+                                        >
+                                            + Add Chart Capability
+                                        </Button>
+                                    )}
+                                </Stack>
+
+                                <Alert severity="info" sx={{ mt: 2 }}>
+                                    Visualization is an output capability. It can render exact numeric results returned by Database, REST, MCP, or Knowledge
+                                    tools, but it does not provide source data by itself.
+                                </Alert>
+
+                                {bindingsLoading ? (
+                                    <AgentBindingListSkeleton count={1} />
+                                ) : chartBindings.length === 0 ? (
+                                    <Typography variant="body2" color="text.secondary" mt={2}>
+                                        No chart capability linked
+                                    </Typography>
+                                ) : (
+                                    <Box mt={2} sx={{ maxHeight: 460, overflowY: "auto", pr: 0.5 }}>
+                                        <Stack spacing={2}>
+                                            {chartBindings.map(binding => (
                                                 <Paper key={binding._id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
                                                     <Stack spacing={1.5}>
                                                         <Stack direction="row" justifyContent="space-between" alignItems="center">
                                                             <Stack direction="row" spacing={1} alignItems="center">
-                                                                {getIntegrationIcon("mail")}
-                                                                <Typography fontWeight={600}>{title}</Typography>
-                                                                <Chip size="small" label="mail" sx={{ ml: 1 }} />
-                                                                <Chip size="small" label={binding.is_html ? "HTML" : "Plain text"} variant="outlined" />
+                                                                {getIntegrationIcon("chart")}
+                                                                <Typography fontWeight={600}>
+                                                                    {binding.chart_selection_mode === "auto" ? "Auto" : "Manual"} Chart
+                                                                </Typography>
+                                                                <Chip size="small" label="chart" sx={{ ml: 1 }} />
+                                                                <Chip
+                                                                    size="small"
+                                                                    label={`mode: ${binding.chart_selection_mode ?? "auto"}`}
+                                                                    variant="outlined"
+                                                                />
                                                             </Stack>
 
                                                             <Stack direction="row" spacing={1} alignItems="center">
@@ -1016,267 +1717,150 @@ function AgentDialog({
                                                                     disabled={isViewMode}
                                                                     onChange={async () => {
                                                                         const newValue = !binding.enabled;
-                                                                        setMailBindings(prev =>
+                                                                        setChartBindings(prev =>
                                                                             prev.map(x => (x._id === binding._id ? { ...x, enabled: newValue } : x))
                                                                         );
                                                                         try {
                                                                             const token = await getToken(instance);
                                                                             if (token) {
-                                                                                await toggle_mail_binding_by_id(binding._id, newValue, token);
+                                                                                await toggle_chart_binding_by_id(binding._id, newValue, token);
                                                                                 showNotification(
-                                                                                    `Mail binding ${newValue ? "enabled" : "disabled"}`,
+                                                                                    `Chart capability ${newValue ? "enabled" : "disabled"}`,
                                                                                     "success"
                                                                                 );
                                                                             }
                                                                         } catch (err) {
-                                                                            setMailBindings(prev =>
+                                                                            setChartBindings(prev =>
                                                                                 prev.map(x => (x._id === binding._id ? { ...x, enabled: !newValue } : x))
                                                                             );
-                                                                            showNotification("Failed to toggle mail binding", "error");
+                                                                            showNotification("Failed to toggle chart capability", "error");
                                                                         }
                                                                     }}
                                                                 />
                                                                 {!isViewMode && (
-                                                                    <IconButton
-                                                                        size="small"
-                                                                        color="error"
-                                                                        disabled={deletingMailBindingId === binding._id}
-                                                                        onClick={async () => {
-                                                                            if (!window.confirm("Delete this mail binding?")) return;
-                                                                            try {
-                                                                                setDeletingMailBindingId(binding._id);
-                                                                                const token = await getToken(instance);
-                                                                                if (token) {
-                                                                                    await delete_mail_binding_by_id(binding._id, token);
-                                                                                    setMailBindings(prev => prev.filter(x => x._id !== binding._id));
-                                                                                    showNotification("Mail binding deleted", "success");
+                                                                    <>
+                                                                        <IconButton
+                                                                            size="small"
+                                                                            color="primary"
+                                                                            onClick={() => {
+                                                                                setSelectedChartBinding(binding);
+                                                                                setChartBindingDialogOpen(true);
+                                                                            }}
+                                                                        >
+                                                                            <EditIcon fontSize="small" />
+                                                                        </IconButton>
+                                                                        <IconButton
+                                                                            size="small"
+                                                                            color="error"
+                                                                            disabled={deletingChartBindingId === binding._id}
+                                                                            onClick={async () => {
+                                                                                if (!window.confirm("Delete this chart capability?")) return;
+                                                                                try {
+                                                                                    setDeletingChartBindingId(binding._id);
+                                                                                    const token = await getToken(instance);
+                                                                                    if (token) {
+                                                                                        await delete_chart_binding_by_id(binding._id, token);
+                                                                                        setChartBindings(prev => prev.filter(x => x._id !== binding._id));
+                                                                                        showNotification("Chart capability deleted", "success");
+                                                                                    }
+                                                                                } catch (err) {
+                                                                                    showNotification("Failed to delete chart capability", "error");
+                                                                                } finally {
+                                                                                    setDeletingChartBindingId(null);
                                                                                 }
-                                                                            } catch (err) {
-                                                                                showNotification("Failed to delete mail binding", "error");
-                                                                            } finally {
-                                                                                setDeletingMailBindingId(null);
-                                                                            }
-                                                                        }}
-                                                                    >
-                                                                        {deletingMailBindingId === binding._id ? (
-                                                                            <CircularProgress size={20} color="inherit" />
-                                                                        ) : (
-                                                                            <DeleteIcon fontSize="small" />
-                                                                        )}
-                                                                    </IconButton>
+                                                                            }}
+                                                                        >
+                                                                            {deletingChartBindingId === binding._id ? (
+                                                                                <CircularProgress size={20} color="inherit" />
+                                                                            ) : (
+                                                                                <DeleteIcon fontSize="small" />
+                                                                            )}
+                                                                        </IconButton>
+                                                                    </>
                                                                 )}
                                                             </Stack>
                                                         </Stack>
 
-                                                        {subtitle && (
-                                                            <Typography variant="body2" color="text.secondary">
-                                                                {subtitle}
+                                                        {/* Chart selection info */}
+                                                        <Box>
+                                                            <Typography variant="caption" color="text.secondary">
+                                                                Selection Mode
+                                                            </Typography>
+                                                            <Box mt={0.5} display="flex" gap={0.5} flexWrap="wrap">
+                                                                <Chip
+                                                                    label={
+                                                                        binding.chart_selection_mode === "auto"
+                                                                            ? "🤖 Auto — LLM เลือกเอง"
+                                                                            : "🎛 Manual — กำหนด type เอง"
+                                                                    }
+                                                                    size="small"
+                                                                    color={binding.chart_selection_mode === "auto" ? "primary" : "default"}
+                                                                    variant="outlined"
+                                                                />
+                                                                <Chip
+                                                                    label={binding.auto_generate ? "⚡ Auto-generate ON" : "👆 ต้องให้ user สั่ง"}
+                                                                    size="small"
+                                                                    color={binding.auto_generate ? "success" : "default"}
+                                                                    variant="outlined"
+                                                                />
+                                                            </Box>
+                                                        </Box>
+
+                                                        {/* Color palette */}
+                                                        {binding.color_palette && binding.color_palette.length > 0 && (
+                                                            <Box>
+                                                                <Typography variant="caption" color="text.secondary">
+                                                                    Palette
+                                                                </Typography>
+                                                                <Stack direction="row" spacing={0.5} mt={0.5} alignItems="center">
+                                                                    {binding.color_palette.map((color, index) => (
+                                                                        <Box
+                                                                            key={`${binding._id}-color-${index}`}
+                                                                            sx={{
+                                                                                width: 18,
+                                                                                height: 18,
+                                                                                borderRadius: "4px",
+                                                                                backgroundColor: color,
+                                                                                border: "1px solid rgba(0,0,0,0.1)"
+                                                                            }}
+                                                                        />
+                                                                    ))}
+                                                                </Stack>
+                                                            </Box>
+                                                        )}
+
+                                                        {/* Trigger keywords */}
+                                                        {binding.trigger_keywords && binding.trigger_keywords.length > 0 && (
+                                                            <Box>
+                                                                <Typography variant="caption" color="text.secondary">
+                                                                    Trigger keywords
+                                                                </Typography>
+                                                                <Box mt={0.5}>
+                                                                    {binding.trigger_keywords.map((keyword, index) => (
+                                                                        <Chip
+                                                                            key={`${binding._id}-kw-${index}`}
+                                                                            label={keyword}
+                                                                            size="small"
+                                                                            sx={{ mr: 0.5, mb: 0.5 }}
+                                                                        />
+                                                                    ))}
+                                                                </Box>
+                                                            </Box>
+                                                        )}
+
+                                                        {binding.title_template && (
+                                                            <Typography variant="caption" color="text.secondary">
+                                                                Title template: <code>{binding.title_template}</code>
                                                             </Typography>
                                                         )}
                                                     </Stack>
                                                 </Paper>
-                                            );
-                                        })}
-                                    </Stack>
-                                </Box>
-                            )}
-                        </Paper>
-
-                        {/* ⭐ CHART CAPABILITY: Chart Capabilities section */}
-                        <Paper variant="outlined" sx={{ p: 2 }}>
-                            <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                <Box>
-                                    <Typography fontWeight={600}>Chart Capabilities</Typography>
-                                    <Typography variant="body2" color="text.secondary">
-                                        Allow the agent to generate charts from data
-                                    </Typography>
-                                </Box>
-                                {!isViewMode && chartBindings.length === 0 && (
-                                    <Button
-                                        size="small"
-                                        onClick={() => {
-                                            setSelectedChartBinding(null);
-                                            setChartBindingDialogOpen(true);
-                                        }}
-                                    >
-                                        + Add Chart Capability
-                                    </Button>
+                                            ))}
+                                        </Stack>
+                                    </Box>
                                 )}
-                            </Stack>
-
-                            {bindingsLoading ? (
-                                <AgentBindingListSkeleton count={1} />
-                            ) : chartBindings.length === 0 ? (
-                                <Typography variant="body2" color="text.secondary" mt={2}>
-                                    No chart capability linked
-                                </Typography>
-                            ) : (
-                                <Box mt={2} sx={{ maxHeight: 460, overflowY: "auto", pr: 0.5 }}>
-                                    <Stack spacing={2}>
-                                        {chartBindings.map(binding => (
-                                            <Paper key={binding._id} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
-                                                <Stack spacing={1.5}>
-                                                    <Stack direction="row" justifyContent="space-between" alignItems="center">
-                                                        <Stack direction="row" spacing={1} alignItems="center">
-                                                            {getIntegrationIcon("chart")}
-                                                            <Typography fontWeight={600}>
-                                                                {binding.chart_selection_mode === "auto" ? "Auto" : "Manual"} Chart
-                                                            </Typography>
-                                                            <Chip size="small" label="chart" sx={{ ml: 1 }} />
-                                                            <Chip size="small" label={`mode: ${binding.chart_selection_mode ?? "auto"}`} variant="outlined" />
-                                                        </Stack>
-
-                                                        <Stack direction="row" spacing={1} alignItems="center">
-                                                            <Typography variant="caption">Enabled</Typography>
-                                                            <Switch
-                                                                size="small"
-                                                                checked={binding.enabled !== false}
-                                                                disabled={isViewMode}
-                                                                onChange={async () => {
-                                                                    const newValue = !binding.enabled;
-                                                                    setChartBindings(prev =>
-                                                                        prev.map(x => (x._id === binding._id ? { ...x, enabled: newValue } : x))
-                                                                    );
-                                                                    try {
-                                                                        const token = await getToken(instance);
-                                                                        if (token) {
-                                                                            await toggle_chart_binding_by_id(binding._id, newValue, token);
-                                                                            showNotification(
-                                                                                `Chart capability ${newValue ? "enabled" : "disabled"}`,
-                                                                                "success"
-                                                                            );
-                                                                        }
-                                                                    } catch (err) {
-                                                                        setChartBindings(prev =>
-                                                                            prev.map(x => (x._id === binding._id ? { ...x, enabled: !newValue } : x))
-                                                                        );
-                                                                        showNotification("Failed to toggle chart capability", "error");
-                                                                    }
-                                                                }}
-                                                            />
-                                                            {!isViewMode && (
-                                                                <>
-                                                                    <IconButton
-                                                                        size="small"
-                                                                        color="primary"
-                                                                        onClick={() => {
-                                                                            setSelectedChartBinding(binding);
-                                                                            setChartBindingDialogOpen(true);
-                                                                        }}
-                                                                    >
-                                                                        <EditIcon fontSize="small" />
-                                                                    </IconButton>
-                                                                    <IconButton
-                                                                        size="small"
-                                                                        color="error"
-                                                                        disabled={deletingChartBindingId === binding._id}
-                                                                        onClick={async () => {
-                                                                            if (!window.confirm("Delete this chart capability?")) return;
-                                                                            try {
-                                                                                setDeletingChartBindingId(binding._id);
-                                                                                const token = await getToken(instance);
-                                                                                if (token) {
-                                                                                    await delete_chart_binding_by_id(binding._id, token);
-                                                                                    setChartBindings(prev => prev.filter(x => x._id !== binding._id));
-                                                                                    showNotification("Chart capability deleted", "success");
-                                                                                }
-                                                                            } catch (err) {
-                                                                                showNotification("Failed to delete chart capability", "error");
-                                                                            } finally {
-                                                                                setDeletingChartBindingId(null);
-                                                                            }
-                                                                        }}
-                                                                    >
-                                                                        {deletingChartBindingId === binding._id ? (
-                                                                            <CircularProgress size={20} color="inherit" />
-                                                                        ) : (
-                                                                            <DeleteIcon fontSize="small" />
-                                                                        )}
-                                                                    </IconButton>
-                                                                </>
-                                                            )}
-                                                        </Stack>
-                                                    </Stack>
-
-                                                    {/* Chart selection info */}
-                                                    <Box>
-                                                        <Typography variant="caption" color="text.secondary">
-                                                            Selection Mode
-                                                        </Typography>
-                                                        <Box mt={0.5} display="flex" gap={0.5} flexWrap="wrap">
-                                                            <Chip
-                                                                label={
-                                                                    binding.chart_selection_mode === "auto"
-                                                                        ? "🤖 Auto — LLM เลือกเอง"
-                                                                        : "🎛 Manual — กำหนด type เอง"
-                                                                }
-                                                                size="small"
-                                                                color={binding.chart_selection_mode === "auto" ? "primary" : "default"}
-                                                                variant="outlined"
-                                                            />
-                                                            <Chip
-                                                                label={binding.auto_generate ? "⚡ Auto-generate ON" : "👆 ต้องให้ user สั่ง"}
-                                                                size="small"
-                                                                color={binding.auto_generate ? "success" : "default"}
-                                                                variant="outlined"
-                                                            />
-                                                        </Box>
-                                                    </Box>
-
-                                                    {/* Color palette */}
-                                                    {binding.color_palette && binding.color_palette.length > 0 && (
-                                                        <Box>
-                                                            <Typography variant="caption" color="text.secondary">
-                                                                Palette
-                                                            </Typography>
-                                                            <Stack direction="row" spacing={0.5} mt={0.5} alignItems="center">
-                                                                {binding.color_palette.map((color, index) => (
-                                                                    <Box
-                                                                        key={`${binding._id}-color-${index}`}
-                                                                        sx={{
-                                                                            width: 18,
-                                                                            height: 18,
-                                                                            borderRadius: "4px",
-                                                                            backgroundColor: color,
-                                                                            border: "1px solid rgba(0,0,0,0.1)"
-                                                                        }}
-                                                                    />
-                                                                ))}
-                                                            </Stack>
-                                                        </Box>
-                                                    )}
-
-                                                    {/* Trigger keywords */}
-                                                    {binding.trigger_keywords && binding.trigger_keywords.length > 0 && (
-                                                        <Box>
-                                                            <Typography variant="caption" color="text.secondary">
-                                                                Trigger keywords
-                                                            </Typography>
-                                                            <Box mt={0.5}>
-                                                                {binding.trigger_keywords.map((keyword, index) => (
-                                                                    <Chip
-                                                                        key={`${binding._id}-kw-${index}`}
-                                                                        label={keyword}
-                                                                        size="small"
-                                                                        sx={{ mr: 0.5, mb: 0.5 }}
-                                                                    />
-                                                                ))}
-                                                            </Box>
-                                                        </Box>
-                                                    )}
-
-                                                    {binding.title_template && (
-                                                        <Typography variant="caption" color="text.secondary">
-                                                            Title template: <code>{binding.title_template}</code>
-                                                        </Typography>
-                                                    )}
-                                                </Stack>
-                                            </Paper>
-                                        ))}
-                                    </Stack>
-                                </Box>
-                            )}
-                        </Paper>
+                            </Paper>
+                        )}
 
                         {/* Future: LINE, Google Sheet ฯลฯ เพิ่ม <Paper> block ตรงนี้ */}
                     </Stack>
@@ -1287,8 +1871,8 @@ function AgentDialog({
                 <Button onClick={onClose} disabled={isSaving}>
                     Close
                 </Button>
-                {/* Save button ปรากฏเฉพาะ tab "info" และ mode ที่ไม่ใช่ view */}
-                {!isViewMode && activeTab === "info" && (
+                {/* Integrations persist their bindings directly; Agent Info and MCP settings save with the agent config. */}
+                {!isViewMode && activeTab !== "integrations" && (
                     <Button
                         variant="contained"
                         disabled={!agentName || isSaving}
@@ -1395,13 +1979,28 @@ function AgentDialog({
                     }
                 }}
             />
+            <MessagingBindingDialog
+                open={messagingBindingDialogOpen}
+                connections={messagingConnections}
+                binding={selectedMessagingBinding}
+                onClose={() => { setMessagingBindingDialogOpen(false); setSelectedMessagingBinding(null); }}
+                onSave={async binding => {
+                    try {
+                        const token = await getToken(instance); if (!token || !agent?._id) return;
+                        await save_messaging_binding({ ...binding, binding_id: selectedMessagingBinding?._id, agent_id: agent._id }, token);
+                        await loadBindings(); setMessagingBindingDialogOpen(false); setSelectedMessagingBinding(null);
+                        showNotification("Messaging binding saved", "success");
+                    } catch (e) { showNotification(e instanceof Error ? e.message : "Save failed", "error"); }
+                }}
+            />
             <MailBindingDialog
                 open={mailBindingDialogOpen}
                 saving={bindingSaving}
                 mailConfigs={mailConfigs}
-                onClose={() => setMailBindingDialogOpen(false)}
+                binding={selectedMailBinding}
+                onClose={() => { setMailBindingDialogOpen(false); setSelectedMailBinding(null); }}
                 onSave={async (binding: MailBindingInput) => {
-                    const exists = mailBindings.some(b => b.email_id === binding.email_id);
+                    const exists = mailBindings.some(b => b.email_id === binding.email_id && b._id !== selectedMailBinding?._id);
                     if (exists) {
                         showNotification("This mail account is already linked", "warning");
                         return;
@@ -1411,23 +2010,29 @@ function AgentDialog({
                         const token = await getToken(instance);
                         if (!token || !agent?._id) return;
 
-                        await insert_mail_binding(
-                            {
+                        const payload = {
                                 agent_id: agent._id,
                                 email_id: binding.email_id,
                                 is_html: binding.is_html,
                                 enabled: binding.enabled,
+                                permissions: binding.permissions,
+                                allowed_recipient_domains: binding.allowed_recipient_domains,
+                                max_recipients: binding.max_recipients,
                                 subject: binding.subject,
                                 body: binding.body,
                                 default_to: binding.default_to,
                                 default_cc: binding.default_cc,
                                 default_bcc: binding.default_bcc
-                            },
-                            token
-                        );
+                            };
+                        if (selectedMailBinding) {
+                            await update_mail_binding(selectedMailBinding._id, payload, token);
+                        } else {
+                            await insert_mail_binding(payload, token);
+                        }
                         await loadBindings();
-                        showNotification("Mail binding added successfully", "success");
+                        showNotification(selectedMailBinding ? "Mail binding updated successfully" : "Mail binding added successfully", "success");
                         setMailBindingDialogOpen(false);
+                        setSelectedMailBinding(null);
                     } catch (err) {
                         console.error("insert mail binding err", err);
                         showNotification("Failed to add mail binding", "error");

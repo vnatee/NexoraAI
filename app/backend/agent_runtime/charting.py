@@ -1206,6 +1206,7 @@ def register_chart_tool(registry: ToolRegistry, chart_binding: dict[str, Any]) -
             handler=create_chart,
             source="chart",
             max_output_chars=100_000,
+            risk_level="render",
         )
     )
     return True

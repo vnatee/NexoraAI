@@ -8,10 +8,11 @@ class Page:
         text (str): The text of the page
     """
 
-    def __init__(self, page_num: int, offset: int, text: str):
+    def __init__(self, page_num: int, offset: int, text: str, metadata: dict | None = None):
         self.page_num = page_num
         self.offset = offset
         self.text = text
+        self.metadata = metadata or {}
 
 
 class SplitPage:

@@ -1,0 +1,23 @@
+services:
+  docling:
+    image: ${DOCLING_SERVE_IMAGE:-quay.io/docling-project/docling-serve:latest}
+    restart: unless-stopped
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "false"
+      DOCLING_SERVE_MAX_NUM_PAGES: ${DOCLING_SERVE_MAX_NUM_PAGES:-500}
+      DOCLING_SERVE_MAX_FILE_SIZE: ${DOCLING_SERVE_MAX_FILE_SIZE:-104857600}
+      DOCLING_DEVICE: ${DOCLING_DEVICE:-cpu}
+    ports:
+      - "${DOCLING_SERVE_PORT:-5001}:5001"
+
+  paddleocr:
+    profiles: ["paddleocr"]
+    build:
+      context: ./services/paddleocr
+      args:
+        PADDLEPADDLE_VERSION: ${PADDLEPADDLE_VERSION:-3.2.0}
+    restart: unless-stopped
+    command: ["paddlex", "--serve", "--pipeline", "${PADDLEOCR_PIPELINE:-OCR}", "--host", "0.0.0.0", "--port", "8080", "--device", "${PADDLEOCR_DEVICE:-cpu}"]
+    ports:
+      - "${PADDLEOCR_PORT:-8080}:8080"
+

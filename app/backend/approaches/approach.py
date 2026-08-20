@@ -445,6 +445,7 @@ class Approach(ABC):
         response_token_limit: int,
         should_stream: bool = False,
         tools: Optional[list[ChatCompletionToolParam]] = None,
+        tool_choice: Optional[str] = None,
         temperature: Optional[float] = None,
         n: Optional[int] = None,
         reasoning_effort: Optional[ChatCompletionReasoningEffort] = None,
@@ -495,6 +496,8 @@ class Approach(ABC):
 
         if tools and overrides.get("_llm_supports_tools", True):
             params["tools"] = tools
+            if tool_choice:
+                params["tool_choice"] = tool_choice
 
         params["seed"] = overrides.get("seed")
         params["n"] = n if n is not None else 1

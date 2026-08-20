@@ -136,7 +136,10 @@ async def test_app_user_upload_processors(monkeypatch, minimal_env):
     async with quart_app.test_app():
         ingester = quart_app.config[app.CONFIG_INGESTER]
         assert ingester is not None
-        assert len(ingester.file_processors.keys()) == 6
+        # Managed processing profiles can route office/image formats to a
+        # local Docling service even when Azure Document Intelligence is off.
+        assert len(ingester.file_processors.keys()) == 15
+        assert {".pdf", ".docx", ".png"}.issubset(ingester.file_processors)
 
 
 @pytest.mark.asyncio
