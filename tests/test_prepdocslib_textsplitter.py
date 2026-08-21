@@ -31,6 +31,31 @@ def test_sentencetextsplitter_split_small_pages():
     assert split_pages[0].text == "Not a large page"
 
 
+def test_sentencetextsplitter_propagates_only_safe_processing_metadata():
+    splitter = SentenceTextSplitter()
+    page = Page(
+        page_num=2,
+        offset=0,
+        text="Recognized text",
+        metadata={
+            "provider": "Internal OCR",
+            "profile": "Invoices",
+            "confidence": 0.91,
+            "tables": [{"raw": "must not be indexed"}],
+            "provider_response": "must not be indexed",
+        },
+    )
+
+    split_pages = list(splitter.split_pages([page]))
+
+    assert split_pages[0].page_num == 2
+    assert split_pages[0].metadata == {
+        "provider": "Internal OCR",
+        "profile": "Invoices",
+        "confidence": 0.91,
+    }
+
+
 @pytest.mark.asyncio
 @pytest.mark.data_integration
 async def test_sentencetextsplitter_list_parse_and_split(tmp_path, snapshot):

@@ -95,14 +95,16 @@ class SentenceTextSplitter(TextSplitter):
         self.max_tokens_per_section = max_tokens_per_section
         self.section_overlap = int(self.max_section_length * DEFAULT_OVERLAP_PERCENT / 100)
 
-    def split_page_by_max_tokens(self, page_num: int, text: str) -> Generator[SplitPage, None, None]:
+    def split_page_by_max_tokens(
+        self, page_num: int, text: str, metadata: dict | None = None
+    ) -> Generator[SplitPage, None, None]:
         """
         Recursively splits page by maximum number of tokens to better handle languages with higher token/word ratios.
         """
         tokens = bpe.encode(text)
         if len(tokens) <= self.max_tokens_per_section:
             # Section is already within max tokens, return
-            yield SplitPage(page_num=page_num, text=text)
+            yield SplitPage(page_num=page_num, text=text, metadata=metadata)
         else:
             # Start from the center and try and find the closest sentence ending by spiralling outward.
             # IF we get to the outer thirds, then just split in half with a 5% overlap
@@ -130,16 +132,20 @@ class SentenceTextSplitter(TextSplitter):
                 overlap = int(len(text) * (DEFAULT_OVERLAP_PERCENT / 100))
                 first_half = text[: middle + overlap]
                 second_half = text[middle - overlap :]
-            yield from self.split_page_by_max_tokens(page_num, first_half)
-            yield from self.split_page_by_max_tokens(page_num, second_half)
+            yield from self.split_page_by_max_tokens(page_num, first_half, metadata)
+            yield from self.split_page_by_max_tokens(page_num, second_half, metadata)
 
     def split_pages(self, pages: list[Page]) -> Generator[SplitPage, None, None]:
         def find_page(offset):
             num_pages = len(pages)
             for i in range(num_pages - 1):
                 if offset >= pages[i].offset and offset < pages[i + 1].offset:
-                    return pages[i].page_num
-            return pages[num_pages - 1].page_num
+                    return pages[i]
+            return pages[num_pages - 1]
+
+        def split_at(offset: int, text: str) -> Generator[SplitPage, None, None]:
+            page = find_page(offset)
+            yield from self.split_page_by_max_tokens(page.page_num, text, page.metadata)
 
         all_text = "".join(page.text for page in pages)
         if len(all_text.strip()) == 0:
@@ -147,7 +153,7 @@ class SentenceTextSplitter(TextSplitter):
 
         length = len(all_text)
         if length <= self.max_section_length:
-            yield from self.split_page_by_max_tokens(page_num=find_page(0), text=all_text)
+            yield from split_at(0, all_text)
             return
 
         start = 0
@@ -189,7 +195,7 @@ class SentenceTextSplitter(TextSplitter):
                 start += 1
 
             section_text = all_text[start:end]
-            yield from self.split_page_by_max_tokens(page_num=find_page(start), text=section_text)
+            yield from split_at(start, section_text)
 
             last_figure_start = section_text.rfind("<figure")
             if last_figure_start > 2 * self.sentence_search_limit and last_figure_start > section_text.rfind(
@@ -198,13 +204,13 @@ class SentenceTextSplitter(TextSplitter):
                 # If the section ends with an unclosed figure, we need to start the next section with the figure.
                 start = min(end - self.section_overlap, start + last_figure_start)
                 logger.info(
-                    f"Section ends with unclosed figure, starting next section with the figure at page {find_page(start)} offset {start} figure start {last_figure_start}"
+                    f"Section ends with unclosed figure, starting next section with the figure at page {find_page(start).page_num} offset {start} figure start {last_figure_start}"
                 )
             else:
                 start = end - self.section_overlap
 
         if start + self.section_overlap < end:
-            yield from self.split_page_by_max_tokens(page_num=find_page(start), text=all_text[start:end])
+            yield from split_at(start, all_text[start:end])
 
 
 class SimpleTextSplitter(TextSplitter):
@@ -223,10 +229,18 @@ class SimpleTextSplitter(TextSplitter):
 
         length = len(all_text)
         if length <= self.max_object_length:
-            yield SplitPage(page_num=0, text=all_text)
+            yield SplitPage(page_num=0, text=all_text, metadata=pages[0].metadata)
             return
 
         # its too big, so we need to split it
         for i in range(0, length, self.max_object_length):
-            yield SplitPage(page_num=i // self.max_object_length, text=all_text[i : i + self.max_object_length])
+            source_page = next(
+                (page for page in reversed(pages) if page.offset <= i),
+                pages[0],
+            )
+            yield SplitPage(
+                page_num=i // self.max_object_length,
+                text=all_text[i : i + self.max_object_length],
+                metadata=source_page.metadata,
+            )
         return

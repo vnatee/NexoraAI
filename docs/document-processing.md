@@ -96,5 +96,23 @@ versions that reject JSON output are retried with a separate Markdown request;
 that compatibility result is treated as one logical page and should be upgraded
 for page-accurate citations.
 
+## Indexed processing metadata
+
+Normalized pages carry a small provider-neutral metadata contract into chunks.
+The Azure AI Search adapter currently stores only these allowlisted fields:
+
+- `processingProvider`: the managed provider name, or the system fallback name
+- `processingProfile`: the managed profile name, when a profile selected it
+- `processingConfidence`: a finite numeric page confidence when the provider
+  returns one
+
+Provider responses, table structures, configuration, credentials, and other
+arbitrary metadata are not copied into search documents. Existing Azure Search
+indexes receive the three optional fields additively before the first upload in
+each application process. Existing indexed documents remain valid but do not
+gain metadata automatically; upload/re-index them when metadata is required.
+The normalized chunk keys remain independent of Azure field names so a future
+local vector adapter can map the same contract into its own payload schema.
+
 See `docs/ocr-provider-contract.md` for Generic API, PaddleOCR and Google
 Document AI configuration details.

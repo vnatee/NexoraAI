@@ -169,17 +169,22 @@ def test_router_preserves_existing_fallback(monkeypatch):
     azure = StubParser("azure")
     router = documentprocessing.ManagedDocumentParser({".pdf": azure, "default": azure, "azure_document_intelligence": azure, "local_text": StubParser("local")})
     monkeypatch.setattr(documentprocessing, "get_default_profile", lambda extension: None)
-    assert router.select_parser(NamedBytesIO(b"pdf")) is azure
+    parser = router.select_parser(NamedBytesIO(b"pdf"))
+    assert isinstance(parser, documentprocessing.ProcessingMetadataParser)
+    assert parser.parser is azure
+    assert parser.processing_metadata == {"provider": "Local Text", "profile": ""}
 
 
 def test_router_selects_docling_profile(monkeypatch):
     router = documentprocessing.ManagedDocumentParser({".pdf": StubParser("azure"), "default": None, "local_text": StubParser("local")})
-    monkeypatch.setattr(documentprocessing, "get_default_profile", lambda extension: {"provider_id": "docling-1", "languages": ["th", "en"], "extract_tables": False})
-    monkeypatch.setattr(documentprocessing, "get_provider", lambda provider_id: {"provider_type": "docling", "enabled": True, "config": {"execution_mode": "service", "endpoint": "http://docling:5001"}})
+    monkeypatch.setattr(documentprocessing, "get_default_profile", lambda extension: {"name": "Scanned PDFs", "provider_id": "docling-1", "languages": ["th", "en"], "extract_tables": False})
+    monkeypatch.setattr(documentprocessing, "get_provider", lambda provider_id: {"name": "Local Docling", "provider_type": "docling", "enabled": True, "config": {"execution_mode": "service", "endpoint": "http://docling:5001"}})
     parser = router.select_parser(NamedBytesIO(b"pdf"))
-    assert isinstance(parser, documentprocessing.DoclingParser)
-    assert parser.config["languages"] == ["th", "en"]
-    assert parser.config["extract_tables"] is False
+    assert isinstance(parser, documentprocessing.ProcessingMetadataParser)
+    assert isinstance(parser.parser, documentprocessing.DoclingParser)
+    assert parser.parser.config["languages"] == ["th", "en"]
+    assert parser.parser.config["extract_tables"] is False
+    assert parser.processing_metadata == {"provider": "Local Docling", "profile": "Scanned PDFs"}
 
 
 def test_router_uses_routing_context(monkeypatch):
@@ -189,8 +194,9 @@ def test_router_uses_routing_context(monkeypatch):
         "resolve_processing_route",
         lambda **kwargs: {
             "status": "matched",
-            "profile": {"languages": ["en"], "extract_tables": True},
+            "profile": {"name": "Team PDFs", "languages": ["en"], "extract_tables": True},
             "provider": {
+                "name": "Docling Serve",
                 "provider_type": "docling",
                 "config": {"execution_mode": "service", "endpoint": "http://docling:5001"},
             },
@@ -200,7 +206,8 @@ def test_router_uses_routing_context(monkeypatch):
         NamedBytesIO(b"pdf"),
         routing_context={"scope": "team", "team_id": "finance", "explicit_profile_id": ""},
     )
-    assert isinstance(parser, documentprocessing.DoclingParser)
+    assert isinstance(parser, documentprocessing.ProcessingMetadataParser)
+    assert isinstance(parser.parser, documentprocessing.DoclingParser)
 
 
 def test_docling_provider_requires_valid_service_endpoint():
@@ -263,7 +270,20 @@ def test_router_selects_remote_ocr_adapters(monkeypatch, provider_type, parser_t
         "get_provider",
         lambda provider_id: {"name": "OCR", "provider_type": provider_type, "enabled": True, "config": {}},
     )
-    assert isinstance(router.select_parser(NamedBytesIO(b"pdf")), parser_type)
+    parser = router.select_parser(NamedBytesIO(b"pdf"))
+    assert isinstance(parser, documentprocessing.ProcessingMetadataParser)
+    assert isinstance(parser.parser, parser_type)
+
+
+@pytest.mark.asyncio
+async def test_processing_metadata_parser_attaches_safe_profile_context():
+    parser = documentprocessing.ProcessingMetadataParser(
+        StubParser("content"), provider="Internal OCR", profile="Invoices"
+    )
+
+    pages = [page async for page in parser.parse(NamedBytesIO(b"pdf"))]
+
+    assert pages[0].metadata == {"provider": "Internal OCR", "profile": "Invoices"}
 
 
 def test_generic_response_path_and_page_metadata():

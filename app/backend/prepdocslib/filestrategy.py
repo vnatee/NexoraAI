@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -43,7 +44,8 @@ async def parse_file(
         if hasattr(processor.parser, "select_parser")
         else processor.parser
     )
-    is_docintel = selected_parser.__class__.__name__ == "DocumentAnalysisParser"
+    underlying_parser = getattr(selected_parser, "parser", selected_parser)
+    is_docintel = underlying_parser.__class__.__name__ == "DocumentAnalysisParser"
     if status_callback:
         await status_callback("extracting")
     pages = [page async for page in selected_parser.parse(content=file.content)]
@@ -177,6 +179,17 @@ class UploadUserFileStrategy:
             search_images=False,
         )
         self.search_field_name_embedding = search_field_name_embedding
+        self._search_index_ready = False
+        self._search_index_lock = asyncio.Lock()
+
+    async def _ensure_search_index(self) -> None:
+        if self._search_index_ready:
+            return
+        async with self._search_index_lock:
+            if self._search_index_ready:
+                return
+            await self.search_manager.create_index()
+            self._search_index_ready = True
 
     async def add_file(
         self,
@@ -186,6 +199,7 @@ class UploadUserFileStrategy:
     ):
         if self.image_embeddings:
             logging.warning("Image embeddings are not currently supported for the user upload feature")
+        await self._ensure_search_index()
         parsed_file = await parse_file(
             file,
             self.file_processors,
@@ -208,6 +222,7 @@ class UploadUserFileStrategy:
     ):
         if self.image_embeddings:
             logging.warning("Image embeddings are not currently supported for the user upload feature")
+        await self._ensure_search_index()
         parsed_file = await parse_file(
             file,
             self.file_processors,

@@ -1,3 +1,4 @@
+import asyncio
 from copy import deepcopy
 from io import BytesIO
 
@@ -184,6 +185,12 @@ class StubSplitter:
 
 
 class StubSearchManager:
+    def __init__(self):
+        self.setup_calls = 0
+
+    async def create_index(self):
+        self.setup_calls += 1
+
     async def update_content(self, sections, url=None):
         assert sections
 
@@ -196,6 +203,8 @@ async def test_upload_strategy_reports_pipeline_stages_in_order():
     strategy.image_embeddings = None
     strategy.file_processors = {".pdf": FileProcessor(parser=StubParser(), splitter=StubSplitter())}
     strategy.search_manager = StubSearchManager()
+    strategy._search_index_ready = False
+    strategy._search_index_lock = asyncio.Lock()
     stages = []
 
     async def status_callback(status):
@@ -203,6 +212,7 @@ async def test_upload_strategy_reports_pipeline_stages_in_order():
 
     await strategy.add_file(File(stream, acls={"oids": ["owner-1"]}), status_callback=status_callback)
     assert stages == ["extracting", "chunking", "embedding"]
+    assert strategy.search_manager.setup_calls == 1
 
 
 @pytest.mark.asyncio
