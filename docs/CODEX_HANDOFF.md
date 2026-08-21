@@ -10,16 +10,16 @@ logs, credentials, attachments, or repetitive conversational text.
 
 - Workspace: `/workspaces/NexoraAI`
 - Branch: `feature/agent-platform-foundation`
-- Latest checkpoint: `feat: checkpoint OCR routing and provider tooling`
-  (the commit containing this handoff state; use `git log -1` for its hash).
+- Latest pushed checkpoint: `05b791a` / `feat: add persistent document
+  ingestion jobs` on `origin/feature/agent-platform-foundation`.
 - Azure baseline: `8ee1e8a` / `origin/Release-2.2.0`
-- This checkpoint contains OCR Routing Rules/upload overrides, provider
-  capability testing, MCP discovered-tool details, and the pre-existing
-  devcontainer-name edit. The product owner explicitly requested the checkpoint
-  before proceeding to the next slice.
-- Current uncommitted work implements persistent ingestion jobs, upload status
-  UI, Retry, worker leases, and restart recovery. Preserve it until the live
-  Personal/Team/Global smoke tests below are accepted.
+- This checkpoint includes OCR routing/provider tooling plus persistent
+  ingestion jobs, upload status UI, Retry, worker leases, restart recovery, and
+  Indexed Time file details.
+- The current slice implements provider-neutral page-aware Docling
+  normalization and focused tests. The product owner accepted the live
+  multi-page Docling citation smoke test on 2026-08-21; this slice is ready for
+  checkpointing.
 - Automated validation passed at checkpoint time. The live OCR routing checks
   in the manual smoke-test section remain deployment acceptance work; do not
   treat the checkpoint itself as evidence that those external services passed.
@@ -157,6 +157,12 @@ See `docs/mail-integrations.md` and `docs/messaging-integrations.md`.
 - Normalized parser pages can carry text, table, confidence, and provider
   metadata. RAG currently indexes page number and text; optional metadata is not
   yet persisted in the search index.
+- Docling Serve and embedded Docling normalize structured provenance into real
+  document pages before chunking. Tables remain on their source page, and the
+  existing `SplitPage.page_num` contract produces page-aware PDF citations
+  without binding the parser to Azure AI Search. Serve requests JSON first and
+  sends a separate Markdown request when that format is rejected or does not
+  contain recognized pages; Markdown still ingests as one logical page.
 - Optional Compose services and a PaddleOCR CPU Dockerfile are present.
 - Docling URL normalization accepts a base URL or a URL ending in `/health`,
   `/ready`, `/docs`, or `/ui`. Runtime always derives the service base before
@@ -167,7 +173,8 @@ See `docs/mail-integrations.md` and `docs/messaging-integrations.md`.
 
 Important validation boundary:
 
-- Docling health/connectivity was manually verified.
+- Docling health/connectivity and page-aware citation against a real multi-page
+  document were manually verified by the product owner.
 - PaddleOCR Compose schema and adapter response parsing were tested, but the
   large Paddle image/model was not fully built and inference-smoke-tested in
   this session.
@@ -258,12 +265,8 @@ Example target rules:
 
 ### Near-term document work
 
-1. Manually smoke-test persistent ingestion jobs across Personal/Team/Global,
-   including restart lease recovery and Retry after a controlled provider error.
-2. Page-aware Docling output so citations use real page numbers rather than one
-   logical page.
-3. Persist/index selected safe OCR metadata such as provider and confidence.
-4. Chat image attachments: upload/preview/remove, file limits, Agent image
+1. Persist/index selected safe OCR metadata such as provider and confidence.
+2. Chat image attachments: upload/preview/remove, file limits, Agent image
    capability, OCR-only versus multimodal vision, and safe prompt composition.
 
 ### Platform roadmap
@@ -356,7 +359,7 @@ Do not put real credentials in this file or examples.
 Latest service-free backend regression on 2026-08-20:
 
 ```text
-474 passed, 1 deselected
+480 passed, 1 deselected
 ```
 
 Command:
@@ -374,7 +377,7 @@ Latest focused OCR/upload/profile-idempotency validation:
 Latest focused ingestion-job and document-processing validation:
 
 ```text
-39 passed
+45 passed
 ```
 
 Latest focused LLM provider/model-capability validation:
@@ -434,11 +437,10 @@ Known non-blocking warnings:
 ## Suggested Codex CLI continuation prompt
 
 ```text
-Read AGENTS.md and docs/CODEX_HANDOFF.md completely. Preserve the dirty working
-tree and do not commit or discard unrelated changes. Manually smoke-test
-persistent ingestion jobs across Personal, Team, and Global uploads: confirm
-Uploaded/Extracting/Chunking/Embedding/Indexed, provider/profile/rule metadata,
-ACL-filtered retrieval, controlled failure and Retry, refresh persistence, and
-restart lease recovery. Fix concrete defects with focused tests before starting
-page-aware Docling citation work.
+Read AGENTS.md and docs/CODEX_HANDOFF.md completely. Preserve the working tree
+and do not discard unrelated changes. Continue with safe provider-neutral OCR
+metadata indexing: carry selected provider/profile/confidence metadata from
+normalized pages into chunks and search documents without persisting raw
+provider responses or credentials. Keep Azure behavior working and design the
+metadata contract so a future local vector adapter can reuse it.
 ```

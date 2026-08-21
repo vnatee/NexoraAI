@@ -87,9 +87,14 @@ backend environment size.
 4. Add OCR language codes such as `th,en`, then mark the profile as default.
 5. Upload a scanned test document and verify that chunks are searchable.
 
-The current Docling adapter emits converted Markdown as one logical page. RAG
-content is searchable, but exact page-number citations remain an Azure parser
-advantage until page-aware Docling output is added.
+The Docling adapter first requests structured DoclingDocument JSON. Structured
+elements are grouped by their provider-neutral `prov.page_no` value, tables are
+rendered as Markdown on their source page, and the normalized pages flow through
+the existing chunk/citation contract. PDF citations therefore use the original
+page number without coupling extraction to Azure AI Search. Docling Serve
+versions that reject JSON output are retried with a separate Markdown request;
+that compatibility result is treated as one logical page and should be upgraded
+for page-accurate citations.
 
 See `docs/ocr-provider-contract.md` for Generic API, PaddleOCR and Google
 Document AI configuration details.
