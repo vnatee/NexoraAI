@@ -76,15 +76,21 @@ scanning integration point, prompt-injection boundaries for extracted content,
 TTL deletion, and no public attachment URLs.
 
 Current delivery state (2026-08-21): the initial request-local image portion of
-milestone 1 is implemented in the dirty working tree for the Legacy vision
+milestone 1 is checkpointed for the Legacy vision
 runtime, including previews/removal, client/server limits, signature checks,
 an explicit composer Vision On/Off control with runtime-aware disabled states,
 per-model Portal configuration and live image-input capability probes,
 controlled capability errors, citation separation, and diagnostic redaction.
 Managed Legacy models no longer require the Azure Knowledge Vision environment
-feature merely to process a user attachment. Documents, private storage/TTL,
-temporary RAG, LangGraph images, and OCR-only fallback remain pending as
-described above.
+feature merely to process a user attachment. Milestone 2 has started with a
+provider-neutral async `AttachmentStore` contract and a private local/container
+reference adapter covering owner/conversation ACLs, filename normalization,
+atomic writes, integrity checks, TTL, and fail-closed cleanup. Chat/Ask now send
+a stable conversation UUID independently from history, and an ACL/expiry-scoped
+Mongo-compatible repository stores bounded metadata without exposing storage
+keys or owner IDs. Document bytes are not route-integrated yet. The private
+Azure adapter/factory, coordinated cleanup, documents, temporary RAG, LangGraph
+images, and OCR-only fallback remain pending as described above.
 
 ## Proposed — AI guardrails
 

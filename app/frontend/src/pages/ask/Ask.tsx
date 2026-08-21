@@ -107,6 +107,7 @@ export function Component(): JSX.Element {
     const { instance } = useMsal();
 
     const lastQuestionRef = useRef<string>("");
+    const conversationIdRef = useRef<string>(crypto.randomUUID());
 
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [error, setError] = useState<unknown>();
@@ -342,6 +343,7 @@ export function Component(): JSX.Element {
                     }
                 ],
                 ...(attachments.length ? { attachments } : {}),
+                conversation_id: conversationIdRef.current,
                 context: {
                     overrides: {
                         prompt_template: promptString.length === 0 ? undefined : promptString,
