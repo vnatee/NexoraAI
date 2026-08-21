@@ -587,6 +587,19 @@ class DoclingParser(Parser):
                 os.unlink(temporary_path)
 
 
+class ProcessingMetadataParser(Parser):
+    """Attach only selected managed-profile metadata to normalized pages."""
+
+    def __init__(self, parser: Parser, *, provider: str = "", profile: str = ""):
+        self.parser = parser
+        self.processing_metadata = {"provider": provider, "profile": profile}
+
+    async def parse(self, content: IO) -> AsyncGenerator[Page, None]:
+        async for page in self.parser.parse(content):
+            page.metadata = {**page.metadata, **self.processing_metadata}
+            yield page
+
+
 class ManagedDocumentParser(Parser):
     """Selects a managed profile per file type, preserving the existing parser as fallback."""
 
@@ -595,28 +608,31 @@ class ManagedDocumentParser(Parser):
 
     def _profile_parser(self, profile: dict[str, Any], provider: dict[str, Any], extension: str) -> Parser:
         provider_type = provider.get("provider_type")
+        parser: Parser | None = None
         if provider_type == "docling":
             config = {**(provider.get("config") or {})}
             config["extract_tables"] = profile.get("extract_tables", True)
             config["languages"] = profile.get("languages") or []
-            return DoclingParser(config)
-        if provider_type == "generic_ocr_api":
-            return GenericOCRAPIParser(provider)
-        if provider_type == "paddleocr":
-            return PaddleOCRAPIParser(provider)
-        if provider_type == "google_document_ai":
-            return GoogleDocumentAIParser(provider)
-        if provider_type == "local_text":
+            parser = DoclingParser(config)
+        elif provider_type == "generic_ocr_api":
+            parser = GenericOCRAPIParser(provider)
+        elif provider_type == "paddleocr":
+            parser = PaddleOCRAPIParser(provider)
+        elif provider_type == "google_document_ai":
+            parser = GoogleDocumentAIParser(provider)
+        elif provider_type == "local_text":
             if extension != ".pdf":
                 raise ValueError("Local text extraction currently supports PDF files only")
             parser = self.fallback_parsers.get("local_text")
-            if parser:
-                return parser
-        if provider_type == "azure_document_intelligence":
+        elif provider_type == "azure_document_intelligence":
             parser = self.fallback_parsers.get("azure_document_intelligence")
-            if parser:
-                return parser
-        raise ValueError(f"No parser is available for provider type {provider_type}")
+        if parser is None:
+            raise ValueError(f"No parser is available for provider type {provider_type}")
+        return ProcessingMetadataParser(
+            parser,
+            provider=str(provider.get("name") or provider_type or ""),
+            profile=str(profile.get("name") or ""),
+        )
 
     def select_parser(self, content: IO, routing_context: dict[str, Any] | None = None) -> Parser:
         extension = Path(getattr(content, "name", "")).suffix.lower()
@@ -652,7 +668,12 @@ class ManagedDocumentParser(Parser):
         )
         if parser is None:
             raise ValueError(f"No document processor is available for {extension or 'this file type'}")
-        return parser
+        provider_name = (
+            "Azure Document Intelligence"
+            if parser.__class__.__name__ == "DocumentAnalysisParser"
+            else "Local Text"
+        )
+        return ProcessingMetadataParser(parser, provider=provider_name)
 
     async def parse(
         self, content: IO, routing_context: dict[str, Any] | None = None

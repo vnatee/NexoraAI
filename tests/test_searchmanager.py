@@ -55,7 +55,12 @@ async def test_create_index_doesnt_exist_yet(monkeypatch, search_info):
     await manager.create_index()
     assert len(indexes) == 1, "It should have created one index"
     assert indexes[0].name == "test"
-    assert len(indexes[0].fields) == 6
+    assert len(indexes[0].fields) == 9
+    assert {field.name for field in indexes[0].fields} >= {
+        "processingProvider",
+        "processingProfile",
+        "processingConfidence",
+    }
 
 
 @pytest.mark.asyncio
@@ -80,7 +85,7 @@ async def test_create_index_using_int_vectorization(monkeypatch, search_info):
     await manager.create_index()
     assert len(indexes) == 1, "It should have created one index"
     assert indexes[0].name == "test"
-    assert len(indexes[0].fields) == 7
+    assert len(indexes[0].fields) == 10
 
 
 @pytest.mark.asyncio
@@ -117,7 +122,13 @@ async def test_create_index_does_exist(monkeypatch, search_info):
     manager = SearchManager(search_info)
     await manager.create_index()
     assert len(created_indexes) == 0, "It should not have created a new index"
-    assert len(updated_indexes) == 0, "It should not have updated the existing index"
+    assert len(updated_indexes) == 1, "It should add processing metadata fields"
+    assert {field.name for field in updated_indexes[0].fields} == {
+        "storageUrl",
+        "processingProvider",
+        "processingProfile",
+        "processingConfidence",
+    }
 
 
 @pytest.mark.asyncio
@@ -149,8 +160,13 @@ async def test_create_index_add_field(monkeypatch, search_info):
     await manager.create_index()
     assert len(created_indexes) == 0, "It should not have created a new index"
     assert len(updated_indexes) == 1, "It should have updated the existing index"
-    assert len(updated_indexes[0].fields) == 1
-    assert updated_indexes[0].fields[0].name == "storageUrl"
+    assert len(updated_indexes[0].fields) == 4
+    assert {field.name for field in updated_indexes[0].fields} == {
+        "storageUrl",
+        "processingProvider",
+        "processingProfile",
+        "processingConfidence",
+    }
 
 
 @pytest.mark.asyncio
@@ -175,7 +191,7 @@ async def test_create_index_acls(monkeypatch, search_info):
     await manager.create_index()
     assert len(indexes) == 1, "It should have created one index"
     assert indexes[0].name == "test"
-    assert len(indexes[0].fields) == 8
+    assert len(indexes[0].fields) == 11
 
 
 @pytest.mark.asyncio
@@ -187,6 +203,10 @@ async def test_update_content(monkeypatch, search_info):
         assert documents[0]["category"] == "test"
         assert documents[0]["sourcepage"] == "foo.pdf#page=1"
         assert documents[0]["sourcefile"] == "foo.pdf"
+        assert documents[0]["processingProvider"] == "Internal OCR"
+        assert documents[0]["processingProfile"] == "Invoices"
+        assert documents[0]["processingConfidence"] == 0.91
+        assert "tables" not in documents[0]
 
     monkeypatch.setattr(SearchClient, "upload_documents", mock_upload_documents)
 
@@ -202,12 +222,53 @@ async def test_update_content(monkeypatch, search_info):
                 split_page=SplitPage(
                     page_num=0,
                     text="test content",
+                    metadata={
+                        "provider": "Internal OCR",
+                        "profile": "Invoices",
+                        "confidence": 0.91,
+                        "tables": ["raw table"],
+                    },
                 ),
                 content=file,
                 category="test",
             )
         ]
     )
+
+
+@pytest.mark.asyncio
+async def test_update_global_content_includes_safe_processing_metadata(monkeypatch, search_info):
+    uploaded_documents = []
+
+    async def mock_upload_documents(self, documents):
+        uploaded_documents.extend(documents)
+
+    monkeypatch.setattr(SearchClient, "upload_documents", mock_upload_documents)
+    manager = SearchManager(search_info)
+    test_io = io.BytesIO(b"test content")
+    test_io.name = "report.pdf"
+    file = File(test_io, acls={"oids": [], "groups": []})
+
+    await manager.update_global_content(
+        [
+            Section(
+                split_page=SplitPage(
+                    page_num=1,
+                    text="recognized content",
+                    metadata={"provider": "Docling", "profile": "PDF OCR", "confidence": 0.88},
+                ),
+                content=file,
+            )
+        ],
+        folder="finance/",
+    )
+
+    assert uploaded_documents[0]["sourcefile"] == "finance/report.pdf"
+    assert uploaded_documents[0]["sourcepage"] == "report.pdf#page=2"
+    assert uploaded_documents[0]["processingProvider"] == "Docling"
+    assert uploaded_documents[0]["processingProfile"] == "PDF OCR"
+    assert uploaded_documents[0]["processingConfidence"] == 0.88
+    assert uploaded_documents[0]["groups"] == []
 
 
 @pytest.mark.asyncio

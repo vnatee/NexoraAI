@@ -10,16 +10,15 @@ logs, credentials, attachments, or repetitive conversational text.
 
 - Workspace: `/workspaces/NexoraAI`
 - Branch: `feature/agent-platform-foundation`
-- Latest pushed checkpoint: `05b791a` / `feat: add persistent document
-  ingestion jobs` on `origin/feature/agent-platform-foundation`.
+- Latest local checkpoint: `7488ff4` / `feat: preserve Docling page citations`.
+  The branch is one commit ahead of `origin/feature/agent-platform-foundation`.
 - Azure baseline: `8ee1e8a` / `origin/Release-2.2.0`
 - This checkpoint includes OCR routing/provider tooling plus persistent
   ingestion jobs, upload status UI, Retry, worker leases, restart recovery, and
   Indexed Time file details.
-- The current slice implements provider-neutral page-aware Docling
-  normalization and focused tests. The product owner accepted the live
-  multi-page Docling citation smoke test on 2026-08-21; this slice is ready for
-  checkpointing.
+- The current slice implements safe provider-neutral OCR metadata propagation
+  and Azure AI Search field mapping. The product owner accepted the live
+  metadata smoke test on 2026-08-21; this slice is ready for checkpointing.
 - Automated validation passed at checkpoint time. The live OCR routing checks
   in the manual smoke-test section remain deployment acceptance work; do not
   treat the checkpoint itself as evidence that those external services passed.
@@ -163,6 +162,12 @@ See `docs/mail-integrations.md` and `docs/messaging-integrations.md`.
   without binding the parser to Azure AI Search. Serve requests JSON first and
   sends a separate Markdown request when that format is rejected or does not
   contain recognized pages; Markdown still ingests as one logical page.
+- Normalized chunks now allowlist provider name, profile name, and finite
+  numeric confidence. Azure AI Search maps these to optional filterable
+  `processingProvider`, `processingProfile`, and `processingConfidence` fields.
+  Raw provider responses, tables, config, credentials, and arbitrary metadata
+  are not indexed. Existing indexes receive the fields lazily and safely before
+  the first upload; old documents need re-indexing to populate them.
 - Optional Compose services and a PaddleOCR CPU Dockerfile are present.
 - Docling URL normalization accepts a base URL or a URL ending in `/health`,
   `/ready`, `/docs`, or `/ui`. Runtime always derives the service base before
@@ -175,6 +180,8 @@ Important validation boundary:
 
 - Docling health/connectivity and page-aware citation against a real multi-page
   document were manually verified by the product owner.
+- Provider/profile/confidence metadata on a newly indexed document was manually
+  verified in Azure AI Search by the product owner.
 - PaddleOCR Compose schema and adapter response parsing were tested, but the
   large Paddle image/model was not fully built and inference-smoke-tested in
   this session.
@@ -265,8 +272,7 @@ Example target rules:
 
 ### Near-term document work
 
-1. Persist/index selected safe OCR metadata such as provider and confidence.
-2. Chat image attachments: upload/preview/remove, file limits, Agent image
+1. Chat image attachments: upload/preview/remove, file limits, Agent image
    capability, OCR-only versus multimodal vision, and safe prompt composition.
 
 ### Platform roadmap
@@ -356,10 +362,10 @@ Do not put real credentials in this file or examples.
 
 ## Validation status
 
-Latest service-free backend regression on 2026-08-20:
+Latest service-free backend regression on 2026-08-21:
 
 ```text
-480 passed, 1 deselected
+483 passed, 1 deselected
 ```
 
 Command:
@@ -374,10 +380,10 @@ Latest focused OCR/upload/profile-idempotency validation:
 62 passed
 ```
 
-Latest focused ingestion-job and document-processing validation:
+Latest focused ingestion/document-processing, splitter, and search-metadata validation:
 
 ```text
-45 passed
+79 passed, 1 deselected
 ```
 
 Latest focused LLM provider/model-capability validation:
@@ -438,9 +444,10 @@ Known non-blocking warnings:
 
 ```text
 Read AGENTS.md and docs/CODEX_HANDOFF.md completely. Preserve the working tree
-and do not discard unrelated changes. Continue with safe provider-neutral OCR
-metadata indexing: carry selected provider/profile/confidence metadata from
-normalized pages into chunks and search documents without persisting raw
-provider responses or credentials. Keep Azure behavior working and design the
-metadata contract so a future local vector adapter can reuse it.
+and do not discard unrelated changes. Start the Chat image attachments slice:
+inspect existing chat request/model capability contracts, then implement safe
+upload/preview/remove, size/type/count limits, per-Agent image capability,
+OCR-only versus multimodal handling, and safe provider-neutral prompt/request
+composition. Keep Legacy and LangGraph rollback behavior working and add focused
+tests before live smoke testing.
 ```

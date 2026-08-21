@@ -40,6 +40,26 @@ from .textsplitter import SplitPage
 logger = logging.getLogger("scripts")
 
 
+def processing_metadata_fields() -> list[SimpleField]:
+    return [
+        SimpleField(name="processingProvider", type=SearchFieldDataType.String, filterable=True, facetable=True),
+        SimpleField(name="processingProfile", type=SearchFieldDataType.String, filterable=True, facetable=True),
+        SimpleField(name="processingConfidence", type=SearchFieldDataType.Double, filterable=True, sortable=True),
+    ]
+
+
+def processing_metadata_document(split_page: SplitPage) -> dict[str, str | float]:
+    metadata = split_page.metadata
+    fields: dict[str, str | float] = {}
+    if metadata.get("provider"):
+        fields["processingProvider"] = str(metadata["provider"])
+    if metadata.get("profile"):
+        fields["processingProfile"] = str(metadata["profile"])
+    if "confidence" in metadata:
+        fields["processingConfidence"] = float(metadata["confidence"])
+    return fields
+
+
 class Section:
     """
     A section of a page that is stored in a search service. These sections are used as context by Azure OpenAI service
@@ -223,6 +243,7 @@ class SearchManager:
                         filterable=True,
                         facetable=False,
                     ),
+                    *processing_metadata_fields(),
                 ]
                 if self.use_acls:
                     fields.append(
@@ -298,16 +319,19 @@ class SearchManager:
             else:
                 logger.info("Search index %s already exists", self.search_info.index_name)
                 existing_index = await search_index_client.get_index(self.search_info.index_name)
-                if not any(field.name == "storageUrl" for field in existing_index.fields):
-                    logger.info("Adding storageUrl field to index %s", self.search_info.index_name)
-                    existing_index.fields.append(
-                        SimpleField(
-                            name="storageUrl",
-                            type="Edm.String",
-                            filterable=True,
-                            facetable=False,
-                        ),
+                additive_fields = [
+                    SimpleField(name="storageUrl", type="Edm.String", filterable=True, facetable=False),
+                    *processing_metadata_fields(),
+                ]
+                existing_field_names = {field.name for field in existing_index.fields}
+                missing_fields = [field for field in additive_fields if field.name not in existing_field_names]
+                if missing_fields:
+                    logger.info(
+                        "Adding fields %s to index %s",
+                        ", ".join(field.name for field in missing_fields),
+                        self.search_info.index_name,
                     )
+                    existing_index.fields.extend(missing_fields)
                     await search_index_client.create_or_update_index(existing_index)
 
                 if embedding_field and not any(
@@ -451,6 +475,7 @@ class SearchManager:
                             )
                         ),
                         "sourcefile": section.content.filename(),
+                        **processing_metadata_document(section.split_page),
                         **section.content.acls,
                     }
                     for section_index, section in enumerate(batch)
@@ -497,6 +522,7 @@ class SearchManager:
                             )
                         ),
                         "sourcefile": f"{folder}{section.content.filename()}",
+                        **processing_metadata_document(section.split_page),
                         **section.content.acls,
                     }
                     for section_index, section in enumerate(batch)

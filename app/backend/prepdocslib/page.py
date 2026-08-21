@@ -1,3 +1,29 @@
+import math
+from typing import Any
+
+
+def safe_processing_metadata(metadata: dict[str, Any] | None) -> dict[str, str | float]:
+    """Return the small provider-neutral metadata subset allowed in search chunks."""
+
+    if not metadata:
+        return {}
+    result: dict[str, str | float] = {}
+    for key in ("provider", "profile"):
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            result[key] = value[:256]
+    confidence = metadata.get("confidence")
+    if confidence is not None and not isinstance(confidence, bool):
+        try:
+            numeric_confidence = float(confidence)
+        except (TypeError, ValueError):
+            pass
+        else:
+            if math.isfinite(numeric_confidence):
+                result["confidence"] = numeric_confidence
+    return result
+
+
 class Page:
     """
     A single page from a document
@@ -24,6 +50,7 @@ class SplitPage:
         text (str): The text of the section
     """
 
-    def __init__(self, page_num: int, text: str):
+    def __init__(self, page_num: int, text: str, metadata: dict[str, Any] | None = None):
         self.page_num = page_num
         self.text = text
+        self.metadata = safe_processing_metadata(metadata)
