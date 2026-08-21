@@ -132,6 +132,7 @@ const Chat = () => {
     const [useGPT4V, setUseGPT4V] = useState<boolean>(false);
 
     const lastQuestionRef = useRef<string>("");
+    const conversationIdRef = useRef<string>(crypto.randomUUID());
     const chatMessageStreamEnd = useRef<HTMLDivElement | null>(null);
 
     const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -648,6 +649,7 @@ const Chat = () => {
             const request: ChatAppRequest = {
                 messages: [...messages, { content: question, role: "user" }],
                 ...(attachments.length ? { attachments } : {}),
+                conversation_id: conversationIdRef.current,
                 context: {
                     overrides: {
                         prompt_template: promptString.length === 0 ? undefined : promptString,
@@ -730,6 +732,7 @@ const Chat = () => {
 
     const clearChat = () => {
         lastQuestionRef.current = "";
+        conversationIdRef.current = crypto.randomUUID();
         error && setError(undefined);
         setActiveCitation(undefined);
         setActiveAnalysisPanelTab(undefined);
@@ -1015,6 +1018,11 @@ const Chat = () => {
 
     const loadHistoryItem = (item: any) => {
         const answersFromHistory = (item.answers ?? []) as [string, ChatAppResponse][];
+        const restoredSessionState = answersFromHistory.at(-1)?.[1]?.session_state;
+        conversationIdRef.current =
+            typeof restoredSessionState === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(restoredSessionState)
+                ? restoredSessionState
+                : crypto.randomUUID();
 
         // 1) อัปเดต state ให้แชทโหลดบทสนทนานี้
         setAnswers(answersFromHistory);
@@ -1731,6 +1739,12 @@ const Chat = () => {
                                                         if (answers.length === 0) return;
                                                         setAnswers(answers);
                                                         lastQuestionRef.current = answers[answers.length - 1][0];
+                                                        const restoredSessionState = answers.at(-1)?.[1]?.session_state;
+                                                        conversationIdRef.current =
+                                                            typeof restoredSessionState === "string" &&
+                                                            /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(restoredSessionState)
+                                                                ? restoredSessionState
+                                                                : crypto.randomUUID();
                                                     }}
                                                 />
                                             </div>

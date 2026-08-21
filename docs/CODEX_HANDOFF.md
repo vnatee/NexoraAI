@@ -10,21 +10,18 @@ logs, credentials, attachments, or repetitive conversational text.
 
 - Workspace: `/workspaces/NexoraAI`
 - Branch: `feature/agent-platform-foundation`
-- Latest local checkpoint: `b12d814` / `feat: index safe document processing
-  metadata`. The branch is two commits ahead of
-  `origin/feature/agent-platform-foundation`.
+- Previous checkpoint: `2d65a0e` / `feat: add vision chat attachments and math
+  rendering`. This handoff revision accompanies the next AttachmentStore/
+  conversation-metadata checkpoint; use `git log -1 --oneline` for its hash.
 - Azure baseline: `8ee1e8a` / `origin/Release-2.2.0`
-- This checkpoint includes OCR routing/provider tooling plus persistent
-  ingestion jobs, upload status UI, Retry, worker leases, restart recovery, and
-  Indexed Time file details.
-- The dirty tree contains the first approved Chat attachment slice: shared
-  Chat/Ask image paste/upload/drop UI, previews/removal, a canonical inline
-  request contract, server validation, and Legacy vision prompt integration.
-  Preserve it; it is not committed yet.
-- Automated validation for the dirty Chat slice passed. A live browser/model
-  attachment smoke test remains deployment acceptance work; do not treat unit
-  and mocked integration tests as evidence that a configured provider accepted
-  a real image.
+- This checkpoint includes the accepted request-local Chat/Ask image slice,
+  per-model Vision probing/configuration, sent-image thumbnails, stale Agent
+  profile reconciliation, and KaTeX math rendering in addition to the earlier
+  OCR/ingestion work.
+- The current checkpoint starts milestone 2 with a provider-neutral `AttachmentStore`
+  contract, private local/container filesystem reference adapter, stable Chat/
+  Ask conversation UUIDs, and an ACL-scoped Mongo-compatible metadata
+  repository. Document bytes are not connected to Chat routes yet.
 
 ## Product background and fixed decisions
 
@@ -321,9 +318,9 @@ after a reload. A non-vision Agent, unavailable
 vision configuration, or LangGraph runtime receives a controlled HTTP 400 with
 a clear reason rather than silently ignoring the image.
 
-Current boundaries are deliberate: document attachments, private session
-storage/TTL, temporary attachment RAG, per-model vision capability, OCR-only
-fallback, and LangGraph multimodal messages are not implemented in this slice.
+Current boundaries are deliberate: document attachments, route-integrated
+private storage, temporary attachment RAG, OCR-only fallback, and LangGraph
+multimodal messages are not implemented in this checkpoint.
 The approved staged design and security acceptance criteria are in
 `docs/product-backlog.md`.
 
@@ -338,15 +335,45 @@ embedded in prose. Fenced code blocks are excluded so programming examples keep
 their literal backslashes. Raw HTML still passes through the existing DOMPurify
 step before Markdown/KaTeX rendering.
 
+### AttachmentStore foundation — current checkpoint
+
+`core/attachment_store.py` defines an async provider-neutral contract plus a
+`LocalAttachmentStore` reference adapter for local/container deployments. The
+adapter uses opaque UUID storage keys, basename-only normalized filenames,
+private `0700` directories and `0600` files, atomic writes, exact owner and
+conversation authorization, configurable byte/TTL limits, SHA-256 verification,
+read-time expiry, explicit deletion, and fail-closed cleanup for expired,
+corrupt, or old orphaned payloads. Focused tests cover traversal rejection,
+cross-owner/cross-conversation access, tampering, TTL, cleanup, and permissions.
+
+Chat and Ask now create a stable UUID `conversation_id` independently from
+history/session state, retain it for the active conversation, reset it for New
+Chat, and restore a UUID history session when available. The backend validates
+it on `/ask`, `/chat`, and `/chat/stream`, while generating a UUID fallback for
+older clients. Invalid IDs receive a controlled HTTP 400.
+
+`mongo_table_connecters/chat_attachment_metadata.py` stores only bounded
+attachment metadata and enforces attachment ID + owner + conversation + active
+expiry in every read/update/delete query. Its client serializer excludes owner,
+conversation, storage key, and checksum. It supports explicit expiry cleanup;
+the Mongo TTL index is optional because Cosmos compatibility is not assumed.
+
+Document bytes are intentionally not wired into the request routes yet. The
+approved production design still requires a private Azure adapter/factory
+(without public URLs), coordinated object/metadata cleanup, document MIME/
+signature/decompression/page validation, malware-scanning hook, extraction, and
+a conversation-private `AttachmentIndex`. The local JSON sidecar is an adapter
+implementation detail, not the final metadata system.
+
 ## Other next work
 
 ### Near-term document work
 
-1. Manually smoke-test the current image slice in both Ask and Chat with a real
-   Legacy vision-capable model, then checkpoint it if accepted.
-2. Continue with a provider-neutral private session `AttachmentStore`, owner/
-   conversation ACLs, TTL cleanup, document extraction, and temporary
-   attachment RAG. Do not auto-promote Chat documents into permanent Knowledge.
+1. Add the private Azure `AttachmentStore` adapter/factory and coordinated
+   object/metadata expiry cleanup, retaining the local adapter for containers.
+2. Wire approved document uploads to the store, then add bounded extraction and
+   a conversation-private temporary `AttachmentIndex`. Do not auto-promote Chat
+   documents into permanent Knowledge.
 3. Add the requirement-to-Knowledge-evidence matrix, per-model vision/OCR
    routing in both runtimes, and speech improvements in that order. See
    `docs/product-backlog.md`.
@@ -444,7 +471,7 @@ Do not put real credentials in this file or examples.
 Latest service-free backend regression on 2026-08-21:
 
 ```text
-501 passed, 1 deselected
+524 passed, 1 deselected
 ```
 
 Command:
@@ -458,6 +485,13 @@ route/vision regression:
 
 ```text
 66 passed
+```
+
+Latest focused AttachmentStore, metadata, conversation-ID, and attachment-route
+validation:
+
+```text
+36 passed
 ```
 
 Latest focused OCR/upload/profile-idempotency validation:

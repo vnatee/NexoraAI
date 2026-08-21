@@ -233,7 +233,7 @@ from core.model_profiles import (
 from core.provider_secrets import decrypt_provider_secret, encrypt_provider_secret
 from core.runtime_settings import LLMProviderSettings, ModelProvider, RuntimeSettings, parse_model_provider
 from agent_runtime.policy import normalize_tool_policy
-from core.sessionhelper import create_session_id
+from core.sessionhelper import create_session_id, ensure_conversation_id
 from decorators import authenticated, authenticated_path
 from error import error_dict, error_response
 from prepdocs import (
@@ -883,6 +883,7 @@ async def ask(auth_claims: dict[str, Any]):
     else:
         context["auth_claims"] = auth_claims
     try:
+        context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
         use_gpt4v = context.get("overrides", {}).get("use_gpt4v", False)
         _apply_inline_image_attachments(
@@ -1487,6 +1488,7 @@ async def chat(auth_claims: dict[str, Any]):
     else:
         context["auth_claims"] = auth_claims
     try:
+        context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, request_json.get("agent_id"))
         use_gpt4v = context.get("overrides", {}).get("use_gpt4v", False)
         _apply_inline_image_attachments(
@@ -1733,6 +1735,7 @@ Always respond in the same language as the user"""
         final_prompt = f"{context['overrides']['prompt_template']}{response_promtp}"
         context['overrides']['prompt_template'] = final_prompt 
     try:
+        context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
         use_gpt4v = context.get("overrides", {}).get("use_gpt4v", False)
         _apply_inline_image_attachments(

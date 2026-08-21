@@ -103,6 +103,7 @@ export type ChatAppRequestContext = {
 export type ChatAppRequest = {
     messages: ResponseMessage[];
     attachments?: ChatAttachmentInput[];
+    conversation_id: string;
     context?: ChatAppRequestContext;
     session_state: any;
     gid?: string;

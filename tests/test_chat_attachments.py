@@ -5,6 +5,7 @@ from quart import Quart
 
 import app
 from core.chat_attachments import ChatAttachmentError, redact_inline_images, validate_chat_attachments
+from core.sessionhelper import ConversationIdError
 from error import error_dict
 
 
@@ -68,6 +69,25 @@ def test_attachment_errors_are_safe_for_client_display():
     assert error_dict(ChatAttachmentError("This agent cannot process images")) == {
         "error": "This agent cannot process images"
     }
+    assert error_dict(ConversationIdError("conversation_id must be a valid UUID")) == {
+        "error": "conversation_id must be a valid UUID"
+    }
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_invalid_conversation_id(client):
+    response = await client.post(
+        "/chat",
+        json={
+            "messages": [{"content": "Hello", "role": "user"}],
+            "conversation_id": "../../another-conversation",
+            "context": {"overrides": {}},
+            "session_state": None,
+        },
+    )
+
+    assert response.status_code == 400
+    assert await response.get_json() == {"error": "conversation_id must be a valid UUID"}
 
 
 @pytest.mark.asyncio
