@@ -10,6 +10,7 @@ import {
     configApi,
     ChatAppResponse,
     ChatAppRequest,
+    ChatAttachmentInput,
     RetrievalMode,
     VectorFields,
     GPT4VInput,
@@ -32,6 +33,7 @@ import { useLogin, getToken, requireAccessControl, getUsername } from "../../aut
 import { UploadFile } from "../../components/UploadFile";
 import { Settings } from "../../components/Settings/Settings";
 import { useMsal } from "@azure/msal-react";
+import { LLMProfile } from "../../api/models";
 import { TokenClaimsDisplay } from "../../components/TokenClaimsDisplay";
 import { LoginContext } from "../../loginContext";
 import { LanguagePicker } from "../../i18n/LanguagePicker";
@@ -87,6 +89,8 @@ export function Component(): JSX.Element {
     const [useOidSecurityFilter, setUseOidSecurityFilter] = useState<boolean>(false);
     const [useGroupsSecurityFilter, setUseGroupsSecurityFilter] = useState<boolean>(false);
     const [showGPT4VOptions, setShowGPT4VOptions] = useState<boolean>(false);
+    const [agentRuntimeMode, setAgentRuntimeMode] = useState<"legacy" | "langgraph" | "per_agent">("per_agent");
+    const [llmProfiles, setLlmProfiles] = useState<LLMProfile[]>([]);
     const [showSemanticRankerOption, setShowSemanticRankerOption] = useState<boolean>(false);
     const [showQueryRewritingOption, setShowQueryRewritingOption] = useState<boolean>(false);
     const [showReasoningEffortOption, setShowReasoningEffortOption] = useState<boolean>(false);
@@ -154,10 +158,30 @@ export function Component(): JSX.Element {
     const [userData, setUserData] = useState<User | null>(null);
     const [sysPers, setSysPers] = useState<string[] | null>(null);
     const [fixedPrompts, setFixedPrompts] = useState<any>(null);
+    const usesLangGraph =
+        agentRuntimeMode === "langgraph" || (agentRuntimeMode === "per_agent" && selectedAgent?.config?.runtime === "langgraph");
+    const selectedLlmProfileId = selectedAgent?.config?.llm_profile_id || "system";
+    const selectedLlmProfile = llmProfiles.find(profile => profile.id === selectedLlmProfileId);
+    const modelSupportsVision = selectedLlmProfile?.supportsVision ?? (selectedLlmProfileId === "system" && showGPT4VOptions);
+    const visionAvailable = modelSupportsVision && !usesLangGraph;
+    const selectedLlmProfileLabel = selectedLlmProfile?.label ?? (selectedLlmProfileId === "system" ? "System default" : selectedLlmProfileId);
+    const visionDisabledReason = !selectedLlmProfile && selectedLlmProfileId !== "system"
+        ? `Agent ${selectedAgent?.agent_name ?? "selected"} references unavailable LLM profile ${selectedLlmProfileId}. Re-select its model in Agent Management.`
+        : !modelSupportsVision
+        ? `${selectedAgent?.agent_name ?? "The selected agent"} uses ${selectedLlmProfileLabel}, which is not marked as vision-capable. Select the tested Vision model in Agent Management.`
+        : usesLangGraph
+          ? "Vision attachments are not supported by the LangGraph runtime yet."
+          : undefined;
+
+    useEffect(() => {
+        if (!visionAvailable) setUseGPT4V(false);
+    }, [visionAvailable]);
 
     const getConfig = async () => {
         configApi().then(config => {
             setShowGPT4VOptions(config.showGPT4VOptions);
+            setAgentRuntimeMode(config.agentRuntimeMode ?? "per_agent");
+            setLlmProfiles(config.llmProfiles ?? []);
             setUseSemanticRanker(config.showSemanticRankerOption);
             setShowSemanticRankerOption(config.showSemanticRankerOption);
             setUseQueryRewriting(config.showQueryRewritingOption);
@@ -185,6 +209,15 @@ export function Component(): JSX.Element {
 
     useEffect(() => {
         getConfig();
+        const refreshCapabilities = () => {
+            void configApi().then(config => {
+                setLlmProfiles(config.llmProfiles ?? []);
+                setShowGPT4VOptions(config.showGPT4VOptions);
+                setAgentRuntimeMode(config.agentRuntimeMode ?? "per_agent");
+            });
+        };
+        window.addEventListener("nexora:llm-profiles-changed", refreshCapabilities);
+        return () => window.removeEventListener("nexora:llm-profiles-changed", refreshCapabilities);
     }, []);
 
     const getActiveAgentConfigs = (username: string) => {
@@ -269,7 +302,7 @@ export function Component(): JSX.Element {
         }
     };
 
-    const makeApiRequest = async (question: string) => {
+    const makeApiRequest = async (question: string, attachments: ChatAttachmentInput[] = []) => {
         lastQuestionRef.current = question;
 
         error && setError(undefined);
@@ -308,6 +341,7 @@ export function Component(): JSX.Element {
                         role: "user"
                     }
                 ],
+                ...(attachments.length ? { attachments } : {}),
                 context: {
                     overrides: {
                         prompt_template: promptString.length === 0 ? undefined : promptString,
@@ -343,6 +377,7 @@ export function Component(): JSX.Element {
 
             request["team_id"] = selectTeamData ? selectTeamData?._id : null;
             request["agent_name"] = activeAgent ? activeAgent?.agent_name : null; // ✨ เพิ่มตรงนี้
+            request["agent_id"] = activeAgent ? activeAgent?._id : undefined;
             request["data_groups_id"] = uiPrefsPayload ? uiPrefsPayload.selectedDataGroupIds : null;
             request["selected_scopes"] = uiPrefsPayload ? uiPrefsPayload.selectedScopes : null;
             const result = await askApi(request, token);
@@ -425,6 +460,7 @@ export function Component(): JSX.Element {
                 break;
             case "useAgenticRetrieval":
                 setUseAgenticRetrieval(value);
+                if (value) setUseGPT4V(false);
         }
     };
 
@@ -682,39 +718,21 @@ export function Component(): JSX.Element {
                 savedAgent = null;
             }
 
-            const hasAgentChanged = (oldA: Agent, newA: Agent) => {
-                return JSON.stringify(oldA.prompt ?? {}) !== JSON.stringify(newA.prompt ?? {}) || oldA.update_at !== newA.update_at;
-            };
-
             let restoredAgent: Agent | null = null;
 
             if (savedAgent?._id) {
-                const apiAgent = agentsList.find(a => a._id === savedAgent._id) ?? null;
-
-                if (apiAgent) {
-                    if (hasAgentChanged(savedAgent, apiAgent)) {
-                        // 🔄 backend เปลี่ยน → overwrite ทั้งก้อน
-                        restoredAgent = {
-                            ...savedAgent,
-                            ...apiAgent
-                        };
-
-                        Storage.set(STORAGE_KEYS.ACTIVE_AGENT, JSON.stringify(restoredAgent));
-                    } else {
-                        // ✅ ไม่เปลี่ยน
-                        restoredAgent = savedAgent;
-                    }
-                }
+                // The stored object only identifies the active Agent. Its prompt and
+                // model configuration must always come from the backend so provider
+                // capability changes cannot be masked by a stale local snapshot.
+                restoredAgent = agentsList.find(a => a._id === savedAgent._id) ?? null;
             }
 
             // 3) agent ที่จะใช้จริง
             const nextSelectedAgent = restoredAgent ?? agentsList[0];
             setSelectedAgent(nextSelectedAgent);
 
-            // 4) persist ACTIVE_AGENT (กรณีไม่มี savedAgent มาก่อน)
-            if (!savedAgent) {
-                Storage.set(STORAGE_KEYS.ACTIVE_AGENT, JSON.stringify(nextSelectedAgent));
-            }
+            // 4) Keep the cache aligned with the backend snapshot.
+            Storage.set(STORAGE_KEYS.ACTIVE_AGENT, JSON.stringify(nextSelectedAgent));
 
             // 5) Restore ACTIVE_AGENT_UI_PREFS (เหมือนเดิม)
             const prefsMap = readAgentUIPrefs(username, teamId);
@@ -963,8 +981,15 @@ export function Component(): JSX.Element {
                         placeholder={t("gpt4vExamples.placeholder")}
                         disabled={isLoading}
                         initQuestion={question}
-                        onSend={question => makeApiRequest(question)}
+                        onSend={(question, attachments) => makeApiRequest(question, attachments)}
                         showSpeechInput={showSpeechInput}
+                        visionAvailable={visionAvailable}
+                        visionEnabled={useGPT4V}
+                        visionDisabledReason={visionDisabledReason}
+                        onVisionChange={enabled => {
+                            setUseGPT4V(enabled);
+                            if (enabled) setUseAgenticRetrieval(false);
+                        }}
                     />
                 </div>
             </div>

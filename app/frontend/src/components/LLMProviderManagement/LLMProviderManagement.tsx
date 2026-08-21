@@ -34,7 +34,14 @@ import {
 import { LLMProviderAdapter, LLMProviderModel, LLMProviderPayload, LLMVendor, ManagedLLMProvider } from "../../api/models";
 import { getToken } from "../../authConfig";
 
-const emptyModel = (): LLMProviderModel => ({ id: "", label: "", model: "", deployment: "", supports_tools: true });
+const emptyModel = (): LLMProviderModel => ({
+    id: "",
+    label: "",
+    model: "",
+    deployment: "",
+    supports_tools: true,
+    supports_vision: false
+});
 
 const vendorOptions: { id: LLMVendor; label: string; provider: LLMProviderAdapter; defaultBaseUrl?: string; requiresApiKey?: boolean }[] = [
     { id: "azure_openai", label: "Azure OpenAI", provider: "azure_openai" },
@@ -76,6 +83,10 @@ const emptyPayload = (): LLMProviderPayload => ({
     enabled: true,
     api_key: ""
 });
+
+const notifyProfileCapabilitiesChanged = () => {
+    window.dispatchEvent(new Event("nexora:llm-profiles-changed"));
+};
 
 export function LLMProviderManagement() {
     const { instance } = useMsal();
@@ -123,7 +134,11 @@ export function LLMProviderManagement() {
             base_url: provider.base_url ?? "",
             api_version: provider.api_version ?? "2024-10-21",
             organization: provider.organization ?? "",
-            models: provider.models.map(model => ({ ...model, supports_tools: model.supports_tools ?? true })),
+            models: provider.models.map(model => ({
+                ...model,
+                supports_tools: model.supports_tools ?? true,
+                supports_vision: model.supports_vision ?? false
+            })),
             enabled: provider.enabled,
             api_key: ""
         });
@@ -148,6 +163,7 @@ export function LLMProviderManagement() {
             setDialogOpen(false);
             setNotice({ severity: "success", text: `Provider ${editing ? "updated" : "created"} successfully` });
             await loadProviders();
+            notifyProfileCapabilitiesChanged();
         } catch (error) {
             setNotice({ severity: "error", text: error instanceof Error ? error.message : "Failed to save provider" });
         } finally {
@@ -163,6 +179,7 @@ export function LLMProviderManagement() {
             await deleteLLMProviderApi(provider._id, token);
             setNotice({ severity: "success", text: "Provider removed" });
             await loadProviders();
+            notifyProfileCapabilitiesChanged();
         } catch (error) {
             setNotice({ severity: "error", text: error instanceof Error ? error.message : "Failed to remove provider" });
         }
@@ -176,27 +193,34 @@ export function LLMProviderManagement() {
             if (!token) throw new Error("No authentication token");
             const unsupported: string[] = [];
             const unknown: string[] = [];
+            const visionUnsupported: string[] = [];
+            const visionUnknown: string[] = [];
             const failed: string[] = [];
             for (const model of provider.models) {
                 try {
                     const result = await testLLMProviderApi(provider._id, model.id, token);
                     if (result.tool_capability.status === "unsupported") unsupported.push(model.label || model.model);
                     if (result.tool_capability.status === "unknown") unknown.push(model.label || model.model);
+                    if (result.vision_capability.status === "unsupported") visionUnsupported.push(model.label || model.model);
+                    if (result.vision_capability.status === "unknown") visionUnknown.push(model.label || model.model);
                 } catch {
                     failed.push(model.label || model.model);
                 }
             }
             await loadProviders();
+            notifyProfileCapabilitiesChanged();
             if (failed.length > 0) {
                 setNotice({ severity: "error", text: `${provider.name}: connection failed for ${failed.join(", ")}` });
-            } else if (unsupported.length > 0 || unknown.length > 0) {
+            } else if (unsupported.length > 0 || unknown.length > 0 || visionUnsupported.length > 0 || visionUnknown.length > 0) {
                 const details = [
                     unsupported.length > 0 ? `tool calling unsupported: ${unsupported.join(", ")}` : "",
-                    unknown.length > 0 ? `capability inconclusive: ${unknown.join(", ")}` : ""
+                    unknown.length > 0 ? `tool capability inconclusive: ${unknown.join(", ")}` : "",
+                    visionUnsupported.length > 0 ? `vision unsupported: ${visionUnsupported.join(", ")}` : "",
+                    visionUnknown.length > 0 ? `vision capability inconclusive: ${visionUnknown.join(", ")}` : ""
                 ].filter(Boolean).join("; ");
                 setNotice({ severity: "warning", text: `${provider.name} connection succeeded; ${details}` });
             } else {
-                setNotice({ severity: "success", text: `${provider.name} connection and tool calling succeeded for all models` });
+                setNotice({ severity: "success", text: `${provider.name} connection, tool calling, and vision checks succeeded for all models` });
             }
         } catch (error) {
             setNotice({ severity: "error", text: error instanceof Error ? error.message : "Connection failed" });
@@ -240,9 +264,30 @@ export function LLMProviderManagement() {
                                     <Typography variant="body2" color="text.secondary" noWrap>
                                         {provider.endpoint || provider.base_url || "Default provider endpoint"}
                                     </Typography>
-                                    <Typography variant="caption" color="text.secondary">
-                                        {provider.models.map(model => model.label || model.model).join(", ")}
-                                    </Typography>
+                                    <Stack spacing={0.5} mt={0.75}>
+                                        {provider.models.map(model => (
+                                            <Stack key={model.id} direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+                                                <Typography variant="caption" color="text.secondary">
+                                                    {model.label || model.model}
+                                                </Typography>
+                                                {model.tool_capability_status === "supported" && (
+                                                    <Chip size="small" color="success" variant="outlined" label="Tools" />
+                                                )}
+                                                {model.vision_capability_status === "supported" && (
+                                                    <Chip size="small" color="success" variant="outlined" label="Vision" />
+                                                )}
+                                                {model.tool_capability_status === "unsupported" && (
+                                                    <Chip size="small" variant="outlined" label="No tools" />
+                                                )}
+                                                {model.vision_capability_status === "unsupported" && (
+                                                    <Chip size="small" variant="outlined" label="No vision" />
+                                                )}
+                                                {model.vision_capability_status === "unknown" && model.supports_vision && (
+                                                    <Chip size="small" color="warning" variant="outlined" label="Vision manual" />
+                                                )}
+                                            </Stack>
+                                        ))}
+                                    </Stack>
                                 </Box>
                                 <Stack direction="row" spacing={0.5}>
                                     <Button
@@ -345,6 +390,24 @@ export function LLMProviderManagement() {
                                             Supports tool / function calling
                                             {model.tool_capability_status === "unsupported" ? " — Not supported (detected by Test)" : ""}
                                             {model.tool_capability_status === "supported" ? " — Supported (detected by Test)" : ""}
+                                        </Typography>
+                                    </Stack>
+                                    <Stack direction="row" alignItems="center" spacing={1}>
+                                        <Switch
+                                            size="small"
+                                            checked={model.supports_vision ?? false}
+                                            disabled={model.vision_capability_status === "unsupported"}
+                                            onChange={event => {
+                                                const models = form.models.map((item, modelIndex) =>
+                                                    modelIndex === index ? { ...item, supports_vision: event.target.checked } : item
+                                                );
+                                                setForm({ ...form, models });
+                                            }}
+                                        />
+                                        <Typography variant="body2" color={model.vision_capability_status === "unsupported" ? "text.disabled" : "text.primary"}>
+                                            Supports image / vision input
+                                            {model.vision_capability_status === "unsupported" ? " — Not supported (detected by Test)" : ""}
+                                            {model.vision_capability_status === "supported" ? " — Supported (detected by Test)" : ""}
                                         </Typography>
                                     </Stack>
                                 </Stack>

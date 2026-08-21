@@ -139,7 +139,7 @@ Admin-managed providers retain their vendor identity separately from the interna
 | vLLM / LocalAI | Uses their OpenAI-compatible transport; tool support remains model/backend dependent. |
 | Other OpenAI-compatible | Uses a conservative policy that omits `seed`, `n`, and streaming-usage extensions. |
 
-Cloud vendors require an encrypted API key when the provider is enabled. Azure OpenAI can continue to use Azure identity, while local vendors can run without an API key. `Supports tool / function calling` remains a per-model setting because this capability varies by model even within the same vendor.
+Cloud vendors require an encrypted API key when the provider is enabled. Azure OpenAI can continue to use Azure identity, while local vendors can run without an API key. `Supports tool / function calling` and `Supports image / vision input` remain per-model settings because these capabilities vary by model even within the same vendor.
 
 ### Tool/function-calling capability test
 
@@ -162,3 +162,32 @@ check timestamp. Probe prompts and provider responses are not persisted. A
 model/deployment change clears the prior result to `unknown`; run **Test** again
 after changing a model, deployment, API version, or compatibility gateway. Each
 test makes live model requests and may consume a small number of tokens.
+
+### Image/vision capability test
+
+The same **Test** action sends a small in-memory PNG to each configured model
+using the OpenAI-compatible multimodal message contract.
+
+- `supported`: the provider accepted the image request. The model's vision
+  capability is enabled automatically.
+- `unsupported`: the provider explicitly rejected image/multimodal input. The
+  capability is disabled and its switch is locked.
+- `unknown`: the probe was inconclusive because of a transient, quota, network,
+  or ambiguous compatibility error. The administrator's existing setting is
+  preserved and remains editable.
+
+After saving/testing the model, select that LLM profile on a Legacy Agent. The
+Chat and Ask composers enable their **Vision On/Off** control for that Agent.
+User-attached images use the selected managed model directly and do not require
+`USE_GPT4V` or `AZURE_VISION_ENDPOINT`.
+
+The Provider card shows per-model capability tags from the latest conclusive
+Test result. Chat and Ask refresh those capabilities immediately after a
+provider Save/Test/Delete. Vision and Agentic Retrieval are mutually exclusive;
+turning Vision on turns Agentic Retrieval off, and turning Agentic Retrieval on
+turns Vision off.
+
+The legacy environment feature remains separate: `USE_GPT4V=true` and
+`AZURE_VISION_ENDPOINT` enable Azure Knowledge image embeddings/retrieval and
+the system profile's vision behavior. They are not required merely to send an
+image attachment to a Portal-managed vision model.

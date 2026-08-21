@@ -90,15 +90,17 @@ async def test_app_exposes_safe_agent_llm_profiles(monkeypatch, minimal_env):
                 "id": "system",
                 "label": "System default",
                 "provider": "azure_openai",
-                "model": "gpt-4.1-mini",
-                "supportsTools": True,
+                    "model": "gpt-4.1-mini",
+                    "supportsTools": True,
+                    "supportsVision": False,
             },
             {
                 "id": "local-qwen",
                 "label": "Local Qwen",
                 "provider": "openai_compatible",
-                "model": "qwen3",
-                "supportsTools": True,
+                    "model": "qwen3",
+                    "supportsTools": True,
+                    "supportsVision": False,
             },
         ]
         assert quart_app.config[app.CONFIG_LLM_PROFILE_CLIENTS]["local-qwen"].base_url == "http://ollama:11434/v1/"
@@ -197,9 +199,21 @@ async def test_app_config_default(monkeypatch, minimal_env):
         response = await client.get("/config")
         assert response.status_code == 200
         result = await response.get_json()
+        assert result["agentRuntimeMode"] == "per_agent"
         assert result["showGPT4VOptions"] is False
         assert result["showSemanticRankerOption"] is True
         assert result["showVectorOption"] is True
+
+
+@pytest.mark.asyncio
+async def test_app_config_exposes_global_agent_runtime(monkeypatch, minimal_env):
+    monkeypatch.setenv("AGENT_RUNTIME_MODE", "langgraph")
+    quart_app = app.create_app()
+    async with quart_app.test_app() as test_app:
+        response = await test_app.test_client().get("/config")
+
+        assert response.status_code == 200
+        assert (await response.get_json())["agentRuntimeMode"] == "langgraph"
 
 
 @pytest.mark.asyncio

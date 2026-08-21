@@ -3,6 +3,8 @@ import logging
 from openai import APIError
 from quart import jsonify
 
+from core.chat_attachments import ChatAttachmentError
+
 ERROR_MESSAGE = """The app encountered an error processing your request.
 If you are an administrator of the app, view the full error in the logs. See aka.ms/appservice-logs for more information.
 Error type: {error_type}
@@ -13,6 +15,8 @@ ERROR_MESSAGE_LENGTH = """Your message exceeded the context length limit for thi
 
 
 def error_dict(error: Exception) -> dict:
+    if isinstance(error, ChatAttachmentError):
+        return {"error": str(error)}
     if isinstance(error, APIError) and error.code == "content_filter":
         return {"error": ERROR_MESSAGE_FILTER}
     if isinstance(error, APIError) and error.code == "context_length_exceeded":
@@ -22,6 +26,8 @@ def error_dict(error: Exception) -> dict:
 
 def error_response(error: Exception, route: str, status_code: int = 500):
     logging.exception("Exception in %s: %s", route, error)
+    if isinstance(error, ChatAttachmentError):
+        status_code = 400
     if isinstance(error, APIError) and error.code == "content_filter":
         status_code = 400
     return jsonify(error_dict(error)), status_code

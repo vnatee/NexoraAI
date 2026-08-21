@@ -177,6 +177,7 @@ from approaches.retrievethenreadvision import RetrieveThenReadVisionApproach
 from agent_runtime.factory import create_agent_runtime
 from agent_runtime.charting import ChartValidationError, validate_echarts_spec
 from agent_runtime.adapters.mcp import MCPServerConfig, discover_mcp_tools
+from core.chat_attachments import ChatAttachmentError, validate_chat_attachments
 from chat_history.cosmosdb import chat_history_cosmosdb_bp
 from config import (
     CONFIG_AGENT_CLIENT,
@@ -351,6 +352,7 @@ def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> N
     overrides["_llm_deployment"] = profile.settings.deployment
     overrides["_llm_profile_id"] = profile_id
     overrides["_llm_supports_tools"] = profile.supports_tools
+    overrides["_llm_supports_vision"] = profile.supports_vision
     overrides["_llm_vendor"] = infer_llm_vendor(
         {
             "provider": profile.settings.provider.value,
@@ -436,6 +438,14 @@ def _normalize_provider_models(
         supports_tools = bool(item.get("supports_tools", True))
         if capability_status == "unsupported":
             supports_tools = False
+        vision_capability_status = (
+            str(previous.get("vision_capability_status") or "unknown")
+            if same_target and previous
+            else "unknown"
+        )
+        supports_vision = bool(item.get("supports_vision", False))
+        if vision_capability_status == "unsupported":
+            supports_vision = False
         normalized_model = {
             "id": model_id,
             "label": label,
@@ -443,12 +453,18 @@ def _normalize_provider_models(
             "deployment": deployment,
             "supports_tools": supports_tools,
             "tool_capability_status": capability_status,
+            "supports_vision": supports_vision,
+            "vision_capability_status": vision_capability_status,
         }
         if same_target and previous:
             if previous.get("tool_capability_checked_at"):
                 normalized_model["tool_capability_checked_at"] = previous["tool_capability_checked_at"]
             if previous.get("tool_capability_detail"):
                 normalized_model["tool_capability_detail"] = previous["tool_capability_detail"]
+            if previous.get("vision_capability_checked_at"):
+                normalized_model["vision_capability_checked_at"] = previous["vision_capability_checked_at"]
+            if previous.get("vision_capability_detail"):
+                normalized_model["vision_capability_detail"] = previous["vision_capability_detail"]
         normalized.append(normalized_model)
     return normalized
 
@@ -548,6 +564,65 @@ def _tool_capability_rejection(error: Exception) -> bool:
     return mentions_tools and rejection
 
 
+def _vision_capability_rejection(error: Exception) -> bool:
+    message = str(error).lower()
+    mentions_vision = any(term in message for term in ("image", "vision", "multimodal", "image_url"))
+    rejection = any(
+        phrase in message
+        for phrase in (
+            "not support",
+            "unsupported",
+            "unknown parameter",
+            "unrecognized",
+            "not allowed",
+            "invalid content",
+            "invalid message",
+        )
+    )
+    return mentions_vision and rejection
+
+
+async def _probe_model_vision_capability(
+    client: Any,
+    settings: LLMProviderSettings,
+    provider: dict[str, Any],
+) -> tuple[str, str]:
+    # One opaque 1x1 PNG. Neither the prompt nor provider response is persisted.
+    probe_image = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z/C/HgAGgwJ/lK3Q6wAAAABJRU5ErkJggg=="
+    )
+    completion_options: dict[str, Any] = {}
+    if settings.model in Approach.GPT_REASONING_MODELS:
+        completion_options["max_completion_tokens"] = 16
+    else:
+        completion_options.update({"max_tokens": 16, "temperature": 0})
+    completion_options = apply_llm_vendor_chat_policy(
+        infer_llm_vendor(provider).id, completion_options
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=settings.deployment or settings.model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Reply with OK if you can process this image."},
+                        {"type": "image_url", "image_url": {"url": probe_image}},
+                    ],
+                }
+            ],
+            **completion_options,
+        )
+    except Exception as error:
+        if _vision_capability_rejection(error):
+            return "unsupported", "provider_rejected_image_input"
+        return "unknown", "probe_inconclusive"
+    if response.choices:
+        return "supported", "image_request_accepted"
+    return "unknown", "empty_probe_response"
+
+
 async def _probe_model_tool_capability(
     client: Any,
     settings: LLMProviderSettings,
@@ -640,6 +715,25 @@ def _store_model_tool_capability(
     return update_llm_provider(str(provider["_id"]), {"models": models}) or provider
 
 
+def _store_model_vision_capability(
+    provider: dict[str, Any], model_id: str, status: str, detail: str
+) -> dict[str, Any]:
+    checked_at = datetime.now(timezone.utc).isoformat()
+    models = []
+    for item in provider.get("models", []):
+        updated = dict(item)
+        if item.get("id") == model_id:
+            updated["vision_capability_status"] = status
+            updated["vision_capability_checked_at"] = checked_at
+            updated["vision_capability_detail"] = detail
+            if status == "supported":
+                updated["supports_vision"] = True
+            elif status == "unsupported":
+                updated["supports_vision"] = False
+        models.append(updated)
+    return update_llm_provider(str(provider["_id"]), {"models": models}) or provider
+
+
 def _load_managed_profiles(base_profiles: dict[str, LLMProfile]) -> dict[str, LLMProfile]:
     profiles = dict(base_profiles)
     for provider in list_llm_providers():
@@ -654,6 +748,7 @@ def _load_managed_profiles(base_profiles: dict[str, LLMProfile]) -> dict[str, LL
                 managed_provider_id=str(provider["_id"]),
                 managed_model_id=model["id"],
                 supports_tools=model.get("supports_tools", True),
+                supports_vision=model.get("supports_vision", False),
             )
     return profiles
 
@@ -790,8 +885,14 @@ async def ask(auth_claims: dict[str, Any]):
     try:
         _apply_agent_llm_profile(context, agent_id)
         use_gpt4v = context.get("overrides", {}).get("use_gpt4v", False)
+        _apply_inline_image_attachments(
+            request_json,
+            context,
+            vision_enabled=use_gpt4v,
+            vision_available=CONFIG_ASK_VISION_APPROACH in current_app.config,
+        )
         approach: Approach
-        if use_gpt4v and CONFIG_ASK_VISION_APPROACH in current_app.config:
+        if _use_vision_approach(context) and CONFIG_ASK_VISION_APPROACH in current_app.config:
             approach = cast(
                 Approach, current_app.config[CONFIG_ASK_VISION_APPROACH])
         else:
@@ -828,6 +929,41 @@ async def format_as_ndjson(r: AsyncGenerator[dict, None]) -> AsyncGenerator[str,
         logging.exception(
             "Exception while generating response stream: %s", error)
         yield json.dumps(error_dict(error))
+
+
+def _apply_inline_image_attachments(
+    request_json: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    vision_enabled: bool,
+    vision_available: bool,
+    use_langgraph_runtime: bool = False,
+) -> None:
+    attachments = validate_chat_attachments(request_json.get("attachments"))
+    if not attachments:
+        return
+    if use_langgraph_runtime:
+        raise ChatAttachmentError("Image attachments are not yet supported by the LangGraph runtime")
+    if not vision_enabled:
+        raise ChatAttachmentError("This agent cannot process images. Enable a vision-capable model and try again")
+    if not context.get("overrides", {}).get("_llm_supports_vision", False):
+        raise ChatAttachmentError("The model selected for this agent does not support image input")
+    if not vision_available:
+        raise ChatAttachmentError("The vision processing service is not configured for this deployment")
+    overrides = context.setdefault("overrides", {})
+    overrides["_image_attachments"] = [item["data_url"] for item in attachments]
+    overrides["_rag_vision_enabled"] = current_app.config.get(CONFIG_GPT4V_DEPLOYED, False)
+
+
+def _use_vision_approach(context: dict[str, Any]) -> bool:
+    overrides = context.get("overrides", {})
+    return bool(
+        overrides.get("use_gpt4v", False)
+        and (
+            current_app.config.get(CONFIG_GPT4V_DEPLOYED, False)
+            or overrides.get("_llm_supports_vision", False)
+        )
+    )
 
 
 def _use_langgraph_runtime(agent_id: str | None) -> bool:
@@ -1353,8 +1489,14 @@ async def chat(auth_claims: dict[str, Any]):
     try:
         _apply_agent_llm_profile(context, request_json.get("agent_id"))
         use_gpt4v = context.get("overrides", {}).get("use_gpt4v", False)
+        _apply_inline_image_attachments(
+            request_json,
+            context,
+            vision_enabled=use_gpt4v,
+            vision_available=CONFIG_CHAT_VISION_APPROACH in current_app.config,
+        )
         approach: Approach
-        if use_gpt4v and CONFIG_CHAT_VISION_APPROACH in current_app.config:
+        if _use_vision_approach(context) and CONFIG_CHAT_VISION_APPROACH in current_app.config:
             approach = cast(
                 Approach, current_app.config[CONFIG_CHAT_VISION_APPROACH])
         else:
@@ -1593,8 +1735,15 @@ Always respond in the same language as the user"""
     try:
         _apply_agent_llm_profile(context, agent_id)
         use_gpt4v = context.get("overrides", {}).get("use_gpt4v", False)
+        _apply_inline_image_attachments(
+            request_json,
+            context,
+            vision_enabled=use_gpt4v,
+            vision_available=CONFIG_CHAT_VISION_APPROACH in current_app.config,
+            use_langgraph_runtime=use_langgraph_runtime,
+        )
         approach: Approach
-        if use_gpt4v and CONFIG_CHAT_VISION_APPROACH in current_app.config:
+        if _use_vision_approach(context) and CONFIG_CHAT_VISION_APPROACH in current_app.config:
             approach = cast(
                 Approach, current_app.config[CONFIG_CHAT_VISION_APPROACH])
         else:
@@ -1789,6 +1938,12 @@ async def admin_test_llm_provider(auth_claims: dict[str, Any], provider_id: str)
         provider = _store_model_tool_capability(
             provider, str(model["id"]), capability_status, capability_detail
         )
+        vision_status, vision_detail = await _probe_model_vision_capability(
+            client, settings, provider
+        )
+        provider = _store_model_vision_capability(
+            provider, str(model["id"]), vision_status, vision_detail
+        )
         try:
             _refresh_llm_profile_registry()
         except Exception:
@@ -1813,6 +1968,16 @@ async def admin_test_llm_provider(auth_claims: dict[str, Any], provider_id: str)
                     ),
                     "detail": capability_detail,
                     "checked_at": updated_model.get("tool_capability_checked_at"),
+                },
+                "vision_capability": {
+                    "status": vision_status,
+                    "supports_vision": (
+                        True
+                        if vision_status == "supported"
+                        else False if vision_status == "unsupported" else None
+                    ),
+                    "detail": vision_detail,
+                    "checked_at": updated_model.get("vision_capability_checked_at"),
                 },
             }
         )
@@ -1964,6 +2129,11 @@ async def config():
     return jsonify(
         {
             "runtimeMode": runtime_settings.mode.value,
+            "agentRuntimeMode": (
+                os.getenv("AGENT_RUNTIME_MODE", "per_agent").strip().lower()
+                if os.getenv("AGENT_RUNTIME_MODE", "per_agent").strip().lower() in {"legacy", "langgraph"}
+                else "per_agent"
+            ),
             "llmProvider": runtime_settings.llm.provider.value,
             "embeddingProvider": runtime_settings.embedding.provider.value,
             "llmProfiles": [profile.public_dict() for profile in llm_profiles.values()],
@@ -5129,7 +5299,7 @@ async def setup_clients():
     )
 
     if USE_GPT4V:
-        current_app.logger.info("USE_GPT4V is true, setting up GPT4V approach")
+        current_app.logger.info("USE_GPT4V is true, enabling Azure Knowledge image retrieval")
         if not AZURE_OPENAI_GPT4V_MODEL:
             raise ValueError(
                 "AZURE_OPENAI_GPT4V_MODEL must be set when USE_GPT4V is true")
@@ -5146,52 +5316,59 @@ async def setup_clients():
                 "AZURE_OPENAI_CHATGPT_MODEL and AZURE_OPENAI_GPT4V_MODEL must not be a reasoning model when USE_GPT4V is true"
             )
 
-        token_provider = get_bearer_token_provider(
-            azure_credential, "https://cognitiveservices.azure.com/.default")
+    token_provider = get_bearer_token_provider(
+        azure_credential, "https://cognitiveservices.azure.com/.default")
+    fallback_vision_model = AZURE_OPENAI_GPT4V_MODEL if USE_GPT4V else OPENAI_CHATGPT_MODEL
+    fallback_vision_deployment = (
+        AZURE_OPENAI_GPT4V_DEPLOYMENT if USE_GPT4V else AZURE_OPENAI_CHATGPT_DEPLOYMENT
+    )
 
-        current_app.config[CONFIG_ASK_VISION_APPROACH] = RetrieveThenReadVisionApproach(
-            search_client=search_client,
-            openai_client=openai_client,
-            blob_container_client=blob_container_client,
-            auth_helper=auth_helper,
-            vision_endpoint=AZURE_VISION_ENDPOINT,
-            vision_token_provider=token_provider,
-            gpt4v_deployment=AZURE_OPENAI_GPT4V_DEPLOYMENT,
-            gpt4v_model=AZURE_OPENAI_GPT4V_MODEL,
-            embedding_model=OPENAI_EMB_MODEL,
-            embedding_deployment=AZURE_OPENAI_EMB_DEPLOYMENT,
-            embedding_dimensions=OPENAI_EMB_DIMENSIONS,
-            embedding_field=AZURE_SEARCH_FIELD_NAME_EMBEDDING,
-            sourcepage_field=KB_FIELDS_SOURCEPAGE,
-            content_field=KB_FIELDS_CONTENT,
-            query_language=AZURE_SEARCH_QUERY_LANGUAGE,
-            query_speller=AZURE_SEARCH_QUERY_SPELLER,
-            prompt_manager=prompt_manager,
-            embedding_service=text_embeddings_service,
-        )
+    # Always prepare the provider-neutral vision prompt path so a managed model
+    # selected in the Portal can accept user attachments. Azure Vision remains
+    # optional and is used only for Knowledge image vectors when USE_GPT4V=true.
+    current_app.config[CONFIG_ASK_VISION_APPROACH] = RetrieveThenReadVisionApproach(
+        search_client=search_client,
+        openai_client=openai_client,
+        blob_container_client=blob_container_client,
+        auth_helper=auth_helper,
+        vision_endpoint=AZURE_VISION_ENDPOINT,
+        vision_token_provider=token_provider,
+        gpt4v_deployment=fallback_vision_deployment,
+        gpt4v_model=fallback_vision_model,
+        embedding_model=OPENAI_EMB_MODEL,
+        embedding_deployment=AZURE_OPENAI_EMB_DEPLOYMENT,
+        embedding_dimensions=OPENAI_EMB_DIMENSIONS,
+        embedding_field=AZURE_SEARCH_FIELD_NAME_EMBEDDING,
+        sourcepage_field=KB_FIELDS_SOURCEPAGE,
+        content_field=KB_FIELDS_CONTENT,
+        query_language=AZURE_SEARCH_QUERY_LANGUAGE,
+        query_speller=AZURE_SEARCH_QUERY_SPELLER,
+        prompt_manager=prompt_manager,
+        embedding_service=text_embeddings_service,
+    )
 
-        current_app.config[CONFIG_CHAT_VISION_APPROACH] = ChatReadRetrieveReadVisionApproach(
-            search_client=search_client,
-            openai_client=openai_client,
-            blob_container_client=blob_container_client,
-            auth_helper=auth_helper,
-            vision_endpoint=AZURE_VISION_ENDPOINT,
-            vision_token_provider=token_provider,
-            chatgpt_model=OPENAI_CHATGPT_MODEL,
-            chatgpt_deployment=AZURE_OPENAI_CHATGPT_DEPLOYMENT,
-            gpt4v_deployment=AZURE_OPENAI_GPT4V_DEPLOYMENT,
-            gpt4v_model=AZURE_OPENAI_GPT4V_MODEL,
-            embedding_model=OPENAI_EMB_MODEL,
-            embedding_deployment=AZURE_OPENAI_EMB_DEPLOYMENT,
-            embedding_dimensions=OPENAI_EMB_DIMENSIONS,
-            embedding_field=AZURE_SEARCH_FIELD_NAME_EMBEDDING,
-            sourcepage_field=KB_FIELDS_SOURCEPAGE,
-            content_field=KB_FIELDS_CONTENT,
-            query_language=AZURE_SEARCH_QUERY_LANGUAGE,
-            query_speller=AZURE_SEARCH_QUERY_SPELLER,
-            prompt_manager=prompt_manager,
-            embedding_service=text_embeddings_service,
-        )
+    current_app.config[CONFIG_CHAT_VISION_APPROACH] = ChatReadRetrieveReadVisionApproach(
+        search_client=search_client,
+        openai_client=openai_client,
+        blob_container_client=blob_container_client,
+        auth_helper=auth_helper,
+        vision_endpoint=AZURE_VISION_ENDPOINT,
+        vision_token_provider=token_provider,
+        chatgpt_model=OPENAI_CHATGPT_MODEL,
+        chatgpt_deployment=AZURE_OPENAI_CHATGPT_DEPLOYMENT,
+        gpt4v_deployment=fallback_vision_deployment,
+        gpt4v_model=fallback_vision_model,
+        embedding_model=OPENAI_EMB_MODEL,
+        embedding_deployment=AZURE_OPENAI_EMB_DEPLOYMENT,
+        embedding_dimensions=OPENAI_EMB_DIMENSIONS,
+        embedding_field=AZURE_SEARCH_FIELD_NAME_EMBEDDING,
+        sourcepage_field=KB_FIELDS_SOURCEPAGE,
+        content_field=KB_FIELDS_CONTENT,
+        query_language=AZURE_SEARCH_QUERY_LANGUAGE,
+        query_speller=AZURE_SEARCH_QUERY_SPELLER,
+        prompt_manager=prompt_manager,
+        embedding_service=text_embeddings_service,
+    )
     if SKIP_STARTUP_BOOTSTRAP:
         current_app.logger.info("Skipping application data bootstrap")
         return
