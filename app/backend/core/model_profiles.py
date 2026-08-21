@@ -20,6 +20,7 @@ class LLMProfile:
     managed_provider_id: str | None = None
     managed_model_id: str | None = None
     supports_tools: bool = True
+    supports_vision: bool = False
 
     def public_dict(self) -> dict[str, Any]:
         result = {
@@ -28,6 +29,7 @@ class LLMProfile:
             "provider": self.settings.provider.value,
             "model": self.settings.model,
             "supportsTools": self.supports_tools,
+            "supportsVision": self.supports_vision,
         }
         if self.managed_provider_id:
             result["managedProviderId"] = self.managed_provider_id
@@ -54,6 +56,7 @@ def load_llm_profiles(
             profile_id=DEFAULT_LLM_PROFILE_ID,
             label="System default",
             settings=default_settings,
+            supports_vision=env.get("USE_GPT4V", "").lower() == "true",
         )
     }
     raw_profiles = env.get("LLM_PROFILES_JSON", "").strip()
@@ -106,6 +109,7 @@ def load_llm_profiles(
             label=label,
             settings=settings,
             supports_tools=item.get("supports_tools", True) is not False,
+            supports_vision=item.get("supports_vision", False) is True,
         )
 
     return profiles

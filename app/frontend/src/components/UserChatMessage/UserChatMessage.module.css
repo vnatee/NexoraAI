@@ -17,3 +17,34 @@
 
     white-space: pre-wrap;
 }
+
+.attachments {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(7rem, 12rem));
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.attachment {
+    min-width: 0;
+    margin: 0;
+}
+
+.attachment img {
+    display: block;
+    width: 100%;
+    height: 8rem;
+    object-fit: cover;
+    border-radius: 0.5rem;
+    background: #fff;
+}
+
+.attachment figcaption {
+    margin-top: 0.25rem;
+    overflow: hidden;
+    color: #424242;
+    font-size: 0.75rem;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}

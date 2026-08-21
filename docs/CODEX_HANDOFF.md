@@ -1,6 +1,6 @@
 # Codex handoff — NexoraAI
 
-Last updated: 2026-08-20 UTC
+Last updated: 2026-08-21 UTC
 
 This document replaces a raw chat transcript as the engineering handoff. It
 captures the decisions and evidence needed to continue without storing copied
@@ -10,18 +10,21 @@ logs, credentials, attachments, or repetitive conversational text.
 
 - Workspace: `/workspaces/NexoraAI`
 - Branch: `feature/agent-platform-foundation`
-- Latest local checkpoint: `7488ff4` / `feat: preserve Docling page citations`.
-  The branch is one commit ahead of `origin/feature/agent-platform-foundation`.
+- Latest local checkpoint: `b12d814` / `feat: index safe document processing
+  metadata`. The branch is two commits ahead of
+  `origin/feature/agent-platform-foundation`.
 - Azure baseline: `8ee1e8a` / `origin/Release-2.2.0`
 - This checkpoint includes OCR routing/provider tooling plus persistent
   ingestion jobs, upload status UI, Retry, worker leases, restart recovery, and
   Indexed Time file details.
-- The current slice implements safe provider-neutral OCR metadata propagation
-  and Azure AI Search field mapping. The product owner accepted the live
-  metadata smoke test on 2026-08-21; this slice is ready for checkpointing.
-- Automated validation passed at checkpoint time. The live OCR routing checks
-  in the manual smoke-test section remain deployment acceptance work; do not
-  treat the checkpoint itself as evidence that those external services passed.
+- The dirty tree contains the first approved Chat attachment slice: shared
+  Chat/Ask image paste/upload/drop UI, previews/removal, a canonical inline
+  request contract, server validation, and Legacy vision prompt integration.
+  Preserve it; it is not committed yet.
+- Automated validation for the dirty Chat slice passed. A live browser/model
+  attachment smoke test remains deployment acceptance work; do not treat unit
+  and mocked integration tests as evidence that a configured provider accepted
+  a real image.
 
 ## Product background and fixed decisions
 
@@ -66,9 +69,18 @@ Decisions already made with the product owner:
 - Tool/function-calling support is configured per model because capability
   differs even within one vendor.
 - The LLM Provider **Test** action now tests every configured model and performs
-  a live tool-call probe. Results are stored as `supported`, `unsupported`, or
-  `unknown`. Confirmed unsupported models are forced off and the frontend switch
-  is disabled; inconclusive network/quota/provider errors remain editable.
+  live tool-call and image-input probes. Results for each capability are stored
+  as `supported`, `unsupported`, or `unknown`. Confirmed unsupported models are
+  forced off and the corresponding frontend switch is disabled; inconclusive
+  network/quota/provider errors remain editable.
+- `Supports image / vision input` is managed per model in the Portal and exposed
+  through the Agent LLM profile. A Legacy Agent using a capable managed model
+  can process request-local Chat/Ask image attachments without `USE_GPT4V` or
+  `AZURE_VISION_ENDPOINT`. Those environment settings remain the separate
+  compatibility path for the system profile and Azure Knowledge image vectors.
+- Provider cards show per-model capability tags after Test (`Tools`, `Vision`,
+  `No tools`, or `No vision`). Saving, testing, or deleting a provider refreshes
+  Chat/Ask model capabilities immediately without a browser reload.
 - OpenAI, Gemini, and Ollama were manually smoke-tested by the product owner.
 - Azure smoke testing passed earlier in the migration.
 
@@ -154,8 +166,8 @@ See `docs/mail-integrations.md` and `docs/messaging-integrations.md`.
 - Generic OCR REST adapter supporting multipart or Base64 JSON, API key/Bearer
   auth, and dot-path response mapping.
 - Normalized parser pages can carry text, table, confidence, and provider
-  metadata. RAG currently indexes page number and text; optional metadata is not
-  yet persisted in the search index.
+  metadata. RAG persists page number and text plus the safe provider/profile/
+  confidence allowlist described below.
 - Docling Serve and embedded Docling normalize structured provenance into real
   document pages before chunking. Tables remain on their source page, and the
   existing `SplitPage.page_num` contract produces page-aware PDF citations
@@ -268,12 +280,76 @@ Example target rules:
 | team:finance | `.pdf,.png` | Google Invoice | 70 |
 | all | `*` | Azure/system fallback | 10 |
 
+## Chat image attachments — first slice
+
+The shared Chat/Ask composer now accepts ordinary pasted text unchanged and
+accepts PNG, JPEG, WebP, or GIF images through paste, file selection, or drag
+and drop. It displays previews with per-image removal. Limits are four images,
+10 MB per image, and 20 MB combined. The browser checks these limits for fast
+feedback; the backend independently validates the declared kind/MIME/size,
+base64 data URL, decoded size, filename normalization, and file signature.
+
+The composer also exposes a visible **Vision On/Off** button. The attachment
+button is enabled only while Vision is on. `/config` exposes the normalized
+global Agent runtime mode so the UI can combine deployment availability with
+the selected Agent's runtime and model capability. Vision is disabled with an
+explanatory tooltip when the Agent model is not marked vision-capable, the
+selected/global runtime is LangGraph, or the capability is unavailable.
+Vision and Agentic Retrieval are mutually exclusive modes: enabling either
+turns the other off, rather than leaving the Vision button permanently disabled.
+Changing to an incompatible Agent turns Vision off instead of leaving a
+misleading active state. Ask now sends the selected Agent ID, matching Chat, so
+the backend applies the same managed model capability instead of the system
+profile. Chat and Ask use the stored active Agent only as an ID bookmark and
+always replace its prompt/config with the latest backend Agent record. This
+prevents an old local-storage `llm_profile_id` from hiding a newly assigned
+Vision-capable profile. Disabled-state guidance names the active Agent/profile
+or identifies an unavailable profile instead of showing a generic provider
+message.
+
+Validated images are request-local and are passed only to the existing Legacy
+vision approaches. They are not stored, indexed, added to browser chat history,
+or returned as Knowledge citations. Inline attachment bytes are redacted from
+the prompt diagnostics returned to the UI. Chat keeps an in-memory copy for the
+current page session and renders sent-image thumbnails with filenames on the
+corresponding user turn, including loading, streaming, error, and Retry states.
+The pending user turn remains visible through metadata-only stream events and
+is replaced only after the first streamed answer turn is rendered, avoiding a
+blank/flicker interval before the first answer token.
+The thumbnails are cleared for New Chat/history restore and are not available
+after a reload. A non-vision Agent, unavailable
+vision configuration, or LangGraph runtime receives a controlled HTTP 400 with
+a clear reason rather than silently ignoring the image.
+
+Current boundaries are deliberate: document attachments, private session
+storage/TTL, temporary attachment RAG, per-model vision capability, OCR-only
+fallback, and LangGraph multimodal messages are not implemented in this slice.
+The approved staged design and security acceptance criteria are in
+`docs/product-backlog.md`.
+
+### Math and special-symbol rendering
+
+Chat/Ask answers use `remark-math` and `rehype-katex` with bundled KaTeX CSS and
+fonts. Standard `$...$`/`$$...$$` Markdown math and LaTeX `\\(...\\)`/`\\[...\\]`
+delimiters render as mathematical notation. A conservative preprocessor also
+normalizes common model output that omits delimiters, including standalone/list
+formulas and balanced commands such as `\\sqrt{...}` or `\\frac{...}{...}`
+embedded in prose. Fenced code blocks are excluded so programming examples keep
+their literal backslashes. Raw HTML still passes through the existing DOMPurify
+step before Markdown/KaTeX rendering.
+
 ## Other next work
 
 ### Near-term document work
 
-1. Chat image attachments: upload/preview/remove, file limits, Agent image
-   capability, OCR-only versus multimodal vision, and safe prompt composition.
+1. Manually smoke-test the current image slice in both Ask and Chat with a real
+   Legacy vision-capable model, then checkpoint it if accepted.
+2. Continue with a provider-neutral private session `AttachmentStore`, owner/
+   conversation ACLs, TTL cleanup, document extraction, and temporary
+   attachment RAG. Do not auto-promote Chat documents into permanent Knowledge.
+3. Add the requirement-to-Knowledge-evidence matrix, per-model vision/OCR
+   routing in both runtimes, and speech improvements in that order. See
+   `docs/product-backlog.md`.
 
 ### Platform roadmap
 
@@ -324,6 +400,9 @@ The guardrail/API/dashboard discussion order is documented in
   pin versions/digests and bake/cache models for production.
 - **Frontend bundle:** the existing vendor chunk is large and requires a larger
   Node heap for reliable production builds.
+- **Chat attachments:** only request-local images in the Legacy vision runtime
+  are supported. No private attachment store, document extraction, TTL cleanup,
+  temporary RAG, LangGraph image message, or OCR-only fallback exists yet.
 - **Cosmos/Mongo compatibility:** PyMongo may warn when connected to Cosmos DB;
   avoid assuming every MongoDB feature is supported.
 - **Dirty diff size:** some frontend files contain large formatting/line-ending
@@ -365,13 +444,20 @@ Do not put real credentials in this file or examples.
 Latest service-free backend regression on 2026-08-21:
 
 ```text
-483 passed, 1 deselected
+501 passed, 1 deselected
 ```
 
 Command:
 
 ```bash
 .venv/bin/pytest -q -m 'not data_integration'
+```
+
+Latest focused provider capability, Chat attachment, configuration, and mocked
+route/vision regression:
+
+```text
+66 passed
 ```
 
 Latest focused OCR/upload/profile-idempotency validation:
@@ -414,9 +500,36 @@ Known non-blocking warnings:
 
 - Azure Monitor imports deprecated `pkg_resources` through an upstream package.
 - Vite reports an existing large vendor chunk.
+- `npm install` currently reports 18 dependency audit findings (1 low, 9
+  moderate, 8 high). No broad or breaking `npm audit fix` was applied as part
+  of the focused math-rendering slice.
 - PyMongo can emit a Cosmos DB feature-compatibility warning.
 
 ## Manual smoke-test checklist before the next checkpoint
+
+- Chat/Ask normal text paste remains unchanged. Verify **Vision Off** disables
+  the attachment picker; turn Vision on, then paste, select, and drag/drop a
+  supported image and verify preview/removal, image-only send, and limits. In
+  Chat, confirm sent thumbnails and filenames remain on the correct user turn
+  during loading and after the answer, and that Retry resends the same image.
+  Confirm a reload/history restore does not persist the inline image bytes.
+- With Legacy vision enabled, verify the real model uses the attached image and
+  that the attachment is not shown as a Knowledge citation or raw data URL in
+  prompt diagnostics. Verify both streamed Chat and non-streamed Ask.
+- In **Admin Management → LLM Providers**, run Test for at least one real
+  vision-capable managed model. Confirm the Provider card displays the Vision
+  tag and the composer updates without a browser refresh. Select the profile on
+  a Legacy Agent, toggle Vision On/Off (including while Agentic Retrieval was
+  previously on), and verify it works without setting `USE_GPT4V` or
+  `AZURE_VISION_ENDPOINT`. Reload Chat after changing the Agent profile and
+  confirm it uses the backend profile rather than a stale locally cached Agent.
+- With vision disabled and with a LangGraph Agent, verify the UI shows the
+  controlled unsupported-image message rather than silently sending or
+  ignoring the attachment.
+- Verify Answer rendering with `$x^2$`, `$$\\frac{1}{2}$$`, `\\(x+y\\)`, a raw
+  `\\sqrt{147}` embedded in Thai prose, and the nested raw expression
+  `3\\sqrt{147} - 7\\sqrt{\\frac{1}{27}}`. Confirm the same commands remain
+  literal inside a fenced code block.
 
 - Azure startup, Personal/Team/Global upload, search, deletion, and citations.
 - OCR routing precedence for Personal/Team/Global, Auto selection, authorized

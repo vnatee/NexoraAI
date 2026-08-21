@@ -47,6 +47,8 @@ def test_provider_payload_encrypts_secret_and_normalizes_models(monkeypatch):
             "deployment": None,
             "supports_tools": True,
             "tool_capability_status": "unknown",
+            "supports_vision": False,
+            "vision_capability_status": "unknown",
         }
     ]
 
@@ -168,6 +170,10 @@ def test_provider_payload_preserves_or_resets_detected_tool_capability(monkeypat
                 "tool_capability_status": "unsupported",
                 "tool_capability_checked_at": "2026-08-20T00:00:00+00:00",
                 "tool_capability_detail": "no_tool_call_returned",
+                "supports_vision": True,
+                "vision_capability_status": "supported",
+                "vision_capability_checked_at": "2026-08-20T00:00:00+00:00",
+                "vision_capability_detail": "image_request_accepted",
             }
         ],
     }
@@ -175,18 +181,31 @@ def test_provider_payload_preserves_or_resets_detected_tool_capability(monkeypat
         "name": "Ollama",
         "vendor": "ollama",
         "enabled": True,
-        "models": [{"id": "qwen", "label": "Renamed", "model": "qwen3", "supports_tools": True}],
+        "models": [
+            {
+                "id": "qwen",
+                "label": "Renamed",
+                "model": "qwen3",
+                "supports_tools": True,
+                "supports_vision": True,
+            }
+        ],
     }
     preserved = app._normalize_llm_provider_payload(payload, existing=existing)["models"][0]
     assert preserved["supports_tools"] is False
     assert preserved["tool_capability_status"] == "unsupported"
     assert preserved["tool_capability_checked_at"] == "2026-08-20T00:00:00+00:00"
+    assert preserved["supports_vision"] is True
+    assert preserved["vision_capability_status"] == "supported"
+    assert preserved["vision_capability_checked_at"] == "2026-08-20T00:00:00+00:00"
 
     payload["models"][0]["model"] = "qwen4"
     reset = app._normalize_llm_provider_payload(payload, existing=existing)["models"][0]
     assert reset["supports_tools"] is True
     assert reset["tool_capability_status"] == "unknown"
+    assert reset["vision_capability_status"] == "unknown"
     assert "tool_capability_checked_at" not in reset
+    assert "vision_capability_checked_at" not in reset
 
 
 class FakeCompletions:
@@ -274,3 +293,65 @@ def test_tool_capability_result_is_persisted_for_only_tested_model(monkeypatch):
     assert updated["models"][0]["tool_capability_status"] == "unsupported"
     assert updated["models"][0]["tool_capability_checked_at"]
     assert updated["models"][1] == {"id": "model-b", "supports_tools": True}
+
+
+@pytest.mark.asyncio
+async def test_vision_capability_probe_detects_supported_model():
+    client, completions = _fake_client(SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))]))
+
+    status, detail = await app._probe_model_vision_capability(
+        client,
+        _system_profile().settings,
+        {"vendor": "azure_openai", "provider": "azure_openai"},
+    )
+
+    assert (status, detail) == ("supported", "image_request_accepted")
+    content = completions.requests[0]["messages"][0]["content"]
+    assert content[1]["type"] == "image_url"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.asyncio
+async def test_vision_capability_probe_detects_provider_rejection():
+    client, _ = _fake_client(ValueError("This model does not support image input"))
+
+    status, detail = await app._probe_model_vision_capability(
+        client,
+        _system_profile().settings,
+        {"vendor": "azure_openai", "provider": "azure_openai"},
+    )
+
+    assert (status, detail) == ("unsupported", "provider_rejected_image_input")
+
+
+@pytest.mark.asyncio
+async def test_vision_capability_probe_keeps_ambiguous_failure_unknown():
+    client, _ = _fake_client(RuntimeError("rate limit exceeded"))
+
+    status, detail = await app._probe_model_vision_capability(
+        client,
+        _system_profile().settings,
+        {"vendor": "azure_openai", "provider": "azure_openai"},
+    )
+
+    assert (status, detail) == ("unknown", "probe_inconclusive")
+
+
+def test_vision_capability_result_is_persisted_for_only_tested_model(monkeypatch):
+    provider = {
+        "_id": "provider-1",
+        "models": [
+            {"id": "model-a", "supports_vision": False},
+            {"id": "model-b", "supports_vision": True},
+        ],
+    }
+
+    monkeypatch.setattr(app, "update_llm_provider", lambda _provider_id, updates: {**provider, **updates})
+    updated = app._store_model_vision_capability(
+        provider, "model-a", "supported", "image_request_accepted"
+    )
+
+    assert updated["models"][0]["supports_vision"] is True
+    assert updated["models"][0]["vision_capability_status"] == "supported"
+    assert updated["models"][0]["vision_capability_checked_at"]
+    assert updated["models"][1] == {"id": "model-b", "supports_vision": True}

@@ -1,3 +1,7 @@
+.composer {
+    width: 100%;
+}
+
 .questionInputContainer {
     border-radius: 0.5rem;
     box-shadow:
@@ -6,6 +10,46 @@
     width: 100%;
     padding: 0.8rem;
     /* background: white; */
+}
+
+.hiddenFileInput {
+    display: none;
+}
+
+.attachmentList {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.attachmentPreview {
+    align-items: center;
+    background: #ffffff;
+    border: 1px solid #d1d1d1;
+    border-radius: 0.5rem;
+    display: flex;
+    gap: 0.5rem;
+    max-width: 18rem;
+    padding: 0.25rem;
+}
+
+.attachmentPreview img {
+    border-radius: 0.25rem;
+    height: 3rem;
+    object-fit: cover;
+    width: 3rem;
+}
+
+.attachmentPreview span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.attachmentError {
+    color: #b10e1c;
+    margin-bottom: 0.5rem;
 }
 
 .questionInputTextArea {
@@ -17,6 +61,12 @@
     display: flex;
     flex-direction: column;
     justify-content: flex-end;
+}
+
+.questionInputOptionsContainer {
+    align-items: flex-end;
+    display: flex;
+    gap: 0.25rem;
 }
 
 @media (min-width: 992px) {

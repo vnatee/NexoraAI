@@ -11,6 +11,7 @@ from openai.types.chat import (
 from approaches.approach import Approach, DataPoints, ExtraInfo, ThoughtStep
 from approaches.promptmanager import PromptManager
 from core.authentication import AuthenticationHelper
+from core.chat_attachments import redact_inline_images
 from core.imageshelper import fetch_image
 from prepdocslib.embeddings import OpenAIEmbeddings
 
@@ -92,6 +93,10 @@ class RetrieveThenReadVisionApproach(Approach):
         vector_fields = overrides.get("vector_fields", "textAndImageEmbeddings")
         send_text_to_gptvision = overrides.get("gpt4v_input") in ["textAndImages", "texts", None]
         send_images_to_gptvision = overrides.get("gpt4v_input") in ["textAndImages", "images", None]
+        rag_vision_enabled = overrides.get("_rag_vision_enabled", True)
+        if not rag_vision_enabled:
+            vector_fields = "textEmbeddingOnly"
+            send_images_to_gptvision = False
 
         # If retrieval mode includes vectors, compute an embedding for the query
         vectors = []
@@ -126,10 +131,17 @@ class RetrieveThenReadVisionApproach(Approach):
                 if url:
                     image_sources.append(url)
 
+        prompt_image_sources = [*image_sources, *overrides.get("_image_attachments", [])]
+
         messages = self.prompt_manager.render_prompt(
             self.answer_prompt,
             self.get_system_prompt_variables(overrides.get("prompt_template"))
-            | {"user_query": q, "text_sources": text_sources, "image_sources": image_sources},
+            | {
+                "user_query": q,
+                "text_sources": text_sources,
+                "image_sources": prompt_image_sources,
+                "has_user_attachments": bool(overrides.get("_image_attachments")),
+            },
         )
 
         custom_profile = overrides.get("_llm_profile_id") not in (None, "system")
@@ -177,7 +189,7 @@ class RetrieveThenReadVisionApproach(Approach):
                 ),
                 ThoughtStep(
                     "Prompt to generate answer",
-                    messages,
+                    redact_inline_images(messages, overrides.get("_image_attachments")),
                     (
                         {"model": self.gpt4v_model, "deployment": self.gpt4v_deployment}
                         if self.gpt4v_deployment

@@ -37,6 +37,10 @@ Make sure the last question ends with ">>".
 
 user:
 {{ user_query }}
+{% if has_user_attachments %}
+The user attached one or more of the images below. Analyze them as user-provided
+input, but do not present them as Knowledge sources or fabricate citations for them.
+{% endif %}
 {% for image_source in image_sources %}
 ![Image]({{image_source}})
 {% endfor %}

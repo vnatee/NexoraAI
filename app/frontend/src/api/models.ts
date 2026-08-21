@@ -50,6 +50,15 @@ export type ResponseMessage = {
     role: string;
 };
 
+export type ChatAttachmentInput = {
+    id: string;
+    kind: "image";
+    name: string;
+    mime_type: string;
+    size: number;
+    data_url: string;
+};
+
 export type Thoughts = {
     title: string;
     description: any; // It can be any output from the api
@@ -93,6 +102,7 @@ export type ChatAppRequestContext = {
 
 export type ChatAppRequest = {
     messages: ResponseMessage[];
+    attachments?: ChatAttachmentInput[];
     context?: ChatAppRequestContext;
     session_state: any;
     gid?: string;
@@ -106,6 +116,7 @@ export type ChatAppRequest = {
 
 export type Config = {
     runtimeMode?: "azure" | "local";
+    agentRuntimeMode?: "legacy" | "langgraph" | "per_agent";
     llmProvider?: string;
     embeddingProvider?: string;
     llmProfiles: LLMProfile[];
@@ -134,6 +145,7 @@ export type LLMProfile = {
     managedProviderId?: string;
     managedModelId?: string;
     supportsTools?: boolean;
+    supportsVision?: boolean;
 };
 
 export type LLMProviderModel = {
@@ -145,6 +157,10 @@ export type LLMProviderModel = {
     tool_capability_status?: "unknown" | "supported" | "unsupported";
     tool_capability_checked_at?: string;
     tool_capability_detail?: string;
+    supports_vision?: boolean;
+    vision_capability_status?: "unknown" | "supported" | "unsupported";
+    vision_capability_checked_at?: string;
+    vision_capability_detail?: string;
 };
 
 export type LLMVendor =

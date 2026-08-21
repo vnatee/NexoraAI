@@ -4,13 +4,17 @@ import { useTranslation } from "react-i18next";
 import DOMPurify from "dompurify";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import rehypeRaw from "rehype-raw";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 
 import styles from "./Answer.module.css";
 import { ChatAppResponse, getCitationFilePath, SpeechConfig } from "../../api";
 import { parseAnswerToHtml } from "./AnswerParser";
 import { EChartsRenderer } from "./EChartsRenderer";
 import { AnswerIcon } from "./AnswerIcon";
+import { normalizeMathMarkdown } from "./mathMarkdown";
 import { SpeechOutputBrowser } from "./SpeechOutputBrowser";
 import { SpeechOutputAzure } from "./SpeechOutputAzure";
 import {
@@ -105,7 +109,7 @@ export const Answer = ({
     };
     const { result: answerWithoutChartSpec, isGenerating: isGeneratingChart } = stripChartSpec(parsedAnswer.answerHtml, isStreaming);
     const sanitizedAnswerHtml = DOMPurify.sanitize(answerWithoutChartSpec);
-    const markdownReady = sanitizedAnswerHtml.replace(/\n/g, "  \n");
+    const markdownReady = normalizeMathMarkdown(sanitizedAnswerHtml).replace(/\n/g, "  \n");
 
     const [copied, setCopied] = useState(false);
 
@@ -203,8 +207,8 @@ export const Answer = ({
                     {/* <ReactMarkdown children={sanitizedAnswerHtml} rehypePlugins={[rehypeRaw]} remarkPlugins={[remarkGfm]} /> */}
                     <ReactMarkdown
                         children={markdownReady}
-                        rehypePlugins={[rehypeRaw]}
-                        remarkPlugins={[remarkGfm]}
+                        rehypePlugins={[rehypeRaw, [rehypeKatex, { strict: false, throwOnError: false }]]}
+                        remarkPlugins={[remarkGfm, remarkMath]}
                         components={{
                             table: ({ node, ...props }: any) => (
                                 <TableContainer

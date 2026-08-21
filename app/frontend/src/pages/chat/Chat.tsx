@@ -15,6 +15,7 @@ import {
     ChatAppResponse,
     ChatAppResponseOrError,
     ChatAppRequest,
+    ChatAttachmentInput,
     ResponseMessage,
     VectorFields,
     GPT4VInput,
@@ -143,9 +144,12 @@ const Chat = () => {
     const [selectedAnswer, setSelectedAnswer] = useState<number>(0);
     const [answers, setAnswers] = useState<[user: string, response: ChatAppResponse][]>([]);
     const [streamedAnswers, setStreamedAnswers] = useState<[user: string, response: ChatAppResponse][]>([]);
+    const [turnAttachments, setTurnAttachments] = useState<Record<number, ChatAttachmentInput[]>>({});
+    const isWaitingForStreamedTurn = isStreaming && streamedAnswers.length <= answers.length;
     const [speechUrls, setSpeechUrls] = useState<(string | null)[]>([]);
 
     const [showGPT4VOptions, setShowGPT4VOptions] = useState<boolean>(false);
+    const [agentRuntimeMode, setAgentRuntimeMode] = useState<"legacy" | "langgraph" | "per_agent">("per_agent");
     const [showSemanticRankerOption, setShowSemanticRankerOption] = useState<boolean>(false);
     const [showQueryRewritingOption, setShowQueryRewritingOption] = useState<boolean>(false);
     const [showReasoningEffortOption, setShowReasoningEffortOption] = useState<boolean>(false);
@@ -219,6 +223,24 @@ const Chat = () => {
     const didLoadGroupsRef = useRef(false);
     const { showNotification } = useNotification();
     const [fixedPrompts, setFixedPrompts] = useState<any>(null);
+    const usesLangGraph =
+        agentRuntimeMode === "langgraph" || (agentRuntimeMode === "per_agent" && selectedAgent?.config?.runtime === "langgraph");
+    const selectedLlmProfileId = selectedAgent?.config?.llm_profile_id || "system";
+    const selectedLlmProfile = llmProfiles.find(profile => profile.id === selectedLlmProfileId);
+    const modelSupportsVision = selectedLlmProfile?.supportsVision ?? (selectedLlmProfileId === "system" && showGPT4VOptions);
+    const visionAvailable = modelSupportsVision && !usesLangGraph;
+    const selectedLlmProfileLabel = selectedLlmProfile?.label ?? (selectedLlmProfileId === "system" ? "System default" : selectedLlmProfileId);
+    const visionDisabledReason = !selectedLlmProfile && selectedLlmProfileId !== "system"
+        ? `Agent ${selectedAgent?.agent_name ?? "selected"} references unavailable LLM profile ${selectedLlmProfileId}. Re-select its model in Agent Management.`
+        : !modelSupportsVision
+        ? `${selectedAgent?.agent_name ?? "The selected agent"} uses ${selectedLlmProfileLabel}, which is not marked as vision-capable. Select the tested Vision model in Agent Management.`
+        : usesLangGraph
+          ? "Vision attachments are not supported by the LangGraph runtime yet."
+          : undefined;
+
+    useEffect(() => {
+        if (!visionAvailable) setUseGPT4V(false);
+    }, [visionAvailable]);
     const [isAgentsLoading, setIsAgentsLoading] = useState(false);
     const [isGroupsLoading, setIsGroupsLoading] = useState(false);
     const isPageLoading = isUserLoading || isAgentsLoading || isGroupsLoading;
@@ -362,9 +384,7 @@ const Chat = () => {
         configApi().then(config => {
             setLlmProfiles(config.llmProfiles ?? []);
             setShowGPT4VOptions(config.showGPT4VOptions);
-            if (config.showGPT4VOptions) {
-                setUseGPT4V(true);
-            }
+            setAgentRuntimeMode(config.agentRuntimeMode ?? "per_agent");
             setUseSemanticRanker(config.showSemanticRankerOption);
             setShowSemanticRankerOption(config.showSemanticRankerOption);
             setUseQueryRewriting(config.showQueryRewritingOption);
@@ -582,8 +602,16 @@ const Chat = () => {
         };
     }
 
-    const makeApiRequest = async (question: string, api_result?: any) => {
+    const makeApiRequest = async (question: string, api_result?: any, attachments: ChatAttachmentInput[] = []) => {
         lastQuestionRef.current = question;
+
+        const requestIndex = answers.length;
+        setTurnAttachments(current => {
+            const next = { ...current };
+            if (attachments.length > 0) next[requestIndex] = [...attachments];
+            else delete next[requestIndex];
+            return next;
+        });
 
         error && setError(undefined);
         setIsLoading(true);
@@ -619,6 +647,7 @@ const Chat = () => {
 
             const request: ChatAppRequest = {
                 messages: [...messages, { content: question, role: "user" }],
+                ...(attachments.length ? { attachments } : {}),
                 context: {
                     overrides: {
                         prompt_template: promptString.length === 0 ? undefined : promptString,
@@ -661,7 +690,8 @@ const Chat = () => {
                 throw Error("No response body");
             }
             if (response.status > 299 || !response.ok) {
-                throw Error(`Request failed with status ${response.status}`);
+                const errorResponse = await response.json().catch(() => undefined);
+                throw Error(errorResponse?.error || `Request failed with status ${response.status}`);
             }
             if (shouldStream) {
                 const parsedResponse: ChatAppResponse = await handleAsyncRequest(question, answers, response.body);
@@ -706,6 +736,7 @@ const Chat = () => {
         setAnswers([]);
         setSpeechUrls([]);
         setStreamedAnswers([]);
+        setTurnAttachments({});
         setIsLoading(false);
         setIsStreaming(false);
     };
@@ -718,6 +749,15 @@ const Chat = () => {
     }, [streamedAnswers]);
     useEffect(() => {
         getConfig();
+        const refreshCapabilities = () => {
+            void configApi().then(config => {
+                setLlmProfiles(config.llmProfiles ?? []);
+                setShowGPT4VOptions(config.showGPT4VOptions);
+                setAgentRuntimeMode(config.agentRuntimeMode ?? "per_agent");
+            });
+        };
+        window.addEventListener("nexora:llm-profiles-changed", refreshCapabilities);
+        return () => window.removeEventListener("nexora:llm-profiles-changed", refreshCapabilities);
     }, []);
 
     // Detect outside click
@@ -814,6 +854,7 @@ const Chat = () => {
                 break;
             case "useAgenticRetrieval":
                 setUseAgenticRetrieval(value);
+                if (value) setUseGPT4V(false);
         }
     };
 
@@ -977,6 +1018,9 @@ const Chat = () => {
 
         // 1) อัปเดต state ให้แชทโหลดบทสนทนานี้
         setAnswers(answersFromHistory);
+        // Inline images are deliberately session-only and are never restored
+        // from browser/Cosmos history.
+        setTurnAttachments({});
 
         // 2) เซ็ต last question
         if (answersFromHistory.length > 0) {
@@ -1119,39 +1163,21 @@ const Chat = () => {
                 savedAgent = null;
             }
 
-            const hasAgentChanged = (oldA: Agent, newA: Agent) => {
-                return JSON.stringify(oldA.prompt ?? {}) !== JSON.stringify(newA.prompt ?? {}) || oldA.update_at !== newA.update_at;
-            };
-
             let restoredAgent: Agent | null = null;
 
             if (savedAgent?._id) {
-                const apiAgent = agentsList.find(a => a._id === savedAgent._id) ?? null;
-
-                if (apiAgent) {
-                    if (hasAgentChanged(savedAgent, apiAgent)) {
-                        // 🔄 backend เปลี่ยน → overwrite ทั้งก้อน
-                        restoredAgent = {
-                            ...savedAgent,
-                            ...apiAgent
-                        };
-
-                        Storage.set(STORAGE_KEYS.ACTIVE_AGENT, JSON.stringify(restoredAgent));
-                    } else {
-                        // ✅ ไม่เปลี่ยน
-                        restoredAgent = savedAgent;
-                    }
-                }
+                // The stored object only identifies the active Agent. Its prompt and
+                // model configuration must always come from the backend so provider
+                // capability changes cannot be masked by a stale local snapshot.
+                restoredAgent = agentsList.find(a => a._id === savedAgent._id) ?? null;
             }
 
             // 3) agent ที่จะใช้จริง
             const nextSelectedAgent = restoredAgent ?? agentsList[0];
             setSelectedAgent(nextSelectedAgent);
 
-            // 4) persist ACTIVE_AGENT (กรณีไม่มี savedAgent มาก่อน)
-            if (!savedAgent) {
-                Storage.set(STORAGE_KEYS.ACTIVE_AGENT, JSON.stringify(nextSelectedAgent));
-            }
+            // 4) Keep the cache aligned with the backend snapshot.
+            Storage.set(STORAGE_KEYS.ACTIVE_AGENT, JSON.stringify(nextSelectedAgent));
 
             // 5) Restore ACTIVE_AGENT_UI_PREFS (เหมือนเดิม)
             const prefsMap = readAgentUIPrefs(username, teamId);
@@ -1449,7 +1475,7 @@ const Chat = () => {
                             {isStreaming &&
                                 streamedAnswers.map((streamedAnswer, index) => (
                                     <div key={index}>
-                                        <UserChatMessage message={streamedAnswer[0]} />
+                                        <UserChatMessage message={streamedAnswer[0]} attachments={turnAttachments[index]} />
                                         <div className={styles.chatMessageGpt}>
                                             <Answer
                                                 isStreaming={true}
@@ -1477,7 +1503,7 @@ const Chat = () => {
                             {!isStreaming &&
                                 answers.map((answer, index) => (
                                     <div key={index}>
-                                        <UserChatMessage message={answer[0]} />
+                                        <UserChatMessage message={answer[0]} attachments={turnAttachments[index]} />
                                         <div className={styles.chatMessageGpt}>
                                             <Answer
                                                 isStreaming={false}
@@ -1502,9 +1528,9 @@ const Chat = () => {
                                         </div>
                                     </div>
                                 ))}
-                            {isLoading && (
+                            {(isLoading || isWaitingForStreamedTurn) && (
                                 <>
-                                    <UserChatMessage message={lastQuestionRef.current} />
+                                    <UserChatMessage message={lastQuestionRef.current} attachments={turnAttachments[answers.length]} />
                                     <div className={styles.chatMessageGptMinWidth}>
                                         <AnswerLoading />
                                     </div>
@@ -1512,9 +1538,12 @@ const Chat = () => {
                             )}
                             {error ? (
                                 <>
-                                    <UserChatMessage message={lastQuestionRef.current} />
+                                    <UserChatMessage message={lastQuestionRef.current} attachments={turnAttachments[answers.length]} />
                                     <div className={styles.chatMessageGptMinWidth}>
-                                        <AnswerError error={error.toString()} onRetry={() => makeApiRequest(lastQuestionRef.current)} />
+                                        <AnswerError
+                                            error={error.toString()}
+                                            onRetry={() => makeApiRequest(lastQuestionRef.current, undefined, turnAttachments[answers.length] ?? [])}
+                                        />
                                     </div>
                                 </>
                             ) : null}
@@ -1531,8 +1560,15 @@ const Chat = () => {
                                 clearOnSend
                                 placeholder={t("defaultExamples.placeholder")}
                                 disabled={isLoading}
-                                onSend={question => makeApiRequest(question)}
+                                onSend={(question, attachments) => makeApiRequest(question, undefined, attachments)}
                                 showSpeechInput={showSpeechInput}
+                                visionAvailable={visionAvailable}
+                                visionEnabled={useGPT4V}
+                                visionDisabledReason={visionDisabledReason}
+                                onVisionChange={enabled => {
+                                    setUseGPT4V(enabled);
+                                    if (enabled) setUseAgenticRetrieval(false);
+                                }}
                             />
                         </div>
                     )}

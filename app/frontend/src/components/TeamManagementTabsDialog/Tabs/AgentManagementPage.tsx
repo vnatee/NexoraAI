@@ -44,8 +44,10 @@ import {
     MailBindingData,
     MailEmailConfig,
     ChartBindingData,
-    ManagedMCPServer
-    ,MessagingConnection, MessagingBindingData
+    ManagedMCPServer,
+    LLMProfile,
+    MessagingConnection,
+    MessagingBindingData
 } from "../../../api";
 import { getToken, getUsername } from "../../../authConfig";
 import { STORAGE_KEYS } from "../../../utill/storageKeys";
@@ -433,7 +435,7 @@ function AgentDialog({
         }
     }, [open]);
 
-    const [llmProfiles, setLlmProfiles] = useState<Array<{ id: string; label: string; provider: string; model: string }>>([]);
+    const [llmProfiles, setLlmProfiles] = useState<LLMProfile[]>([]);
     const [mcpServers, setMcpServers] = useState<ManagedMCPServer[]>([]);
 
     useEffect(() => {
@@ -721,6 +723,8 @@ function AgentDialog({
                                     {llmProfiles.map(profile => (
                                         <MenuItem key={profile.id} value={profile.id}>
                                             {profile.label} — {profile.model} ({profile.provider})
+                                            {profile.supportsVision ? " · Vision" : ""}
+                                            {profile.supportsTools ? " · Tools" : ""}
                                         </MenuItem>
                                     ))}
                                 </TextField>
