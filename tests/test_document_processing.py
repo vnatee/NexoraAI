@@ -1,4 +1,6 @@
+import sys
 from io import BytesIO
+from types import ModuleType
 
 import pytest
 from cryptography.fernet import Fernet
@@ -7,8 +9,10 @@ from quart.datastructures import FileStorage
 import app as app_module
 from mongo_table_connecters import document_processing as storage
 from prepdocslib import documentprocessing
+from prepdocslib.blobmanager import BlobManager
 from prepdocslib.page import Page
 from prepdocslib.parser import Parser
+from prepdocslib.textsplitter import SentenceTextSplitter
 
 
 class NamedBytesIO(BytesIO):
@@ -316,6 +320,154 @@ class FakeHTTPSession:
     def post(self, url, **kwargs):
         self.request = (url, kwargs)
         return FakeHTTPResponse(self.payload)
+
+
+def test_docling_structured_output_preserves_page_provenance_and_tables():
+    document = {
+        "body": {
+            "children": [
+                {"$ref": "#/texts/0"},
+                {"$ref": "#/texts/1"},
+                {"$ref": "#/tables/0"},
+            ]
+        },
+        "texts": [
+            {"label": "text", "text": "First page", "prov": [{"page_no": 1}]},
+            {"label": "text", "text": "Third page", "prov": [{"page_no": 3}]},
+        ],
+        "tables": [
+            {
+                "label": "table",
+                "prov": [{"page_no": 3}],
+                "data": {"grid": [[{"text": "Item"}, {"text": "Total"}], [{"text": "A"}, {"text": "10"}]]},
+            }
+        ],
+    }
+
+    pages = documentprocessing._docling_pages(document)
+
+    assert [page.page_num for page in pages] == [0, 2]
+    assert pages[1].offset == len(pages[0].text)
+    assert "Third page" in pages[1].text
+    assert "| Item | Total |" in pages[1].text
+    assert pages[1].metadata["tables"] == ["| Item | Total |\n| --- | --- |\n| A | 10 |"]
+    assert BlobManager.sourcepage_from_file_page("report.pdf", pages[1].page_num) == "report.pdf#page=3"
+
+
+def test_docling_page_numbers_survive_chunking():
+    pages = documentprocessing._docling_pages(
+        {
+            "body": {"children": [{"$ref": "#/texts/0"}, {"$ref": "#/texts/1"}]},
+            "texts": [
+                {"text": "First sentence. " * 100, "prov": [{"page_no": 1}]},
+                {"text": "Third sentence. " * 100, "prov": [{"page_no": 3}]},
+            ],
+        }
+    )
+
+    chunks = list(SentenceTextSplitter().split_pages(pages))
+
+    assert {chunk.page_num for chunk in chunks} == {0, 2}
+
+
+@pytest.mark.asyncio
+async def test_docling_service_uses_structured_pages(monkeypatch):
+    FakeHTTPSession.payload = {
+        "document": {
+            "md_content": "legacy markdown",
+            "json_content": {
+                "body": {"children": [{"$ref": "#/texts/0"}, {"$ref": "#/texts/1"}]},
+                "texts": [
+                    {"text": "Page one", "prov": [{"page_no": 1}]},
+                    {"text": "Page two", "prov": [{"page_no": 2}]},
+                ],
+            },
+        }
+    }
+    monkeypatch.setattr(documentprocessing.aiohttp, "ClientSession", FakeHTTPSession)
+    parser = documentprocessing.DoclingParser(
+        {"execution_mode": "service", "endpoint": "http://docling:5001", "extract_tables": True}
+    )
+
+    pages = [page async for page in parser.parse(NamedBytesIO(b"pdf"))]
+
+    assert [page.page_num for page in pages] == [0, 1]
+    assert [page.text.strip() for page in pages] == ["Page one", "Page two"]
+
+
+@pytest.mark.asyncio
+async def test_docling_service_keeps_markdown_fallback(monkeypatch):
+    FakeHTTPSession.payload = {"document": {"md_content": "legacy markdown"}}
+    monkeypatch.setattr(documentprocessing.aiohttp, "ClientSession", FakeHTTPSession)
+    parser = documentprocessing.DoclingParser(
+        {"execution_mode": "service", "endpoint": "http://docling:5001", "extract_tables": True}
+    )
+
+    pages = [page async for page in parser.parse(NamedBytesIO(b"pdf"))]
+
+    assert len(pages) == 1
+    assert pages[0].page_num == 0
+    assert pages[0].text == "legacy markdown"
+
+
+@pytest.mark.asyncio
+async def test_docling_service_retries_markdown_when_json_format_is_rejected(monkeypatch):
+    class NegotiatingSession:
+        responses = [
+            (422, {"detail": "JSON output is not supported"}),
+            (200, {"document": {"md_content": "compatible markdown"}}),
+        ]
+        call_count = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        def post(self, url, **kwargs):
+            status, payload = self.responses[self.call_count]
+            self.__class__.call_count += 1
+            return FakeHTTPResponse(payload, status=status)
+
+    monkeypatch.setattr(documentprocessing.aiohttp, "ClientSession", NegotiatingSession)
+    parser = documentprocessing.DoclingParser(
+        {"execution_mode": "service", "endpoint": "http://docling:5001", "extract_tables": True}
+    )
+
+    pages = [page async for page in parser.parse(NamedBytesIO(b"pdf"))]
+
+    assert NegotiatingSession.call_count == 2
+    assert pages[0].page_num == 0
+    assert pages[0].text == "compatible markdown"
+
+
+def test_embedded_docling_uses_structured_pages(monkeypatch):
+    class FakeDocument:
+        def export_to_dict(self):
+            return {
+                "body": {"children": [{"$ref": "#/texts/0"}]},
+                "texts": [{"text": "Embedded page two", "prov": [{"page_no": 2}]}],
+            }
+
+    class FakeDocumentConverter:
+        def convert(self, path):
+            return type("ConversionResult", (), {"document": FakeDocument()})()
+
+    docling_module = ModuleType("docling")
+    converter_module = ModuleType("docling.document_converter")
+    converter_module.DocumentConverter = FakeDocumentConverter
+    monkeypatch.setitem(sys.modules, "docling", docling_module)
+    monkeypatch.setitem(sys.modules, "docling.document_converter", converter_module)
+
+    pages = documentprocessing.DoclingParser._convert(NamedBytesIO(b"pdf"))
+
+    assert len(pages) == 1
+    assert pages[0].page_num == 1
+    assert pages[0].text.strip() == "Embedded page two"
 
 
 @pytest.mark.asyncio

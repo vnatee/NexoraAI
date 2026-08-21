@@ -47,6 +47,126 @@ def _render_tables(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2)
 
 
+def _json_pointer(value: Any, reference: str) -> Any:
+    current = value
+    for raw_part in str(reference).removeprefix("#/").split("/"):
+        part = raw_part.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
+            current = current[int(part)]
+        else:
+            return None
+    return current
+
+
+def _docling_table_markdown(item: dict[str, Any]) -> str:
+    data = item.get("data") or {}
+    grid = data.get("grid")
+    if isinstance(grid, list) and grid:
+        rows = [
+            [str(cell.get("text") or "") if isinstance(cell, dict) else str(cell or "") for cell in row]
+            for row in grid
+            if isinstance(row, list)
+        ]
+    else:
+        cells = data.get("table_cells") or data.get("tableCells") or []
+        row_count = int(data.get("num_rows") or data.get("numRows") or 0)
+        column_count = int(data.get("num_cols") or data.get("numCols") or 0)
+        rows = [[""] * column_count for _ in range(row_count)]
+        for cell in cells if isinstance(cells, list) else []:
+            if not isinstance(cell, dict):
+                continue
+            row = int(cell.get("start_row_offset_idx") or cell.get("startRowOffsetIdx") or 0)
+            column = int(cell.get("start_col_offset_idx") or cell.get("startColOffsetIdx") or 0)
+            if 0 <= row < row_count and 0 <= column < column_count:
+                rows[row][column] = str(cell.get("text") or "")
+    if not rows or not any(rows):
+        return str(item.get("text") or item.get("orig") or "").strip()
+    width = max(len(row) for row in rows)
+    rows = [row + [""] * (width - len(row)) for row in rows]
+    escaped = [[value.replace("|", "\\|").replace("\n", " ") for value in row] for row in rows]
+    separator = ["---"] * width
+    return "\n".join("| " + " | ".join(row) + " |" for row in [escaped[0], separator, *escaped[1:]])
+
+
+def _docling_pages(document: Any) -> list[Page]:
+    """Normalize a DoclingDocument export without coupling it to a search backend."""
+
+    if isinstance(document, str):
+        try:
+            document = json.loads(document)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(document, dict):
+        return []
+
+    page_parts: dict[int, list[str]] = {}
+    page_tables: dict[int, list[str]] = {}
+    visited: set[str] = set()
+
+    def add_item(item: Any, reference: str = "") -> None:
+        if reference:
+            if reference in visited:
+                return
+            visited.add(reference)
+        if not isinstance(item, dict):
+            return
+        provenance = item.get("prov") or item.get("provenance") or []
+        first_provenance = provenance[0] if isinstance(provenance, list) and provenance else {}
+        page_number = int(
+            (first_provenance or {}).get("page_no")
+            or (first_provenance or {}).get("pageNo")
+            or item.get("page_no")
+            or item.get("pageNo")
+            or 1
+        )
+        page_num = max(0, page_number - 1)
+        label = str(item.get("label") or "").lower()
+        if label == "table" or reference.startswith("#/tables/"):
+            rendered = _docling_table_markdown(item)
+            if rendered:
+                page_parts.setdefault(page_num, []).append(rendered)
+                page_tables.setdefault(page_num, []).append(rendered)
+            return
+        rendered = str(item.get("text") or item.get("orig") or "").strip()
+        if rendered:
+            page_parts.setdefault(page_num, []).append(rendered)
+            return
+        for child in item.get("children") or []:
+            child_reference = str(child.get("$ref") or "") if isinstance(child, dict) else ""
+            add_item(_json_pointer(document, child_reference) if child_reference else child, child_reference)
+
+    body = document.get("body") or {}
+    for child in body.get("children") or []:
+        reference = str(child.get("$ref") or "") if isinstance(child, dict) else ""
+        add_item(_json_pointer(document, reference) if reference else child, reference)
+
+    if not page_parts:
+        for collection_name in ("texts", "tables", "key_value_items", "form_items", "pictures"):
+            values = document.get(collection_name) or []
+            for index, item in enumerate(values if isinstance(values, list) else []):
+                add_item(item, f"#/{collection_name}/{index}")
+
+    pages: list[Page] = []
+    offset = 0
+    for page_num in sorted(page_parts):
+        text = "\n\n".join(part for part in page_parts[page_num] if part).strip()
+        if not text:
+            continue
+        text += "\n"
+        pages.append(
+            Page(
+                page_num=page_num,
+                offset=offset,
+                text=text,
+                metadata={"provider": "Docling", "tables": page_tables.get(page_num, [])},
+            )
+        )
+        offset += len(text)
+    return pages
+
+
 def _mime_type(content: IO) -> str:
     name = str(getattr(content, "name", "document.pdf"))
     return mimetypes.guess_type(name)[0] or "application/octet-stream"
@@ -344,38 +464,86 @@ class DoclingParser(Parser):
 
     async def parse(self, content: IO) -> AsyncGenerator[Page, None]:
         if self.config.get("execution_mode", "service") == "service":
-            markdown = await self._convert_service(content)
+            pages = await self._convert_service(content)
         else:
-            markdown = await asyncio.to_thread(self._convert, content)
-        yield Page(page_num=0, offset=0, text=markdown)
+            pages = await asyncio.to_thread(self._convert, content)
+        for page in pages:
+            yield page
 
-    async def _convert_service(self, content: IO) -> str:
+    async def _convert_service(self, content: IO) -> list[Page]:
         endpoint = normalize_docling_endpoint(self.config.get("endpoint") or "http://docling:5001")
         content.seek(0)
-        form = aiohttp.FormData()
-        form.add_field("files", content.read(), filename=Path(getattr(content, "name", "document.pdf")).name)
-        form.add_field("to_formats", "md")
-        form.add_field("do_ocr", "true")
-        form.add_field("do_table_structure", "true" if self.config.get("extract_tables", True) else "false")
-        form.add_field("table_mode", "accurate" if self.config.get("extract_tables", True) else "fast")
-        for language in self.config.get("languages") or []:
-            if str(language).strip():
-                form.add_field("ocr_lang", str(language).strip())
+        raw = content.read()
+        filename = Path(getattr(content, "name", "document.pdf")).name
+
+        def request_form(output_format: str) -> aiohttp.FormData:
+            form = aiohttp.FormData()
+            form.add_field("files", raw, filename=filename)
+            form.add_field("to_formats", output_format)
+            form.add_field("do_ocr", "true")
+            form.add_field("do_table_structure", "true" if self.config.get("extract_tables", True) else "false")
+            form.add_field("table_mode", "accurate" if self.config.get("extract_tables", True) else "fast")
+            for language in self.config.get("languages") or []:
+                if str(language).strip():
+                    form.add_field("ocr_lang", str(language).strip())
+            return form
+
+        async def convert(session: aiohttp.ClientSession, output_format: str) -> tuple[int, Any]:
+            async with session.post(
+                f"{endpoint}/v1/convert/file", data=request_form(output_format)
+            ) as response:
+                return response.status, await response.json(content_type=None)
+
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as session:
-                async with session.post(f"{endpoint}/v1/convert/file", data=form) as response:
-                    payload = await response.json(content_type=None)
-                    if response.status >= 400:
-                        raise ValueError(f"Docling Serve returned HTTP {response.status}: {payload}")
+                status, payload = await convert(session, "json")
+                if status >= 400:
+                    logger.warning(
+                        "Docling Serve JSON conversion returned HTTP %s; retrying Markdown compatibility mode",
+                        status,
+                    )
+                    json_error = payload
+                    status, payload = await convert(session, "md")
+                    if status >= 400:
+                        raise ValueError(
+                            f"Docling Serve returned HTTP {status}: {payload}; JSON request also failed: {json_error}"
+                        )
+                elif isinstance(payload, dict):
+                    converted_document = payload.get("document") or {}
+                    pages = _docling_pages(converted_document.get("json_content"))
+                    if pages:
+                        return pages
+                    markdown = str(converted_document.get("md_content") or "")
+                    if markdown.strip():
+                        return [Page(page_num=0, offset=0, text=markdown, metadata={"provider": "Docling"})]
+                    logger.warning(
+                        "Docling Serve JSON response contained no recognized pages; retrying Markdown compatibility mode"
+                    )
+                    status, payload = await convert(session, "md")
+                    if status >= 400:
+                        raise ValueError(f"Docling Serve Markdown fallback returned HTTP {status}: {payload}")
+                else:
+                    logger.warning(
+                        "Docling Serve JSON response was not an object; retrying Markdown compatibility mode"
+                    )
+                    status, payload = await convert(session, "md")
+                    if status >= 400:
+                        raise ValueError(f"Docling Serve Markdown fallback returned HTTP {status}: {payload}")
         finally:
             content.seek(0)
-        markdown = str((payload.get("document") or {}).get("md_content") or "")
+        if not isinstance(payload, dict):
+            raise ValueError("Docling Serve returned an invalid response")
+        converted_document = payload.get("document") or {}
+        pages = _docling_pages(converted_document.get("json_content"))
+        if pages:
+            return pages
+        markdown = str(converted_document.get("md_content") or "")
         if not markdown.strip():
             raise ValueError(f"Docling Serve returned no Markdown content: {payload.get('errors') or payload.get('status')}")
-        return markdown
+        return [Page(page_num=0, offset=0, text=markdown, metadata={"provider": "Docling"})]
 
     @staticmethod
-    def _convert(content: IO) -> str:
+    def _convert(content: IO) -> list[Page]:
         try:
             from docling.document_converter import DocumentConverter
         except ImportError as exc:
@@ -388,10 +556,31 @@ class DoclingParser(Parser):
                 temporary.write(content.read())
                 temporary_path = temporary.name
             result = DocumentConverter().convert(temporary_path)
+            if hasattr(result.document, "export_to_dict"):
+                pages = _docling_pages(result.document.export_to_dict())
+                if pages:
+                    return pages
+            exported_pages: list[Page] = []
+            offset = 0
+            for page_number in sorted(int(value) for value in (getattr(result.document, "pages", {}) or {})):
+                markdown = result.document.export_to_markdown(page_no=page_number)
+                if not markdown.strip():
+                    continue
+                exported_pages.append(
+                    Page(
+                        page_num=max(0, page_number - 1),
+                        offset=offset,
+                        text=markdown,
+                        metadata={"provider": "Docling"},
+                    )
+                )
+                offset += len(markdown)
+            if exported_pages:
+                return exported_pages
             markdown = result.document.export_to_markdown()
             if not markdown.strip():
                 raise ValueError("Docling returned no searchable content")
-            return markdown
+            return [Page(page_num=0, offset=0, text=markdown, metadata={"provider": "Docling"})]
         finally:
             content.seek(0)
             if temporary_path:
