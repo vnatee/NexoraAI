@@ -176,18 +176,22 @@ using the OpenAI-compatible multimodal message contract.
   or ambiguous compatibility error. The administrator's existing setting is
   preserved and remains editable.
 
-After saving/testing the model, select that LLM profile on a Legacy Agent. The
-Chat and Ask composers enable their **Vision On/Off** control for that Agent.
-User-attached images use the selected managed model directly and do not require
+After saving/testing the model, select that LLM profile on a Legacy Agent and
+enable **Image input** under **Agent Info → Message attachments**. Chat and Ask
+then accept user-attached images without a per-message Vision switch. The
+selected managed model receives those images directly and does not require
 `USE_GPT4V` or `AZURE_VISION_ENDPOINT`.
 
 The Provider card shows per-model capability tags from the latest conclusive
 Test result. Chat and Ask refresh those capabilities immediately after a
-provider Save/Test/Delete. Vision and Agentic Retrieval are mutually exclusive;
-turning Vision on turns Agentic Retrieval off, and turning Agentic Retrieval on
-turns Vision off.
+provider Save/Test/Delete. Image input and Agentic Retrieval remain mutually
+exclusive only for a request that actually contains an image. Enabling the
+Agent image policy grants permission but does not force text-only or
+document-only messages through the Vision path.
 
-The legacy environment feature remains separate: `USE_GPT4V=true` and
-`AZURE_VISION_ENDPOINT` enable Azure Knowledge image embeddings/retrieval and
-the system profile's vision behavior. They are not required merely to send an
-image attachment to a Portal-managed vision model.
+The legacy environment feature remains separate: Azure Knowledge image
+embeddings/retrieval require both `USE_GPT4V=true` and a valid absolute HTTP(S)
+`AZURE_VISION_ENDPOINT`. With the flag but no valid endpoint, retrieval falls
+back to text instead of attempting a malformed Computer Vision URL. These
+settings are not required merely to send an image attachment to a
+Portal-managed vision model.

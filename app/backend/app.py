@@ -4,6 +4,7 @@ import io
 from io import BytesIO
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -125,6 +126,22 @@ from mongo_table_connecters.ingestion_jobs import (
     serialize_ingestion_job,
     update_ingestion_job_status,
 )
+from mongo_table_connecters.chat_attachment_metadata import (
+    create_attachment_metadata,
+    delete_expired_attachment_metadata,
+    ensure_attachment_metadata_indexes,
+    get_attachment_metadata,
+    get_attachment_metadata_by_upload_id,
+    list_attachment_metadata,
+    serialize_attachment_metadata,
+    soft_delete_attachment_metadata,
+    update_attachment_status,
+)
+from mongo_table_connecters.chat_attachment_index import (
+    MongoAttachmentIndex,
+    ensure_attachment_index_indexes,
+)
+from pymongo.errors import DuplicateKeyError
 
 from azure.cognitiveservices.speech import (
     ResultReason,
@@ -178,6 +195,32 @@ from agent_runtime.factory import create_agent_runtime
 from agent_runtime.charting import ChartValidationError, validate_echarts_spec
 from agent_runtime.adapters.mcp import MCPServerConfig, discover_mcp_tools
 from core.chat_attachments import ChatAttachmentError, validate_chat_attachments
+from core.attachment_cleanup import cleanup_expired_attachments
+from core.attachment_extraction import AttachmentExtractionError, extract_attachment_chunks
+from core.attachment_index import AttachmentIndex
+from core.attachment_retrieval import (
+    ATTACHMENT_EVIDENCE_KNOWLEDGE_ONLY,
+    ATTACHMENT_EVIDENCE_UPLOADED_ONLY,
+    AttachmentRetrievalError,
+    classify_attachment_evidence_scope,
+    format_attachment_sources,
+    normalize_attachment_ids,
+)
+from core.attachment_store import (
+    AttachmentAccessError,
+    AttachmentIntegrityError,
+    AttachmentNotFoundError,
+    AttachmentStore,
+    create_attachment_store,
+)
+from core.document_attachments import (
+    DisabledMalwareScanner,
+    DocumentAttachmentError,
+    MalwareDetectedError,
+    MalwareScanner,
+    MAX_DOCUMENT_BYTES,
+    validate_document_attachment,
+)
 from chat_history.cosmosdb import chat_history_cosmosdb_bp
 from config import (
     CONFIG_AGENT_CLIENT,
@@ -190,12 +233,18 @@ from config import (
     CONFIG_WEB_GROUP_BLOB_CONTAINER_CLIENT,
     CONFIG_GROUP_BLOB_CONTAINER_CLIENT,
     CONFIG_CHAT_APPROACH,
+    CONFIG_CHAT_ATTACHMENT_CLEANUP_TASK,
+    CONFIG_CHAT_ATTACHMENT_CONTAINER_CLIENT,
+    CONFIG_CHAT_ATTACHMENT_INDEX,
+    CONFIG_CHAT_ATTACHMENT_SCANNER,
+    CONFIG_CHAT_ATTACHMENT_STORE,
     CONFIG_CHAT_HISTORY_BROWSER_ENABLED,
     CONFIG_CHAT_HISTORY_COSMOS_ENABLED,
     CONFIG_CHAT_VISION_APPROACH,
     CONFIG_CREDENTIAL,
     CONFIG_DEFAULT_REASONING_EFFORT,
     CONFIG_GPT4V_DEPLOYED,
+    CONFIG_KNOWLEDGE_VISION_ENABLED,
     CONFIG_INGESTER,
     CONFIG_LANGUAGE_PICKER_ENABLED,
     CONFIG_OPENAI_CLIENT,
@@ -252,6 +301,13 @@ def _require_fields(data: Dict[str, Any], required: list[str]):
         raise ValueError(f"missing required fields: {', '.join(missing)}")
 
 
+def _has_configured_knowledge_vision(use_gpt4v: bool, vision_endpoint: str) -> bool:
+    if not use_gpt4v:
+        return False
+    parsed = urlparse(str(vision_endpoint or "").strip())
+    return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
 def _validate_agent_model_config(config: object) -> dict[str, Any]:
     if not isinstance(config, dict):
         raise ValueError("Agent config must be an object")
@@ -264,6 +320,14 @@ def _validate_agent_model_config(config: object) -> dict[str, Any]:
         raise ValueError("Agent runtime must be 'legacy' or 'langgraph'")
     if runtime == "langgraph" and not profiles[profile_id].supports_tools:
         raise ValueError("LangGraph runtime requires a model with Supports tool / function calling enabled")
+    for policy_field in ("image_input_enabled", "document_attachments_enabled"):
+        if policy_field in config and not isinstance(config[policy_field], bool):
+            raise ValueError(f"Agent {policy_field} must be a boolean")
+    image_input_enabled = config.get("image_input_enabled") is True
+    if image_input_enabled and not profiles[profile_id].supports_vision:
+        raise ValueError("Image input requires an LLM profile with Supports image / vision input enabled")
+    if image_input_enabled and runtime == "langgraph":
+        raise ValueError("Image input is not yet supported by the LangGraph runtime")
     raw_tool_settings = config.get("tool_settings") or {}
     if not isinstance(raw_tool_settings, dict):
         raise ValueError("Agent tool_settings must be an object")
@@ -309,6 +373,8 @@ def _validate_agent_model_config(config: object) -> dict[str, Any]:
         **config,
         "llm_profile_id": profile_id,
         "runtime": runtime,
+        "image_input_enabled": image_input_enabled,
+        "document_attachments_enabled": config.get("document_attachments_enabled", True) is not False,
         "tool_settings": tool_settings,
     }
 
@@ -328,9 +394,12 @@ def _normalize_id_list(value: object, field: str) -> list[str]:
 
 def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> None:
     profile_id = DEFAULT_LLM_PROFILE_ID
+    agent_config: dict[str, Any] = {}
+    agent_found = not agent_id
     if agent_id:
         agent = get_agent_by_id(agent_id)
         if agent:
+            agent_found = True
             agent_config = agent.get("config") or {}
             profile_id = agent_config.get("llm_profile_id") or DEFAULT_LLM_PROFILE_ID
 
@@ -353,6 +422,18 @@ def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> N
     overrides["_llm_profile_id"] = profile_id
     overrides["_llm_supports_tools"] = profile.supports_tools
     overrides["_llm_supports_vision"] = profile.supports_vision
+    overrides["_rag_vision_enabled"] = current_app.config.get(CONFIG_KNOWLEDGE_VISION_ENABLED, False)
+    if agent_id:
+        image_input_enabled = agent_found and agent_config.get("image_input_enabled") is True
+        # Agent configuration grants permission; the validated attachments on
+        # this request decide whether the Vision approach is actually selected.
+        overrides["use_gpt4v"] = False
+    else:
+        image_input_enabled = bool(overrides.get("use_gpt4v", False))
+    overrides["_agent_image_input_enabled"] = image_input_enabled
+    overrides["_agent_document_attachments_enabled"] = (
+        agent_found and agent_config.get("document_attachments_enabled", True) is not False
+    )
     overrides["_llm_vendor"] = infer_llm_vendor(
         {
             "provider": profile.settings.provider.value,
@@ -885,13 +966,15 @@ async def ask(auth_claims: dict[str, Any]):
     try:
         context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
-        use_gpt4v = context.get("overrides", {}).get("use_gpt4v", False)
+        overrides = context.get("overrides", {})
         _apply_inline_image_attachments(
             request_json,
             context,
-            vision_enabled=use_gpt4v,
+            vision_enabled=overrides.get("_agent_image_input_enabled", False),
             vision_available=CONFIG_ASK_VISION_APPROACH in current_app.config,
+            select_vision_from_attachments=bool(agent_id),
         )
+        await _apply_temporary_attachment_retrieval(request_json, context, auth_claims)
         approach: Approach
         if _use_vision_approach(context) and CONFIG_ASK_VISION_APPROACH in current_app.config:
             approach = cast(
@@ -939,21 +1022,27 @@ def _apply_inline_image_attachments(
     vision_enabled: bool,
     vision_available: bool,
     use_langgraph_runtime: bool = False,
+    select_vision_from_attachments: bool = False,
 ) -> None:
+    overrides = context.setdefault("overrides", {})
+    overrides.pop("_image_attachments", None)
     attachments = validate_chat_attachments(request_json.get("attachments"))
     if not attachments:
+        if select_vision_from_attachments:
+            overrides["use_gpt4v"] = False
         return
     if use_langgraph_runtime:
         raise ChatAttachmentError("Image attachments are not yet supported by the LangGraph runtime")
     if not vision_enabled:
-        raise ChatAttachmentError("This agent cannot process images. Enable a vision-capable model and try again")
+        raise ChatAttachmentError("Image input is disabled for this agent")
     if not context.get("overrides", {}).get("_llm_supports_vision", False):
         raise ChatAttachmentError("The model selected for this agent does not support image input")
     if not vision_available:
         raise ChatAttachmentError("The vision processing service is not configured for this deployment")
-    overrides = context.setdefault("overrides", {})
+    if select_vision_from_attachments:
+        overrides["use_gpt4v"] = True
     overrides["_image_attachments"] = [item["data_url"] for item in attachments]
-    overrides["_rag_vision_enabled"] = current_app.config.get(CONFIG_GPT4V_DEPLOYED, False)
+    overrides["_rag_vision_enabled"] = current_app.config.get(CONFIG_KNOWLEDGE_VISION_ENABLED, False)
 
 
 def _use_vision_approach(context: dict[str, Any]) -> bool:
@@ -965,6 +1054,78 @@ def _use_vision_approach(context: dict[str, Any]) -> bool:
             or overrides.get("_llm_supports_vision", False)
         )
     )
+
+
+async def _apply_temporary_attachment_retrieval(
+    request_json: dict[str, Any],
+    context: dict[str, Any],
+    auth_claims: dict[str, Any],
+) -> None:
+    overrides = context.setdefault("overrides", {})
+    for key in (
+        "_temporary_attachment_sources",
+        "_temporary_attachment_ids",
+        "_temporary_attachment_index",
+        "_temporary_attachment_owner_id",
+        "_temporary_attachment_conversation_id",
+        "_temporary_attachments_only",
+        "_attachment_evidence_scope",
+    ):
+        overrides.pop(key, None)
+    attachment_ids = normalize_attachment_ids(request_json.get("document_attachment_ids"))
+    if not attachment_ids:
+        return
+    if overrides.get("_agent_document_attachments_enabled", True) is not True:
+        raise AttachmentRetrievalError("Document attachments are disabled for this agent")
+    index: AttachmentIndex | None = current_app.config.get(CONFIG_CHAT_ATTACHMENT_INDEX)
+    if index is None:
+        raise AttachmentRetrievalError("Temporary document retrieval is not enabled")
+    owner_id = str(auth_claims.get("oid") or "")
+    conversation_id = str(context.get("conversation_id") or "")
+    for attachment_id in attachment_ids:
+        item = await asyncio.to_thread(
+            get_attachment_metadata,
+            attachment_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+        )
+        if not item:
+            raise AttachmentRetrievalError("Document attachment not found for this conversation")
+        status = str(item.get("status") or "")
+        if status in {"stored", "extracting"}:
+            raise AttachmentRetrievalError("Document attachment is still processing")
+        if status != "ready":
+            error_code = str(item.get("error_code") or "processing_failed")
+            raise AttachmentRetrievalError(f"Document attachment is unavailable: {error_code}")
+    query = next(
+        (
+            str(message.get("content") or "").strip()
+            for message in reversed(request_json.get("messages") or [])
+            if message.get("role") == "user"
+        ),
+        "",
+    )
+    if not query:
+        raise AttachmentRetrievalError("A user question is required for document retrieval")
+    evidence_scope = classify_attachment_evidence_scope(query)
+    overrides["_attachment_evidence_scope"] = evidence_scope
+    if evidence_scope == ATTACHMENT_EVIDENCE_KNOWLEDGE_ONLY:
+        return
+    results = await index.search(
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+        query=query,
+        attachment_ids=attachment_ids,
+    )
+    sources = format_attachment_sources(results)
+    if not sources:
+        raise AttachmentRetrievalError("No readable text was found in the selected document attachments")
+    overrides["_temporary_attachment_sources"] = sources
+    overrides["_temporary_attachment_ids"] = attachment_ids
+    overrides["_temporary_attachment_index"] = index
+    overrides["_temporary_attachment_owner_id"] = owner_id
+    overrides["_temporary_attachment_conversation_id"] = conversation_id
+    overrides["_temporary_attachments_only"] = evidence_scope == ATTACHMENT_EVIDENCE_UPLOADED_ONLY
 
 
 def _use_langgraph_runtime(agent_id: str | None) -> bool:
@@ -1489,14 +1650,17 @@ async def chat(auth_claims: dict[str, Any]):
         context["auth_claims"] = auth_claims
     try:
         context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
-        _apply_agent_llm_profile(context, request_json.get("agent_id"))
-        use_gpt4v = context.get("overrides", {}).get("use_gpt4v", False)
+        agent_id = request_json.get("agent_id")
+        _apply_agent_llm_profile(context, agent_id)
+        overrides = context.get("overrides", {})
         _apply_inline_image_attachments(
             request_json,
             context,
-            vision_enabled=use_gpt4v,
+            vision_enabled=overrides.get("_agent_image_input_enabled", False),
             vision_available=CONFIG_CHAT_VISION_APPROACH in current_app.config,
+            select_vision_from_attachments=bool(agent_id),
         )
+        await _apply_temporary_attachment_retrieval(request_json, context, auth_claims)
         approach: Approach
         if _use_vision_approach(context) and CONFIG_CHAT_VISION_APPROACH in current_app.config:
             approach = cast(
@@ -1737,14 +1901,16 @@ Always respond in the same language as the user"""
     try:
         context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
-        use_gpt4v = context.get("overrides", {}).get("use_gpt4v", False)
+        overrides = context.get("overrides", {})
         _apply_inline_image_attachments(
             request_json,
             context,
-            vision_enabled=use_gpt4v,
+            vision_enabled=overrides.get("_agent_image_input_enabled", False),
             vision_available=CONFIG_CHAT_VISION_APPROACH in current_app.config,
             use_langgraph_runtime=use_langgraph_runtime,
+            select_vision_from_attachments=bool(agent_id),
         )
+        await _apply_temporary_attachment_retrieval(request_json, context, auth_claims)
         approach: Approach
         if _use_vision_approach(context) and CONFIG_CHAT_VISION_APPROACH in current_app.config:
             approach = cast(
@@ -2155,6 +2321,7 @@ async def config():
             "showChatHistoryBrowser": current_app.config[CONFIG_CHAT_HISTORY_BROWSER_ENABLED],
             "showChatHistoryCosmos": current_app.config[CONFIG_CHAT_HISTORY_COSMOS_ENABLED],
             "showAgenticRetrievalOption": current_app.config[CONFIG_AGENTIC_RETRIEVAL_ENABLED],
+            "chatDocumentAttachmentsEnabled": current_app.config.get(CONFIG_CHAT_ATTACHMENT_STORE) is not None,
         }
     )
 
@@ -2676,11 +2843,277 @@ async def document_processing_upload_options(auth_claims: dict[str, Any]):
         ]
     return jsonify({"can_override": can_override, "profiles": profiles})
 
+
+def _required_attachment_uuid(value: object, label: str) -> str:
+    if value in (None, ""):
+        raise DocumentAttachmentError(f"{label} is required")
+    try:
+        return str(uuid.UUID(str(value)))
+    except (ValueError, TypeError, AttributeError) as error:
+        raise DocumentAttachmentError(f"{label} must be a valid UUID") from error
+
+
+async def _rollback_chat_attachment(
+    store: AttachmentStore,
+    attachment_id: str,
+    *,
+    owner_id: str,
+    conversation_id: str,
+) -> None:
+    try:
+        await store.delete(
+            attachment_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+        )
+    except Exception:
+        # The periodic expiry/orphan cleanup is the second line of defense.
+        current_app.logger.exception("Unable to roll back Chat attachment object")
+
+
+@bp.get("/chat/attachments")
+@authenticated
+async def list_chat_attachments(auth_claims: dict[str, Any]):
+    try:
+        conversation_id = _required_attachment_uuid(request.args.get("conversation_id"), "conversation_id")
+        limit = int(request.args.get("limit") or 20)
+    except (DocumentAttachmentError, ValueError) as error:
+        return jsonify({"error": str(error)}), 400
+    items = await asyncio.to_thread(
+        list_attachment_metadata,
+        owner_id=str(auth_claims["oid"]),
+        conversation_id=conversation_id,
+        limit=limit,
+    )
+    return jsonify({"attachments": [serialize_attachment_metadata(item) for item in items]})
+
+
+@bp.get("/chat/attachments/<attachment_id>/content")
+@authenticated
+async def get_chat_attachment_content(auth_claims: dict[str, Any], attachment_id: str):
+    store: AttachmentStore | None = current_app.config.get(CONFIG_CHAT_ATTACHMENT_STORE)
+    if store is None:
+        return jsonify({"error": "Private Chat document storage is not enabled"}), 503
+    try:
+        normalized_attachment_id = _required_attachment_uuid(attachment_id, "attachment_id")
+        conversation_id = _required_attachment_uuid(request.args.get("conversation_id"), "conversation_id")
+    except DocumentAttachmentError as error:
+        return jsonify({"error": str(error)}), 400
+
+    owner_id = str(auth_claims["oid"])
+    item = await asyncio.to_thread(
+        get_attachment_metadata,
+        normalized_attachment_id,
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+    )
+    if not item or str(item.get("status") or "") != "ready":
+        return jsonify({"error": "Document attachment not found"}), 404
+    try:
+        stored = await store.get(
+            normalized_attachment_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+        )
+    except (AttachmentAccessError, AttachmentNotFoundError):
+        return jsonify({"error": "Document attachment not found"}), 404
+    except AttachmentIntegrityError:
+        current_app.logger.exception("Private Chat attachment failed integrity validation")
+        return jsonify({"error": "Document attachment is temporarily unavailable"}), 503
+
+    response = await send_file(
+        BytesIO(stored.content),
+        mimetype=stored.record.content_type,
+        as_attachment=False,
+        attachment_filename=stored.record.filename,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@bp.post("/chat/attachments")
+@authenticated
+async def upload_chat_attachment(auth_claims: dict[str, Any]):
+    store: AttachmentStore | None = current_app.config.get(CONFIG_CHAT_ATTACHMENT_STORE)
+    if store is None:
+        return jsonify({"error": "Private Chat document storage is not enabled"}), 503
+
+    request_files = await request.files
+    request_form = await request.form
+    files = request_files.getlist("file")
+    if len(files) != 1:
+        return jsonify({"error": "Exactly one document file is required"}), 400
+    try:
+        conversation_id = _required_attachment_uuid(request_form.get("conversation_id"), "conversation_id")
+        upload_id = _required_attachment_uuid(
+            request_form.get("upload_id") or request.headers.get("Idempotency-Key"),
+            "upload_id",
+        )
+    except DocumentAttachmentError as error:
+        return jsonify({"error": str(error)}), 400
+
+    agent_id = str(request_form.get("agent_id") or "").strip()
+    if agent_id:
+        agent = await asyncio.to_thread(get_agent_by_id, agent_id)
+        if not agent:
+            return jsonify({"error": "Agent not found"}), 404
+        if (agent.get("config") or {}).get("document_attachments_enabled", True) is False:
+            return jsonify({"error": "Document attachments are disabled for this agent"}), 403
+
+    owner_id = str(auth_claims["oid"])
+    existing = await asyncio.to_thread(
+        get_attachment_metadata_by_upload_id,
+        upload_id,
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+    )
+    if existing:
+        return jsonify({"attachment": serialize_attachment_metadata(existing), "duplicate": True}), 200
+
+    file = files[0]
+    max_bytes = min(int(getattr(store, "max_bytes", MAX_DOCUMENT_BYTES)), MAX_DOCUMENT_BYTES)
+    content = await asyncio.to_thread(file.read, max_bytes + 1)
+    try:
+        document = validate_document_attachment(
+            filename=file.filename,
+            declared_mime=file.mimetype,
+            content=content,
+            max_bytes=max_bytes,
+        )
+        scanner: MalwareScanner = current_app.config[CONFIG_CHAT_ATTACHMENT_SCANNER]
+        scan_status = await scanner.scan(
+            filename=document.filename,
+            content_type=document.content_type,
+            content=document.content,
+        )
+        if scan_status not in {"not_configured", "clean"}:
+            raise RuntimeError("Malware scanner returned an unsupported status")
+    except MalwareDetectedError as error:
+        return jsonify({"error": str(error)}), 422
+    except DocumentAttachmentError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception:
+        current_app.logger.exception("Chat document malware scan failed")
+        return jsonify({"error": "Document security scan is temporarily unavailable"}), 503
+
+    try:
+        record = await store.put(
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            filename=document.filename,
+            content_type=document.content_type,
+            content=document.content,
+        )
+    except Exception:
+        current_app.logger.exception("Unable to write private Chat attachment object")
+        return jsonify({"error": "Private document storage is temporarily unavailable"}), 503
+    try:
+        item = await asyncio.to_thread(
+            create_attachment_metadata,
+            record,
+            storage_backend=store.backend_name,
+            storage_key=record.attachment_id,
+            upload_id=upload_id,
+            page_count=document.page_count,
+            scan_status=scan_status,
+        )
+    except DuplicateKeyError:
+        await _rollback_chat_attachment(
+            store,
+            record.attachment_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+        )
+        existing = await asyncio.to_thread(
+            get_attachment_metadata_by_upload_id,
+            upload_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+        )
+        if existing:
+            return jsonify({"attachment": serialize_attachment_metadata(existing), "duplicate": True}), 200
+        return jsonify({"error": "Document upload idempotency conflict"}), 409
+    except Exception:
+        await _rollback_chat_attachment(
+            store,
+            record.attachment_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+        )
+        current_app.logger.exception("Unable to save Chat attachment metadata")
+        return jsonify({"error": "Unable to save document attachment"}), 500
+
+    _schedule_chat_attachment_extraction(
+        record.attachment_id,
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+    )
+    return jsonify({"attachment": serialize_attachment_metadata(item), "duplicate": False}), 201
+
+
+@bp.delete("/chat/attachments/<attachment_id>")
+@authenticated
+async def delete_chat_attachment(auth_claims: dict[str, Any], attachment_id: str):
+    store: AttachmentStore | None = current_app.config.get(CONFIG_CHAT_ATTACHMENT_STORE)
+    if store is None:
+        return jsonify({"error": "Private Chat document storage is not enabled"}), 503
+    try:
+        normalized_attachment_id = _required_attachment_uuid(attachment_id, "attachment_id")
+        request_json = await request.get_json()
+        conversation_id = _required_attachment_uuid(
+            (request_json or {}).get("conversation_id"),
+            "conversation_id",
+        )
+    except DocumentAttachmentError as error:
+        return jsonify({"error": str(error)}), 400
+
+    owner_id = str(auth_claims["oid"])
+    item = await asyncio.to_thread(
+        get_attachment_metadata,
+        normalized_attachment_id,
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+    )
+    if not item:
+        return jsonify({"error": "Document attachment not found"}), 404
+    deleted = await asyncio.to_thread(
+        soft_delete_attachment_metadata,
+        normalized_attachment_id,
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+    )
+    if not deleted:
+        return jsonify({"error": "Document attachment not found"}), 404
+    index: AttachmentIndex | None = current_app.config.get(CONFIG_CHAT_ATTACHMENT_INDEX)
+    if index:
+        try:
+            await index.delete_attachment(
+                normalized_attachment_id,
+                owner_id=owner_id,
+                conversation_id=conversation_id,
+            )
+        except Exception:
+            current_app.logger.exception("Unable to delete revoked Chat attachment chunks")
+    try:
+        await store.delete(
+            normalized_attachment_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+        )
+    except AttachmentNotFoundError:
+        current_app.logger.warning("Chat attachment object was already absent: %s", normalized_attachment_id)
+    except Exception:
+        current_app.logger.exception("Unable to delete revoked Chat attachment object")
+        return jsonify({"error": "Document access was revoked but object cleanup is pending"}), 202
+    return "", 204
+
 # ⭐ CHART CAPABILITY: ลบ /generate_chart route เดิมแล้ว
 #    chart generation ทำใน /chat/stream flow ผ่าน chart binding ของ agent แทน
 #    (เดิมเป็น endpoint เดี่ยวที่ยิง external API แล้วคืนผลลัพธ์ ไม่ใช่การสร้างกราฟจริงๆ)
 
 BACKGROUND_TASKS = set()
+ATTACHMENT_EXTRACTION_TASKS: set[asyncio.Task] = set()
 INGEST_SEM = asyncio.Semaphore(3)
 INGESTION_WORKER_ID = str(uuid.uuid4())
 
@@ -2714,6 +3147,111 @@ def _schedule_ingestion_job(job_id: str) -> None:
     task.add_done_callback(BACKGROUND_TASKS.discard)
 
 
+def _schedule_chat_attachment_extraction(
+    attachment_id: str,
+    *,
+    owner_id: str,
+    conversation_id: str,
+) -> None:
+    store: AttachmentStore = current_app.config[CONFIG_CHAT_ATTACHMENT_STORE]
+    index: AttachmentIndex = current_app.config[CONFIG_CHAT_ATTACHMENT_INDEX]
+    task = asyncio.create_task(
+        _run_chat_attachment_extraction(
+            store,
+            index,
+            attachment_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+        )
+    )
+    BACKGROUND_TASKS.add(task)
+    task.add_done_callback(BACKGROUND_TASKS.discard)
+    ATTACHMENT_EXTRACTION_TASKS.add(task)
+    task.add_done_callback(ATTACHMENT_EXTRACTION_TASKS.discard)
+
+
+async def _run_chat_attachment_extraction(
+    store: AttachmentStore,
+    index: AttachmentIndex,
+    attachment_id: str,
+    *,
+    owner_id: str,
+    conversation_id: str,
+) -> None:
+    started = await asyncio.to_thread(
+        update_attachment_status,
+        attachment_id,
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+        status="extracting",
+    )
+    if not started:
+        return
+    try:
+        stored = await store.get(
+            attachment_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+        )
+        chunks = await asyncio.to_thread(
+            extract_attachment_chunks,
+            filename=stored.record.filename,
+            content_type=stored.record.content_type,
+            content=stored.content,
+        )
+        chunk_count = await index.replace_attachment(stored.record, chunks)
+        completed = await asyncio.to_thread(
+            update_attachment_status,
+            attachment_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            status="ready",
+            chunk_count=chunk_count,
+            extracted_characters=sum(len(chunk.text) for chunk in chunks),
+        )
+        if not completed:
+            await index.delete_attachment(
+                attachment_id,
+                owner_id=owner_id,
+                conversation_id=conversation_id,
+            )
+    except asyncio.CancelledError:
+        raise
+    except AttachmentExtractionError as error:
+        await index.delete_attachment(
+            attachment_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+        )
+        error_code = "ocr_required" if "OCR is required" in str(error) else "extraction_failed"
+        await asyncio.to_thread(
+            update_attachment_status,
+            attachment_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            status="failed",
+            error_code=error_code,
+        )
+    except Exception:
+        try:
+            await index.delete_attachment(
+                attachment_id,
+                owner_id=owner_id,
+                conversation_id=conversation_id,
+            )
+        except Exception:
+            current_app.logger.exception("Unable to clean partial Chat attachment index")
+        await asyncio.to_thread(
+            update_attachment_status,
+            attachment_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            status="failed",
+            error_code="extraction_failed",
+        )
+        current_app.logger.exception("Chat attachment extraction failed: %s", attachment_id)
+
+
 async def _set_job_blob_status(job: dict[str, Any], status: str) -> None:
     if job.get("scope") == "personal":
         return
@@ -2727,6 +3265,32 @@ async def _set_job_blob_status(job: dict[str, Any], status: str) -> None:
         await blob.set_blob_tags(tags=tags)
     except Exception:
         current_app.logger.warning("Unable to update blob status for ingestion job %s", job.get("_id"), exc_info=True)
+
+
+async def _run_attachment_cleanup(
+    store: AttachmentStore,
+    index: AttachmentIndex,
+    interval_seconds: float,
+) -> None:
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            result = await cleanup_expired_attachments(
+                store,
+                delete_expired_attachment_metadata,
+                index=index,
+            )
+            if result.deleted_objects or result.deleted_chunks or result.deleted_metadata:
+                current_app.logger.info(
+                    "Expired Chat attachments removed: objects=%d chunks=%d metadata=%d",
+                    result.deleted_objects,
+                    result.deleted_chunks,
+                    result.deleted_metadata,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            current_app.logger.exception("Unable to clean up expired Chat attachments")
 
 
 async def _run_ingestion_job(job_id: str) -> None:
@@ -5096,6 +5660,45 @@ async def setup_clients():
         f"https://{AZURE_STORAGE_ACCOUNT}.blob.core.windows.net", AZURE_GROUP_STORAGE_CONTAINER, credential=azure_credential
     )
 
+    attachment_backend = os.getenv("CHAT_ATTACHMENT_STORE", "disabled").strip().lower()
+    attachment_container_client = None
+    if attachment_backend == "azure":
+        attachment_container_name = os.getenv("AZURE_CHAT_ATTACHMENTS_CONTAINER", "").strip()
+        if not attachment_container_name:
+            raise ValueError(
+                "AZURE_CHAT_ATTACHMENTS_CONTAINER must be set when CHAT_ATTACHMENT_STORE=azure"
+            )
+        attachment_container_client = ContainerClient(
+            f"https://{AZURE_STORAGE_ACCOUNT}.blob.core.windows.net",
+            attachment_container_name,
+            credential=azure_credential,
+        )
+    attachment_store = create_attachment_store(
+        os.environ,
+        azure_container=attachment_container_client,
+    )
+    current_app.config[CONFIG_CHAT_ATTACHMENT_STORE] = attachment_store
+    current_app.config[CONFIG_CHAT_ATTACHMENT_SCANNER] = DisabledMalwareScanner()
+    attachment_index = MongoAttachmentIndex() if attachment_store else None
+    current_app.config[CONFIG_CHAT_ATTACHMENT_INDEX] = attachment_index
+    if attachment_container_client:
+        current_app.config[CONFIG_CHAT_ATTACHMENT_CONTAINER_CLIENT] = attachment_container_client
+    if attachment_store:
+        try:
+            cleanup_interval = float(os.getenv("CHAT_ATTACHMENT_CLEANUP_INTERVAL_SECONDS", "3600"))
+        except ValueError as error:
+            raise ValueError("CHAT_ATTACHMENT_CLEANUP_INTERVAL_SECONDS must be numeric") from error
+        if not math.isfinite(cleanup_interval) or cleanup_interval < 60:
+            raise ValueError("CHAT_ATTACHMENT_CLEANUP_INTERVAL_SECONDS must be at least 60")
+        ensure_attachment_metadata_indexes()
+        ensure_attachment_index_indexes()
+        cleanup_task = asyncio.create_task(
+            _run_attachment_cleanup(attachment_store, attachment_index, cleanup_interval)
+        )
+        BACKGROUND_TASKS.add(cleanup_task)
+        cleanup_task.add_done_callback(BACKGROUND_TASKS.discard)
+        current_app.config[CONFIG_CHAT_ATTACHMENT_CLEANUP_TASK] = cleanup_task
+
     # Set up authentication helper
     search_index = None
     search_index_stats = {"document_count": 0, "storage_size": 0}
@@ -5220,6 +5823,14 @@ async def setup_clients():
     current_app.config[CONFIG_AUTH_CLIENT] = auth_helper
 
     current_app.config[CONFIG_GPT4V_DEPLOYED] = bool(USE_GPT4V)
+    current_app.config[CONFIG_KNOWLEDGE_VISION_ENABLED] = _has_configured_knowledge_vision(
+        bool(USE_GPT4V), AZURE_VISION_ENDPOINT
+    )
+    if USE_GPT4V and not current_app.config[CONFIG_KNOWLEDGE_VISION_ENABLED]:
+        current_app.logger.warning(
+            "USE_GPT4V is enabled without a valid AZURE_VISION_ENDPOINT; "
+            "Azure Knowledge image-vector retrieval is disabled"
+        )
     current_app.config[CONFIG_SEMANTIC_RANKER_DEPLOYED] = AZURE_SEARCH_SEMANTIC_RANKER != "disabled"
     current_app.config[CONFIG_QUERY_REWRITING_ENABLED] = (
         AZURE_SEARCH_QUERY_REWRITING == "true" and AZURE_SEARCH_SEMANTIC_RANKER != "disabled"
@@ -5302,7 +5913,8 @@ async def setup_clients():
     )
 
     if USE_GPT4V:
-        current_app.logger.info("USE_GPT4V is true, enabling Azure Knowledge image retrieval")
+        if current_app.config[CONFIG_KNOWLEDGE_VISION_ENABLED]:
+            current_app.logger.info("Azure Knowledge image retrieval is enabled")
         if not AZURE_OPENAI_GPT4V_MODEL:
             raise ValueError(
                 "AZURE_OPENAI_GPT4V_MODEL must be set when USE_GPT4V is true")
@@ -5438,6 +6050,18 @@ Don’t combine sources, list each source separately, for example [info1.txt][in
 
 @bp.after_app_serving
 async def close_clients():
+    for extraction_task in tuple(ATTACHMENT_EXTRACTION_TASKS):
+        extraction_task.cancel()
+    if ATTACHMENT_EXTRACTION_TASKS:
+        await asyncio.gather(*tuple(ATTACHMENT_EXTRACTION_TASKS), return_exceptions=True)
+    if cleanup_task := current_app.config.get(CONFIG_CHAT_ATTACHMENT_CLEANUP_TASK):
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+    if attachment_container := current_app.config.get(CONFIG_CHAT_ATTACHMENT_CONTAINER_CLIENT):
+        await attachment_container.close()
     await current_app.config[CONFIG_SEARCH_CLIENT].close()
     await current_app.config[CONFIG_BLOB_CONTAINER_CLIENT].close()
     await current_app.config[CONFIG_WEB_BLOB_CONTAINER_CLIENT].close()

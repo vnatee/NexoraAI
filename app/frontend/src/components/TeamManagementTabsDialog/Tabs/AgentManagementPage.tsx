@@ -471,6 +471,8 @@ function AgentDialog({
         max_tokens: 1024,
         llm_profile_id: "system",
         runtime: "legacy",
+        image_input_enabled: false,
+        document_attachments_enabled: true,
         tool_settings: { ...DEFAULT_AGENT_TOOL_SETTINGS }
     });
 
@@ -637,6 +639,8 @@ function AgentDialog({
                 ...agent.config,
                 llm_profile_id: agent.config.llm_profile_id ?? "system",
                 runtime: agent.config.runtime ?? "legacy",
+                image_input_enabled: agent.config.image_input_enabled ?? false,
+                document_attachments_enabled: agent.config.document_attachments_enabled ?? true,
                 tool_settings: {
                     ...DEFAULT_AGENT_TOOL_SETTINGS,
                     ...(agent.config.tool_settings ?? {}),
@@ -657,6 +661,8 @@ function AgentDialog({
                 max_tokens: 1024,
                 llm_profile_id: "system",
                 runtime: "legacy",
+                image_input_enabled: false,
+                document_attachments_enabled: true,
                 tool_settings: { ...DEFAULT_AGENT_TOOL_SETTINGS }
             });
             setPrompt(EMPTY_PROMPT);
@@ -717,7 +723,14 @@ function AgentDialog({
                                     label="LLM Profile"
                                     disabled={isFieldDisabled}
                                     value={config.llm_profile_id ?? "system"}
-                                    onChange={e => setConfig({ ...config, llm_profile_id: e.target.value })}
+                                    onChange={e => {
+                                        const profile = llmProfiles.find(item => item.id === e.target.value);
+                                        setConfig({
+                                            ...config,
+                                            llm_profile_id: e.target.value,
+                                            image_input_enabled: profile?.supportsVision ? config.image_input_enabled : false
+                                        });
+                                    }}
                                     helperText="Provider credentials are managed securely by the system"
                                 >
                                     {llmProfiles.map(profile => (
@@ -733,12 +746,50 @@ function AgentDialog({
                                     label="Agent Runtime"
                                     disabled={isFieldDisabled}
                                     value={config.runtime ?? "legacy"}
-                                    onChange={e => setConfig({ ...config, runtime: e.target.value as "legacy" | "langgraph" })}
+                                    onChange={e => {
+                                        const runtime = e.target.value as "legacy" | "langgraph";
+                                        setConfig({ ...config, runtime, image_input_enabled: runtime === "langgraph" ? false : config.image_input_enabled });
+                                    }}
                                     helperText="LangGraph enables RAG, integrations and MCP as real tools; use Legacy for rollback"
                                 >
                                     <MenuItem value="legacy">Legacy</MenuItem>
                                     <MenuItem value="langgraph">LangGraph (Tools / MCP)</MenuItem>
                                 </TextField>
+                                <Paper variant="outlined" sx={{ p: 2 }}>
+                                    <Typography fontWeight={600}>Message attachments</Typography>
+                                    <Stack mt={1}>
+                                        <FormControlLabel
+                                            control={
+                                                <Switch
+                                                    checked={config.image_input_enabled === true}
+                                                    disabled={
+                                                        isFieldDisabled ||
+                                                        config.runtime === "langgraph" ||
+                                                        !llmProfiles.find(profile => profile.id === (config.llm_profile_id ?? "system"))?.supportsVision
+                                                    }
+                                                    onChange={event => setConfig({ ...config, image_input_enabled: event.target.checked })}
+                                                />
+                                            }
+                                            label="Enable image input"
+                                        />
+                                        <Typography variant="caption" color="text.secondary">
+                                            Requires a tested Vision-capable LLM profile and the Legacy runtime.
+                                        </Typography>
+                                        <FormControlLabel
+                                            control={
+                                                <Switch
+                                                    checked={config.document_attachments_enabled !== false}
+                                                    disabled={isFieldDisabled}
+                                                    onChange={event => setConfig({ ...config, document_attachments_enabled: event.target.checked })}
+                                                />
+                                            }
+                                            label="Enable document attachments"
+                                        />
+                                        <Typography variant="caption" color="text.secondary">
+                                            Allows private PDF, Office, text, CSV, and Markdown files when attachment storage is configured.
+                                        </Typography>
+                                    </Stack>
+                                </Paper>
                                 {config.runtime === "langgraph" && (
                                     <Paper variant="outlined" sx={{ p: 2 }}>
                                         <Typography fontWeight={600} mb={2}>

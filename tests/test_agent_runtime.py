@@ -11,6 +11,7 @@ from agent_runtime.factory import _effective_mcp_allowed_tools
 from agent_runtime.runtime import AgentRuntime, AgentRuntimeConfig
 from agent_runtime.tools import ToolRegistry, ToolRuntimeContext, ToolSpec
 from approaches.approach import Document
+from core.attachment_index import AttachmentSearchResult
 
 
 def completion(*, content="", tool_calls=None):
@@ -250,6 +251,66 @@ async def test_rag_is_an_on_demand_permission_aware_tool():
         {"retrieval_mode": "hybrid", "top": 3}, {"oid": "user-1"}
     )
     assert approach.search.await_args.kwargs["filter"] == "oids/any(o: o eq 'user-1')"
+
+
+@pytest.mark.asyncio
+async def test_rag_can_search_only_scoped_temporary_attachments():
+    attachment_id = "9aee2161-d67f-45a1-b4a5-7d2042dd1c26"
+    conversation_id = "00ec4e94-1e98-4bc5-8a7a-982f33c6b7af"
+    attachment_index = MagicMock()
+    attachment_index.search = AsyncMock(
+        return_value=[
+            AttachmentSearchResult(
+                attachment_id=attachment_id,
+                filename="requirements.pdf",
+                page_number=12,
+                page_label="12",
+                text="Requirement text",
+                score=1.0,
+            )
+        ]
+    )
+    approach = MagicMock()
+    approach.search = AsyncMock()
+    approach.get_sources_content.return_value = []
+    registry = ToolRegistry(
+        ToolRuntimeContext(agent_id="agent-1", auth_claims={"oid": "user-1"})
+    )
+    register_rag_tool(
+        registry,
+        approach,
+        {
+            "_temporary_attachment_index": attachment_index,
+            "_temporary_attachment_ids": [attachment_id],
+            "_temporary_attachment_owner_id": "user-1",
+            "_temporary_attachment_conversation_id": conversation_id,
+        },
+        include_enterprise=False,
+    )
+
+    output = json.loads(await registry.execute("search_knowledge", {"query": "requirement 12"}))
+
+    approach.search.assert_not_awaited()
+    attachment_index.search.assert_awaited_once_with(
+        owner_id="user-1",
+        conversation_id=conversation_id,
+        query="requirement 12",
+        attachment_ids=[attachment_id],
+        limit=5,
+    )
+    assert output["temporary_attachment_results"] == [
+        {
+            "source": f"chat-attachment-{attachment_id}--requirements.pdf#page=12",
+            "filename": "requirements.pdf",
+            "page": 12,
+            "section": "12",
+            "content": "Requirement text",
+            "untrusted": True,
+        }
+    ]
+    assert output["citations"] == [
+        f"chat-attachment-{attachment_id}--requirements.pdf#page=12: Requirement text"
+    ]
 
 
 def test_load_mcp_servers_applies_allowlist_and_disabled_filter():

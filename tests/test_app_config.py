@@ -203,6 +203,17 @@ async def test_app_config_default(monkeypatch, minimal_env):
         assert result["showGPT4VOptions"] is False
         assert result["showSemanticRankerOption"] is True
         assert result["showVectorOption"] is True
+        assert result["chatDocumentAttachmentsEnabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_app_config_exposes_private_chat_document_availability(client):
+    client.app.config[app.CONFIG_CHAT_ATTACHMENT_STORE] = mock.MagicMock()
+
+    response = await client.get("/config")
+
+    assert response.status_code == 200
+    assert (await response.get_json())["chatDocumentAttachmentsEnabled"] is True
 
 
 @pytest.mark.asyncio

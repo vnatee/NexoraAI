@@ -1,6 +1,6 @@
 # Codex handoff — NexoraAI
 
-Last updated: 2026-08-21 UTC
+Last updated: 2026-08-22 UTC
 
 This document replaces a raw chat transcript as the engineering handoff. It
 captures the decisions and evidence needed to continue without storing copied
@@ -10,18 +10,23 @@ logs, credentials, attachments, or repetitive conversational text.
 
 - Workspace: `/workspaces/NexoraAI`
 - Branch: `feature/agent-platform-foundation`
-- Previous checkpoint: `2d65a0e` / `feat: add vision chat attachments and math
-  rendering`. This handoff revision accompanies the next AttachmentStore/
-  conversation-metadata checkpoint; use `git log -1 --oneline` for its hash.
+- Current checkpoint: `feat: add private chat document workflows` (the commit
+  containing this handoff). The working tree was clean when the checkpoint was
+  created.
 - Azure baseline: `8ee1e8a` / `origin/Release-2.2.0`
-- This checkpoint includes the accepted request-local Chat/Ask image slice,
-  per-model Vision probing/configuration, sent-image thumbnails, stale Agent
-  profile reconciliation, and KaTeX math rendering in addition to the earlier
-  OCR/ingestion work.
-- The current checkpoint starts milestone 2 with a provider-neutral `AttachmentStore`
-  contract, private local/container filesystem reference adapter, stable Chat/
-  Ask conversation UUIDs, and an ACL-scoped Mongo-compatible metadata
-  repository. Document bytes are not connected to Chat routes yet.
+- This checkpoint includes private Chat/Ask document upload, native extraction,
+  temporary retrieval, prompt-intent evidence scope, ACL-checked citations,
+  per-Agent image/document policy, request-local Vision routing, local/Azure
+  attachment storage, retention cleanup, and the memory-safe local build path.
+- Milestone 2 now has a provider-neutral `AttachmentStore` contract, private
+  local/container and Azure Blob adapters, stable Chat/Ask conversation UUIDs,
+  an ACL-scoped Mongo-compatible metadata repository, coordinated object/
+  metadata retention cleanup, and authenticated private document upload/list/
+  delete APIs. Bounded native extraction and a conversation-private temporary
+  index are also implemented. Ready document IDs can now be retrieved by Legacy
+  and LangGraph Chat/Ask with bounded, untrusted excerpts and file/page source
+  names. The shared composer now uploads supported documents on Send, shows
+  processing state, and sends only ready attachment IDs.
 
 ## Product background and fixed decisions
 
@@ -75,6 +80,12 @@ Decisions already made with the product owner:
   can process request-local Chat/Ask image attachments without `USE_GPT4V` or
   `AZURE_VISION_ENDPOINT`. Those environment settings remain the separate
   compatibility path for the system profile and Azure Knowledge image vectors.
+- Azure Knowledge image-vector retrieval is now enabled only when
+  `USE_GPT4V=true` **and** `AZURE_VISION_ENDPOINT` is a valid absolute HTTP(S)
+  URL. If the flag is present without the endpoint, startup logs a warning and
+  safely falls back to text embeddings/Knowledge text sources while managed
+  request-local image input remains available. This prevents the malformed
+  `computervision/retrieval:vectorizeText` request previously seen at runtime.
 - Provider cards show per-model capability tags after Test (`Tools`, `Vision`,
   `No tools`, or `No vision`). Saving, testing, or deleting a provider refreshes
   Chat/Ask model capabilities immediately without a browser reload.
@@ -318,9 +329,8 @@ after a reload. A non-vision Agent, unavailable
 vision configuration, or LangGraph runtime receives a controlled HTTP 400 with
 a clear reason rather than silently ignoring the image.
 
-Current boundaries are deliberate: document attachments, route-integrated
-private storage, temporary attachment RAG, OCR-only fallback, and LangGraph
-multimodal messages are not implemented in this checkpoint.
+Current boundaries are deliberate: OCR-only fallback and LangGraph multimodal
+messages are not implemented in this working tree.
 The approved staged design and security acceptance criteria are in
 `docs/product-backlog.md`.
 
@@ -335,16 +345,41 @@ embedded in prose. Fenced code blocks are excluded so programming examples keep
 their literal backslashes. Raw HTML still passes through the existing DOMPurify
 step before Markdown/KaTeX rendering.
 
-### AttachmentStore foundation — current checkpoint
+### Private document attachments and temporary retrieval — current working tree
 
-`core/attachment_store.py` defines an async provider-neutral contract plus a
-`LocalAttachmentStore` reference adapter for local/container deployments. The
-adapter uses opaque UUID storage keys, basename-only normalized filenames,
-private `0700` directories and `0600` files, atomic writes, exact owner and
+`core/attachment_store.py` defines an async provider-neutral contract plus
+`LocalAttachmentStore` and `AzureBlobAttachmentStore` adapters. Both use opaque
+UUID storage keys, basename-only normalized filenames, exact owner and
 conversation authorization, configurable byte/TTL limits, SHA-256 verification,
 read-time expiry, explicit deletion, and fail-closed cleanup for expired,
-corrupt, or old orphaned payloads. Focused tests cover traversal rejection,
-cross-owner/cross-conversation access, tampering, TTL, cleanup, and permissions.
+corrupt, or old orphaned payloads. Local storage additionally uses private
+`0700` directories, `0600` files, and atomic writes. Azure payload and metadata
+sidecars remain inside a dedicated private container and no public URL is
+generated or returned.
+
+The factory is opt-in through `CHAT_ATTACHMENT_STORE=local|azure`; its default
+is `disabled`, so existing deployments retain their behavior. Local mode also
+requires `CHAT_ATTACHMENT_LOCAL_PATH`. Azure mode requires the existing
+`AZURE_STORAGE_ACCOUNT` plus a dedicated `AZURE_CHAT_ATTACHMENTS_CONTAINER`.
+`CHAT_ATTACHMENT_TTL_HOURS` (default 24), `CHAT_ATTACHMENT_MAX_MB` (default 25),
+and `CHAT_ATTACHMENT_CLEANUP_INTERVAL_SECONDS` (default 3600, minimum 60)
+control retention. The Azure container must be provisioned with public access
+disabled; application startup does not create or change its access policy.
+
+For local development only, `app/start.sh`, `app/start.ps1`, and the VS Code
+Backend launch configuration default to `CHAT_ATTACHMENT_STORE=local` with
+`.data/chat-attachments` when the caller has not explicitly configured a
+backend. `.data` is Git-ignored. Restart the backend after receiving these
+settings because `/config` derives `chatDocumentAttachmentsEnabled` at startup.
+Production/deployment environments remain opt-in and do not inherit this local
+default.
+
+When enabled, startup creates the metadata indexes where supported and starts a
+bounded-lifecycle cleanup task. It deletes expired/corrupt/orphaned objects,
+then temporary chunks, then expired Mongo metadata; it logs counts, survives
+transient cleanup failures, and is cancelled before the Azure container client
+closes at shutdown.
+Mongo TTL remains optional because Cosmos compatibility is not assumed.
 
 Chat and Ask now create a stable UUID `conversation_id` independently from
 history/session state, retain it for the active conversation, reset it for New
@@ -358,22 +393,133 @@ expiry in every read/update/delete query. Its client serializer excludes owner,
 conversation, storage key, and checksum. It supports explicit expiry cleanup;
 the Mongo TTL index is optional because Cosmos compatibility is not assumed.
 
-Document bytes are intentionally not wired into the request routes yet. The
-approved production design still requires a private Azure adapter/factory
-(without public URLs), coordinated object/metadata cleanup, document MIME/
-signature/decompression/page validation, malware-scanning hook, extraction, and
-a conversation-private `AttachmentIndex`. The local JSON sidecar is an adapter
-implementation detail, not the final metadata system.
+Authenticated `GET/POST /chat/attachments` and
+`DELETE /chat/attachments/<id>` routes now provide the first private document
+boundary. Upload requires UUID `conversation_id` and `upload_id`, and the
+owner/conversation/upload tuple is idempotent so a repeated submission returns
+the existing record. Supported types are PDF, DOCX, PPTX, XLSX, TXT, CSV, and
+Markdown. Validation enforces basename-only filenames, declared MIME matching,
+magic/structure checks, UTF-8 text, PDF page limits, and Office archive entry,
+path, encryption, uncompressed-size, compression-ratio, slide, and worksheet
+limits. The fixed API ceiling is 25 MB even if the underlying store is configured
+higher.
+
+The upload passes through a provider-neutral malware scanner interface before
+storage. The current configured implementation is an explicit no-op and records
+`scan_status=not_configured`; a real scanner adapter remains mandatory before a
+production rollout that accepts untrusted documents. Object creation is rolled
+back if Mongo metadata creation fails, duplicate-key races discard the second
+object, and delete revokes metadata access before object deletion. The JSON
+sidecars are adapter implementation details, not the client or final query
+contract.
+
+Successful upload now schedules background native extraction without delaying
+the API response. Metadata transitions from `stored` to `extracting`, then
+`ready` with bounded chunk/character counts or `failed` with a controlled error
+code. PDF retains one-based page provenance; PowerPoint retains slide numbers;
+Excel retains worksheet order and cell coordinates; DOCX is labeled `document`
+because reliable rendered page numbers are unavailable without a layout engine.
+TXT/CSV/Markdown are treated as page 1. Native extraction enforces a 2,000,000
+character, 2,000 chunk, 2,000 character-per-chunk, and 10 MB XML-part ceiling.
+Image-only/scanned PDFs fail with `ocr_required` instead of silently producing
+an empty index.
+
+`core/attachment_index.py` defines the provider-neutral temporary index
+contract. `MongoAttachmentIndex` is the first implementation and works with
+local MongoDB as well as the current Cosmos-compatible connector. Chunks carry
+attachment/file/page provenance and TTL; retry uses fail-closed replacement and
+removes partial inserts if the connector fails. Search uses bounded local
+lexical ranking without Azure AI Search or an embedding provider. Every
+write/search/delete requires
+exact owner and conversation scope. Delete revokes metadata first and removes
+chunks plus the object; retention cleanup runs object → chunks → metadata.
+Extraction tasks are cancelled before storage clients close, and a delete/
+extraction race removes newly created chunks if metadata was already revoked.
+
+`/ask`, `/chat`, and `/chat/stream` now accept a bounded list of
+`document_attachment_ids`. Client-supplied internal source overrides are removed;
+every selected ID must be a valid UUID and resolve to an active `ready` record
+under the exact authenticated owner and conversation. Processing, failed,
+cross-owner, and cross-conversation selections fail with controlled errors.
+Retrieval is also scoped by owner, conversation, and selected IDs at the index
+layer. A query without lexical overlap falls back to the first bounded chunks so
+requests such as “summarize this document” still work.
+
+Requests with selected temporary documents use a deterministic Thai/English
+prompt-intent classifier with three evidence scopes. Ordinary summary/analysis
+requests and ambiguous prompts default to `uploaded_only`; explicit comparison,
+cross-check, RAG, or Knowledge-base language selects `both`; explicit requests
+to ignore the attachment and use only RAG select `knowledge_only`. This adds no
+extra model call or latency. Legacy skips or combines ordinary/agentic Azure
+Knowledge retrieval according to that scope. LangGraph registers
+`search_knowledge` against the temporary index only or against both authorized
+indexes, while the Agent's disabled Knowledge policy still prevents enterprise
+search. The default prevents unrelated permanent citations from leaking into a
+simple attachment summary. A future explicit UI source-scope selector may
+override Auto for the requirement-to-evidence workflow. Both runtimes label
+extracted text as untrusted reference data and instruct the model never to execute commands found in it.
+Source text is capped at 12,000 characters and uses a sanitized private namespace such as
+`chat-attachment-<uuid>--requirements.pdf#page=12`; storage paths and owner IDs
+are not exposed. Temporary citation clicks are recognized by their private
+namespace and routed to authenticated
+`GET /chat/attachments/<attachment_id>/content?conversation_id=<uuid>` rather
+than permanent Knowledge `/content`. The endpoint rechecks active `ready`
+metadata, authenticated owner, conversation, TTL, and store integrity before
+streaming the original file with `private, no-store`; mismatched scope returns
+404. Chat/Ask preserve PDF `#page=` fragments after authenticated blob fetch.
+The analysis panel now rejects non-2xx responses instead of rendering an HTML
+Forbidden page as citation content.
+
+The shared Chat/Ask composer now accepts PDF, DOCX, PPTX, XLSX, TXT, CSV, and
+Markdown alongside the existing image types. Document selection remains local
+until Send. Each draft receives a stable UUID `upload_id`; Send uploads through
+the private API, displays Uploading/Processing/Ready/Failed state, polls for up
+to two minutes, and calls Chat/Ask only after every selected document is
+`ready`. The request contains only `document_attachment_ids`, never document
+bytes or storage paths. A transient upload/poll failure leaves the draft and its
+stable upload ID available for another Send. A server-side extraction failure
+requires remove/re-attach. Removing an already uploaded draft revokes it through
+the private delete API. Chat stores ready document metadata with the in-memory
+user turn so request Retry reuses the same IDs without uploading again; New Chat
+and history restore clear that session-only display. `/config` exposes a safe
+feature flag, so document selection is unavailable when the private store is
+disabled.
+
+Image and document input are now separate Agent policies under **Agent Info →
+Configuration → Message attachments**. `image_input_enabled` is opt-in and can
+only be saved with a Vision-capable LLM profile on the Legacy runtime.
+`document_attachments_enabled` is independent of Vision and defaults to enabled
+for existing Agents to preserve the attachment behavior introduced in this
+milestone. New and edited Agent configs persist both booleans. Chat and Ask no
+longer expose a per-message Vision toggle; they show the paperclip only when at
+least one attachment type is enabled by the selected Agent, and explain a
+missing model/runtime/store capability when an enabled type is unavailable.
+
+The backend is the authority for these policies. Agent resolution replaces a
+client-supplied `use_gpt4v` value and internal policy overrides before image
+validation. The Agent image flag is permission, not a permanent routing mode:
+text-only and document-only requests use the ordinary text approach; a request
+with validated inline images uses the Vision approach; and a mixed image plus
+document request uses Vision for the images while merging temporary document
+sources. Image requests suppress Agentic Retrieval for that request only.
+Ready-document retrieval rejects Agents that disable documents, and the normal
+upload flow sends `agent_id` so disabled Agents are rejected before storage.
+Existing clients without an Agent retain the system-profile compatibility path;
+an unknown Agent fails both policies. Document selection still additionally
+requires the deployment-level private attachment store.
+
+Uploaded Chat documents are not promoted into permanent Knowledge automatically.
+Startup recovery for `stored`/`extracting` records, OCR routing, and a production
+malware scanner remain pending.
 
 ## Other next work
 
 ### Near-term document work
 
-1. Add the private Azure `AttachmentStore` adapter/factory and coordinated
-   object/metadata expiry cleanup, retaining the local adapter for containers.
-2. Wire approved document uploads to the store, then add bounded extraction and
-   a conversation-private temporary `AttachmentIndex`. Do not auto-promote Chat
-   documents into permanent Knowledge.
+1. Add startup recovery for interrupted extraction and route `ocr_required`
+   through the configured document-processing/OCR profiles.
+2. Add a production malware-scanner adapter and make its deployment policy
+   explicit before accepting untrusted documents outside development.
 3. Add the requirement-to-Knowledge-evidence matrix, per-model vision/OCR
    routing in both runtimes, and speech improvements in that order. See
    `docs/product-backlog.md`.
@@ -427,9 +573,12 @@ The guardrail/API/dashboard discussion order is documented in
   pin versions/digests and bake/cache models for production.
 - **Frontend bundle:** the existing vendor chunk is large and requires a larger
   Node heap for reliable production builds.
-- **Chat attachments:** only request-local images in the Legacy vision runtime
-  are supported. No private attachment store, document extraction, TTL cleanup,
-  temporary RAG, LangGraph image message, or OCR-only fallback exists yet.
+- **Chat attachments:** request-local images still support only the Legacy
+  vision runtime. Private document storage, native extraction, TTL cleanup, and
+  Legacy/LangGraph temporary text retrieval and composer upload/progress/remove
+  behavior and private ACL-checked temporary citation opening exist. LangGraph
+  image messages, scanned-document OCR fallback, restart recovery,
+  and a production malware scanner remain pending.
 - **Cosmos/Mongo compatibility:** PyMongo may warn when connected to Cosmos DB;
   avoid assuming every MongoDB feature is supported.
 - **Dirty diff size:** some frontend files contain large formatting/line-ending
@@ -471,7 +620,7 @@ Do not put real credentials in this file or examples.
 Latest service-free backend regression on 2026-08-21:
 
 ```text
-524 passed, 1 deselected
+606 passed, 1 deselected
 ```
 
 Command:
@@ -487,11 +636,17 @@ route/vision regression:
 66 passed
 ```
 
-Latest focused AttachmentStore, metadata, conversation-ID, and attachment-route
-validation:
+Latest focused private attachment storage, retention, extraction, index,
+retrieval, prompt-boundary, route, and LangGraph RAG validation:
 
 ```text
-36 passed
+99 passed, 8 deselected
+```
+
+Command:
+
+```bash
+.venv/bin/pytest -q tests/test_attachment_cleanup.py tests/test_attachment_extraction.py tests/test_attachment_retrieval.py tests/test_attachment_store.py tests/test_chat_attachment_extraction_lifecycle.py tests/test_chat_attachment_index.py tests/test_chat_attachment_metadata.py tests/test_chat_attachments.py tests/test_chat_document_attachment_routes.py tests/test_document_attachments.py tests/test_agent_runtime.py -k 'attachment or rag'
 ```
 
 Latest focused OCR/upload/profile-idempotency validation:
@@ -512,16 +667,21 @@ Latest focused LLM provider/model-capability validation:
 18 passed
 ```
 
-Frontend typecheck and production build passed. Use:
+Frontend typecheck and the memory-safe production bundle passed. Use:
 
 ```bash
 cd app/frontend
 npx tsc --noEmit
-NODE_OPTIONS=--max-old-space-size=4096 npm run build
+NODE_OPTIONS=--max-old-space-size=3072 npm run build:memory-safe
 ```
 
-The default Node heap still exhausted memory during Vite chunk rendering in
-this environment; the documented 4 GB heap command completed successfully.
+For memory-constrained local startup, `npm run build:memory-safe` omits source
+maps while producing the same runtime bundle. This completed with a 3 GB Node
+heap after the source-map build was killed twice during chunk rendering.
+
+The full source-map build remains available as `npm run build`, but the latest
+4 GB attempts were killed by container memory pressure during Vite chunk
+rendering. Local start scripts therefore use the validated memory-safe command.
 
 Compose schemas passed:
 
@@ -541,9 +701,11 @@ Known non-blocking warnings:
 
 ## Manual smoke-test checklist before the next checkpoint
 
-- Chat/Ask normal text paste remains unchanged. Verify **Vision Off** disables
-  the attachment picker; turn Vision on, then paste, select, and drag/drop a
-  supported image and verify preview/removal, image-only send, and limits. In
+- Chat/Ask normal text paste remains unchanged. In **Agent Management → Agent
+  Info → Message attachments**, verify image input cannot be enabled for a
+  non-Vision model or LangGraph runtime. With both Agent policies off, confirm
+  the paperclip is hidden. Enable image input, then paste, select, and drag/drop
+  a supported image and verify preview/removal, image-only send, and limits. In
   Chat, confirm sent thumbnails and filenames remain on the correct user turn
   during loading and after the answer, and that Retry resends the same image.
   Confirm a reload/history restore does not persist the inline image bytes.
@@ -553,17 +715,31 @@ Known non-blocking warnings:
 - In **Admin Management → LLM Providers**, run Test for at least one real
   vision-capable managed model. Confirm the Provider card displays the Vision
   tag and the composer updates without a browser refresh. Select the profile on
-  a Legacy Agent, toggle Vision On/Off (including while Agentic Retrieval was
-  previously on), and verify it works without setting `USE_GPT4V` or
+  a Legacy Agent, enable image input in Agent Management (including while
+  Agentic Retrieval was previously on), and verify it works without setting `USE_GPT4V` or
   `AZURE_VISION_ENDPOINT`. Reload Chat after changing the Agent profile and
   confirm it uses the backend profile rather than a stale locally cached Agent.
-- With vision disabled and with a LangGraph Agent, verify the UI shows the
-  controlled unsupported-image message rather than silently sending or
-  ignoring the attachment.
+- Disable image input on the Agent and verify pasted/dropped images are not
+  accepted. With a LangGraph Agent, verify the management switch is disabled
+  rather than silently sending or ignoring an image.
 - Verify Answer rendering with `$x^2$`, `$$\\frac{1}{2}$$`, `\\(x+y\\)`, a raw
   `\\sqrt{147}` embedded in Thai prose, and the nested raw expression
   `3\\sqrt{147} - 7\\sqrt{\\frac{1}{27}}`. Confirm the same commands remain
   literal inside a fenced code block.
+- Enable `CHAT_ATTACHMENT_STORE=local|azure` and its required settings, then use
+  the shared Chat and Ask attachment button with a native-text PDF plus TXT,
+  DOCX, PPTX, XLSX, CSV, or Markdown samples. Confirm files are not uploaded at
+  selection time; after Send, verify Uploading → Processing → Ready feedback,
+  the user turn keeps the filenames, and the answer/data points cite the
+  sanitized filename and page/section. Test remove before Send, Retry after a
+  transient request error, New Chat during processing, 25 MB/10-document limits,
+  an unsupported extension, and an image-only PDF (`ocr_required`). Repeat with
+  a LangGraph Agent whose Knowledge Search is Disabled and verify only the
+  selected temporary documents are searched. Click a temporary PDF citation and
+  verify the private viewer opens the cited page; a different conversation or
+  expired attachment must return 404. Disable document attachments on the Agent
+  and verify the picker no longer accepts documents while image input can remain
+  independently enabled.
 
 - Azure startup, Personal/Team/Global upload, search, deletion, and citations.
 - OCR routing precedence for Personal/Team/Global, Auto selection, authorized
@@ -591,10 +767,8 @@ Known non-blocking warnings:
 
 ```text
 Read AGENTS.md and docs/CODEX_HANDOFF.md completely. Preserve the working tree
-and do not discard unrelated changes. Start the Chat image attachments slice:
-inspect existing chat request/model capability contracts, then implement safe
-upload/preview/remove, size/type/count limits, per-Agent image capability,
-OCR-only versus multimodal handling, and safe provider-neutral prompt/request
-composition. Keep Legacy and LangGraph rollback behavior working and add focused
-tests before live smoke testing.
+and do not discard unrelated changes. Continue milestone 2 by adding startup
+recovery for interrupted attachment extraction, preserving owner/conversation,
+TTL, idempotency, and deletion-race boundaries. Then route `ocr_required`
+through configured OCR profiles.
 ```

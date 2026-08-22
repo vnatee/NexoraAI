@@ -53,6 +53,10 @@ approved this direction on 2026-08-21.
 - Parse a requirements/specification attachment into numbered requirements.
 - Treat the requirements file as the question/checklist and existing Knowledge
   RAG as evidence; do not cite the uploaded requirement itself as proof.
+- Add an explicit source-scope choice for overriding the current Auto classifier:
+  **Attached files only** (the safe default), **Knowledge only**, or **Both**.
+  Auto already recognizes explicit Thai/English comparison/RAG intent and
+  otherwise remains attachment-only.
 - Evaluate every requirement and return a structured matrix containing status,
   explanation, Knowledge RAG file, page, and supporting quote.
 - Distinguish supported, partially supported/conflicting, missing, and
@@ -78,7 +82,6 @@ TTL deletion, and no public attachment URLs.
 Current delivery state (2026-08-21): the initial request-local image portion of
 milestone 1 is checkpointed for the Legacy vision
 runtime, including previews/removal, client/server limits, signature checks,
-an explicit composer Vision On/Off control with runtime-aware disabled states,
 per-model Portal configuration and live image-input capability probes,
 controlled capability errors, citation separation, and diagnostic redaction.
 Managed Legacy models no longer require the Azure Knowledge Vision environment
@@ -88,9 +91,36 @@ reference adapter covering owner/conversation ACLs, filename normalization,
 atomic writes, integrity checks, TTL, and fail-closed cleanup. Chat/Ask now send
 a stable conversation UUID independently from history, and an ACL/expiry-scoped
 Mongo-compatible repository stores bounded metadata without exposing storage
-keys or owner IDs. Document bytes are not route-integrated yet. The private
-Azure adapter/factory, coordinated cleanup, documents, temporary RAG, LangGraph
-images, and OCR-only fallback remain pending as described above.
+keys or owner IDs. Private local/container and Azure Blob adapters now share the
+same ACL, integrity and TTL contract; startup selects them through an opt-in
+factory and coordinates object-first/Mongo-metadata expiry cleanup. No public
+attachment URLs are produced. Authenticated private document upload/list/delete
+APIs now validate PDF, Office Open XML, and UTF-8 text formats with bounded
+size/page/archive controls, idempotent submission, a malware-scanner hook, and
+object rollback when metadata creation fails. The current scanner is explicitly
+unconfigured. Native bounded extraction and a
+Mongo/local-compatible temporary AttachmentIndex
+are now present with file/page provenance, TTL, exact owner/conversation scope,
+background status transitions, local lexical ranking, and deletion-race cleanup.
+Ready-only temporary retrieval is now integrated into Legacy and LangGraph
+Chat/Ask. It rechecks owner/conversation scope, bounds source text, labels
+extracted chunks as untrusted evidence, and returns sanitized file/page citation
+names without storage paths. LangGraph can search selected temporary documents
+even when enterprise Knowledge is disabled. The shared Chat/Ask composer now
+selects supported documents locally, uploads them on Send with stable idempotency
+IDs, displays extraction progress/errors/removal, and sends only ready IDs.
+Chat Retry reuses the ready IDs. Image input and document attachments are now
+independent per-Agent policies; the composer no longer owns a Vision toggle,
+and the backend replaces client-supplied image policy, classifies validated
+request attachments deterministically, selects Vision only when an image is
+present, and rejects disabled document retrieval. Selected documents now use a
+Thai/English prompt-intent scope (`uploaded_only`, `knowledge_only`, or `both`)
+in both Legacy and LangGraph, with attachment-only as the safe fallback so
+unrelated permanent RAG results are not merged into summaries. Temporary
+citations now open through a private ready-only owner/conversation-scoped route,
+not the permanent Knowledge content route. A real malware-scanner adapter,
+LangGraph images, OCR-only fallback, and
+interrupted-extraction recovery remain pending.
 
 ## Proposed — AI guardrails
 

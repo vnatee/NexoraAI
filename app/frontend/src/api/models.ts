@@ -59,6 +59,20 @@ export type ChatAttachmentInput = {
     data_url: string;
 };
 
+export type ChatDocumentAttachment = {
+    id: string;
+    filename: string;
+    content_type: string;
+    size: number;
+    status: "stored" | "extracting" | "ready" | "failed";
+    page_count?: number | null;
+    chunk_count: number;
+    extracted_characters: number;
+    error_code?: string | null;
+    created_at?: string | null;
+    expires_at?: string | null;
+};
+
 export type Thoughts = {
     title: string;
     description: any; // It can be any output from the api
@@ -103,6 +117,7 @@ export type ChatAppRequestContext = {
 export type ChatAppRequest = {
     messages: ResponseMessage[];
     attachments?: ChatAttachmentInput[];
+    document_attachment_ids?: string[];
     conversation_id: string;
     context?: ChatAppRequestContext;
     session_state: any;
@@ -136,6 +151,7 @@ export type Config = {
     showChatHistoryBrowser: boolean;
     showChatHistoryCosmos: boolean;
     showAgenticRetrievalOption: boolean;
+    chatDocumentAttachmentsEnabled: boolean;
 };
 
 export type LLMProfile = {
@@ -380,6 +396,8 @@ export interface AgentConfig {
     max_tokens?: number | null;
     llm_profile_id?: string;
     runtime?: "legacy" | "langgraph";
+    image_input_enabled?: boolean;
+    document_attachments_enabled?: boolean;
     tool_settings?: AgentToolSettings;
 
     create_at?: string;
@@ -469,6 +487,8 @@ export interface AgentConf {
     max_tokens?: number | null;
     llm_profile_id?: string;
     runtime?: "legacy" | "langgraph";
+    image_input_enabled?: boolean;
+    document_attachments_enabled?: boolean;
     tool_settings?: AgentToolSettings;
 }
 

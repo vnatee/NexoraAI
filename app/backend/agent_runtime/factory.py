@@ -21,6 +21,7 @@ from agent_runtime.policy import ToolExecutionPolicy
 from agent_runtime.runtime import AgentRuntime, AgentRuntimeConfig
 from agent_runtime.tools import ToolRegistry, ToolRuntimeContext
 from approaches.approach import Approach
+from core.attachment_retrieval import ATTACHMENT_SECURITY_INSTRUCTION
 from mongo_table_connecters.agent_bindings import get_all_agent_bindings_by_agent_id
 from mongo_table_connecters.agents import get_agent_by_id
 from mongo_table_connecters.chart_binding import get_enabled_chart_bindings_by_agent_id
@@ -75,8 +76,19 @@ async def create_agent_runtime(
         policy=ToolExecutionPolicy.from_config(tool_settings.get("tool_policy")),
         audit=audit,
     )
-    if knowledge_search_mode != "disabled":
-        register_rag_tool(registry, approach, overrides)
+    has_temporary_attachments = bool(overrides.get("_temporary_attachment_ids"))
+    attachment_evidence_scope = str(overrides.get("_attachment_evidence_scope") or "")
+    include_enterprise_knowledge = (
+        knowledge_search_mode != "disabled"
+        and attachment_evidence_scope != "uploaded_only"
+    )
+    if knowledge_search_mode != "disabled" or has_temporary_attachments:
+        register_rag_tool(
+            registry,
+            approach,
+            overrides,
+            include_enterprise=include_enterprise_knowledge,
+        )
     if tool_settings.get("external_database", True) is not False:
         register_database_tools(registry, agent_id)
     if tool_settings.get("rest_integrations", True) is not False:
@@ -236,7 +248,13 @@ async def create_agent_runtime(
             tool_choice=tool_choice,
         )
 
-    if knowledge_search_mode == "disabled":
+    if has_temporary_attachments and not include_enterprise_knowledge:
+        runtime_contract = """You are a helpful AI agent with access to the enabled tools.
+The user selected private temporary document attachments. For this request, search_knowledge is scoped only to those selected attachments. Cite their temporary source names and do not claim to have searched company Knowledge."""
+    elif has_temporary_attachments:
+        runtime_contract = """You are a helpful AI agent with access to the enabled tools.
+The user asked to combine or compare selected private document attachments with authorized enterprise Knowledge. Use search_knowledge for both scopes, clearly distinguish the evidence, and cite every source used."""
+    elif knowledge_search_mode == "disabled":
         runtime_contract = """You are a helpful AI agent with access to the enabled tools.
 Knowledge Search is disabled for this agent. Do not claim to have searched uploaded documents or company knowledge.
 Use integration, database, MCP, or sub-agent tools when relevant. If a tool returns no result or an error, explain that clearly instead of inventing information."""
@@ -245,6 +263,8 @@ Use integration, database, MCP, or sub-agent tools when relevant. If a tool retu
     effective_system_prompt = runtime_contract
     if system_prompt.strip():
         effective_system_prompt = f"Agent-specific instructions:\n{system_prompt.strip()}\n\nRuntime tool rules:\n{runtime_contract}"
+    if has_temporary_attachments:
+        effective_system_prompt = f"{effective_system_prompt}\n\nAttachment security rule:\n{ATTACHMENT_SECURITY_INSTRUCTION}"
     if chart_tool_enabled:
         chart_rule = (
             "Chart rendering is available through create_chart. Call it only after obtaining exact numeric data "

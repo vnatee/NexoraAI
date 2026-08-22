@@ -16,6 +16,7 @@ from approaches.approach import DataPoints, ExtraInfo, ThoughtStep
 from approaches.chatapproach import ChatApproach
 from approaches.promptmanager import PromptManager
 from core.authentication import AuthenticationHelper
+from core.attachment_retrieval import merge_attachment_sources
 from prepdocslib.embeddings import OpenAIEmbeddings
 
 
@@ -90,10 +91,13 @@ class ChatReadRetrieveReadApproach(ChatApproach):
             raise Exception(
                 f"{self.chatgpt_model} does not support streaming. Please use a different model or disable streaming."
             )
-        if use_agentic_retrieval:
+        if overrides.get("_temporary_attachments_only") is True:
+            extra_info = ExtraInfo(DataPoints(text=[], images=[]), [])
+        elif use_agentic_retrieval:
             extra_info = await self.run_agentic_retrieval_approach(messages, overrides, auth_claims)
         else:
             extra_info = await self.run_search_approach(messages, overrides, auth_claims)
+        extra_info.data_points.text = merge_attachment_sources(extra_info.data_points.text, overrides)
         messages = self.prompt_manager.render_prompt(
             self.answer_prompt,
             self.get_system_prompt_variables(overrides.get("prompt_template"))
@@ -102,6 +106,7 @@ class ChatReadRetrieveReadApproach(ChatApproach):
                 "past_messages": messages[:-1],
                 "user_query": original_user_query,
                 "text_sources": extra_info.data_points.text,
+                "has_temporary_attachments": bool(overrides.get("_temporary_attachment_sources")),
             },
         )
 

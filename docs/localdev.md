@@ -28,6 +28,17 @@ You can only run locally **after** having successfully run the `azd up` command.
   ./app/start.sh
   ```
 
+The local start scripts and VS Code Backend launch configuration enable the
+private filesystem Chat attachment store at `.data/chat-attachments` by default.
+Set `CHAT_ATTACHMENT_STORE` explicitly to `disabled` or `azure` to override it.
+The `.data` directory is ignored by Git and should be treated as disposable
+development data.
+
+The local start scripts use `npm run build:memory-safe`, which keeps the
+production bundle but omits source maps to avoid exhausting the development
+container during Vite chunk rendering. Use `npm run build` when source maps are
+required and sufficient memory is available.
+
   VS Code: Run the "VS Code Task: Start App" task.
 
 ## Hot reloading frontend and backend files

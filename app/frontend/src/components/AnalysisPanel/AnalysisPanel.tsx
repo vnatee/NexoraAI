@@ -1,7 +1,7 @@
 import { Stack, Pivot, PivotItem } from "@fluentui/react";
 import { useTranslation } from "react-i18next";
 import styles from "./AnalysisPanel.module.css";
-import { Stack as StackMUI } from "@mui/material"; // 👈 ใช้ตัวนี้แทน Fluent UI Stack
+import { Alert, Stack as StackMUI } from "@mui/material"; // 👈 ใช้ตัวนี้แทน Fluent UI Stack
 
 import { SupportingContent } from "../SupportingContent";
 import { ChatAppResponse } from "../../api";
@@ -32,6 +32,7 @@ export const AnalysisPanel = ({ answer, activeTab, activeCitation, citationHeigh
     const isDisabledCitationTab: boolean = !activeCitation;
     const isDisabledWebTab = !activeWebUrl;
     const [citation, setCitation] = useState("");
+    const [citationError, setCitationError] = useState("");
 
     const client = useLogin ? useMsal().instance : undefined;
     const { t } = useTranslation();
@@ -61,27 +62,39 @@ export const AnalysisPanel = ({ answer, activeTab, activeCitation, citationHeigh
     const fetchCitation = async () => {
         if (!activeCitation) return;
         setCitationLoading(true);
+        setCitationError("");
         try {
             const token = client ? await getToken(client) : undefined;
-            const originalHash = activeCitation.indexOf("#") ? activeCitation.split("#")[1] : "";
-            const content = activeCitation.startsWith("/content/") ? "/content/" : "";
-            const filePath = activeCitation.replace(content, "").replace(/\//g, "|");
-            console.log(activeCitation);
+            const hashIndex = activeCitation.indexOf("#");
+            const originalHash = hashIndex >= 0 ? activeCitation.slice(hashIndex + 1) : "";
+            let requestUrl = hashIndex >= 0 ? activeCitation.slice(0, hashIndex) : activeCitation;
+            const contentMarker = "/content/";
+            const contentIndex = requestUrl.indexOf(contentMarker);
+            if (contentIndex >= 0 && !requestUrl.includes("/chat/attachments/")) {
+                const prefix = requestUrl.slice(0, contentIndex + contentMarker.length);
+                const filePath = requestUrl.slice(contentIndex + contentMarker.length).replace(/\//g, "|");
+                requestUrl = prefix + filePath;
+            }
 
-            activeCitation = content + filePath;
-
-            console.log(activeCitation);
-
-            const response = await fetch(activeCitation, {
+            const response = await fetch(requestUrl, {
                 method: "GET",
                 headers: await getHeaders(token)
             });
+            if (!response.ok) {
+                throw new Error(`Unable to open citation (${response.status})`);
+            }
             const citationContent = await response.blob();
             let citationObjectUrl = URL.createObjectURL(citationContent);
             if (originalHash) {
                 citationObjectUrl += "#" + originalHash;
             }
-            setCitation(citationObjectUrl);
+            setCitation(previous => {
+                if (previous.startsWith("blob:")) URL.revokeObjectURL(previous.split("#")[0]);
+                return citationObjectUrl;
+            });
+        } catch (error) {
+            setCitation("");
+            setCitationError(error instanceof Error ? error.message : "Unable to open citation");
         } finally {
             setCitationLoading(false);
         }
@@ -119,6 +132,10 @@ export const AnalysisPanel = ({ answer, activeTab, activeCitation, citationHeigh
                     <Skeleton variant="rectangular" width="100%" height={citationHeight} animation="wave" />
                 </StackMUI>
             );
+        }
+
+        if (citationError) {
+            return <Alert severity="error">{citationError}</Alert>;
         }
 
         const fileExtension = activeCitation.split(".").pop()?.toLowerCase();
