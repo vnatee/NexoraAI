@@ -99,13 +99,41 @@ def claim_ingestion_job(job_id: str, worker_id: str, *, lease_minutes: int = 60)
         },
         {
             "$set": {
+                "status": "extracting",
                 "worker_id": worker_id,
                 "lease_expires_at": now + timedelta(minutes=max(5, lease_minutes)),
                 "updated_at": now,
-            }
+                "started_at": now,
+                "error": None,
+            },
+            "$push": {"stage_history": {"status": "extracting", "at": now}},
         },
         return_document=ReturnDocument.AFTER,
     )
+
+
+def release_ingestion_job(job_id: str, worker_id: str) -> dict[str, Any] | None:
+    """Return an interrupted job to the recoverable queue if this worker still owns it."""
+
+    now = _now()
+    result = collection.update_one(
+        {
+            "_id": job_id,
+            "worker_id": worker_id,
+            "status": {"$in": list(ACTIVE_STATUSES)},
+        },
+        {
+            "$set": {
+                "status": "uploaded",
+                "worker_id": None,
+                "lease_expires_at": None,
+                "started_at": None,
+                "updated_at": now,
+            },
+            "$push": {"stage_history": {"status": "uploaded", "at": now}},
+        },
+    )
+    return get_ingestion_job(job_id) if result.modified_count else None
 
 
 def list_recoverable_ingestion_jobs(limit: int = 100) -> list[dict[str, Any]]:

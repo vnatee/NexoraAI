@@ -40,12 +40,19 @@ class MemoryCollection:
     @staticmethod
     def _matches(item, query):
         for key, expected in query.items():
+            if key == "$or":
+                if not any(MemoryCollection._matches(item, branch) for branch in expected):
+                    return False
+                continue
             actual = item.get(key)
             if isinstance(expected, dict) and "$gt" in expected:
                 if actual is None or actual <= expected["$gt"]:
                     return False
             elif isinstance(expected, dict) and "$lte" in expected:
                 if actual is None or actual > expected["$lte"]:
+                    return False
+            elif isinstance(expected, dict) and "$exists" in expected:
+                if (key in item) is not expected["$exists"]:
                     return False
             elif actual != expected:
                 return False
@@ -68,7 +75,18 @@ class MemoryCollection:
         if not item:
             return Result()
         item.update(update.get("$set") or {})
+        for key in (update.get("$unset") or {}):
+            item.pop(key, None)
         return Result(modified_count=1)
+
+    def find_one_and_update(self, query, update, **kwargs):
+        item = next((item for item in self.items.values() if self._matches(item, query)), None)
+        if not item:
+            return None
+        item.update(update.get("$set") or {})
+        for key in (update.get("$unset") or {}):
+            item.pop(key, None)
+        return deepcopy(item)
 
     def delete_many(self, query):
         identifiers = [key for key, item in self.items.items() if self._matches(item, query)]
@@ -177,6 +195,63 @@ def test_explicit_cleanup_removes_expired_metadata(collection):
 
     assert metadata.delete_expired_attachment_metadata(now=NOW) == 1
     assert set(collection.items) == {"attachment-1"}
+
+
+def test_recovery_claim_is_atomic_and_stale_lease_can_be_reclaimed(collection):
+    metadata.create_attachment_metadata(record(), storage_backend="local", storage_key="key-1")
+
+    recoverable = metadata.list_recoverable_attachment_metadata(now=NOW)
+    assert [item["_id"] for item in recoverable] == ["attachment-1"]
+    claimed = metadata.claim_attachment_extraction(
+        "attachment-1",
+        owner_id="owner-1",
+        conversation_id="conversation-1",
+        worker_id="worker-1",
+    )
+    assert claimed["status"] == "extracting"
+    assert claimed["worker_id"] == "worker-1"
+    assert metadata.claim_attachment_extraction(
+        "attachment-1",
+        owner_id="owner-1",
+        conversation_id="conversation-1",
+        worker_id="worker-2",
+    ) is None
+
+    collection.items["attachment-1"]["lease_expires_at"] = NOW - timedelta(seconds=1)
+    reclaimed = metadata.claim_attachment_extraction(
+        "attachment-1",
+        owner_id="owner-1",
+        conversation_id="conversation-1",
+        worker_id="worker-2",
+    )
+    assert reclaimed["worker_id"] == "worker-2"
+
+
+def test_release_requires_matching_worker_and_restores_stored_status(collection):
+    metadata.create_attachment_metadata(record(), storage_backend="local", storage_key="key-1")
+    metadata.claim_attachment_extraction(
+        "attachment-1",
+        owner_id="owner-1",
+        conversation_id="conversation-1",
+        worker_id="worker-1",
+    )
+
+    assert not metadata.release_attachment_extraction(
+        "attachment-1",
+        owner_id="owner-1",
+        conversation_id="conversation-1",
+        worker_id="worker-2",
+    )
+    assert metadata.release_attachment_extraction(
+        "attachment-1",
+        owner_id="owner-1",
+        conversation_id="conversation-1",
+        worker_id="worker-1",
+    )
+    item = collection.items["attachment-1"]
+    assert item["status"] == "stored"
+    assert "worker_id" not in item
+    assert "lease_expires_at" not in item
 
 
 def test_serializer_does_not_expose_owner_storage_key_or_hash(collection):

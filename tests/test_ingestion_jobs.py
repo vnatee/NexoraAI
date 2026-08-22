@@ -85,6 +85,8 @@ class MemoryCollection:
         if not item:
             return None
         item.update(update.get("$set") or {})
+        for key, value in (update.get("$push") or {}).items():
+            item.setdefault(key, []).append(value)
         return deepcopy(item)
 
 
@@ -113,6 +115,7 @@ def test_ingestion_job_lifecycle_retry_and_safe_serialization(monkeypatch):
     job = create_job()
     claimed = storage.claim_ingestion_job(job["_id"], "worker-1")
     assert claimed["worker_id"] == "worker-1"
+    assert claimed["status"] == "extracting"
     assert storage.claim_ingestion_job(job["_id"], "worker-2") is None
     storage.update_ingestion_job_status(job["_id"], "extracting", worker_id="worker-1")
     storage.update_ingestion_job_status(
@@ -136,6 +139,54 @@ def test_ingestion_job_lifecycle_retry_and_safe_serialization(monkeypatch):
     assert restarted["status"] == "uploaded"
     assert restarted["attempt"] == 2
     assert restarted["error"] is None
+
+
+def test_release_ingestion_job_requires_owner_worker_and_is_recoverable(monkeypatch):
+    collection = MemoryCollection()
+    monkeypatch.setattr(storage, "collection", collection)
+    job = create_job()
+    storage.claim_ingestion_job(job["_id"], "worker-1")
+
+    assert storage.release_ingestion_job(job["_id"], "worker-2") is None
+    released = storage.release_ingestion_job(job["_id"], "worker-1")
+    assert released["status"] == "uploaded"
+    assert released["worker_id"] is None
+    assert released["lease_expires_at"] is None
+    assert [item["_id"] for item in storage.list_recoverable_ingestion_jobs()] == [job["_id"]]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_ingestion_releases_owned_job(monkeypatch):
+    released = []
+    job = {
+        "_id": "job-1",
+        "scope": "personal",
+        "owner_id": "owner-1",
+        "storage_path": "owner-1/invoice.pdf",
+    }
+
+    class CancelledFileClient:
+        async def download_file(self):
+            raise asyncio.CancelledError
+
+    class FileSystem:
+        def get_file_client(self, path):
+            assert path == "owner-1/invoice.pdf"
+            return CancelledFileClient()
+
+    monkeypatch.setattr(app_module, "claim_ingestion_job", lambda *args, **kwargs: job)
+    monkeypatch.setattr(
+        app_module,
+        "release_ingestion_job",
+        lambda job_id, worker_id: released.append((job_id, worker_id)) or job,
+    )
+    quart_app = app_module.create_app()
+    quart_app.config[app_module.CONFIG_USER_BLOB_CONTAINER_CLIENT] = FileSystem()
+    async with quart_app.app_context():
+        with pytest.raises(asyncio.CancelledError):
+            await app_module._run_ingestion_job("job-1")
+
+    assert released == [("job-1", app_module.INGESTION_WORKER_ID)]
 
 
 def test_ingestion_jobs_are_filtered_by_owner_scope_and_team(monkeypatch):
