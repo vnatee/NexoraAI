@@ -11,9 +11,10 @@ logs, credentials, attachments, or repetitive conversational text.
 - Workspace: `/workspaces/NexoraAI`
 - Branch: `feature/document-extraction-recovery`
 - Base checkpoint: `09eef3e feat: add private chat document workflows`.
-- The current working tree adds private Chat document extraction recovery and
-  managed OCR routing, plus graceful restart recovery for persistent Knowledge
-  ingestion jobs; it is not yet committed.
+- Implementation checkpoint: `eff68fb feat: recover interrupted document
+  processing`. It adds private Chat document extraction recovery and managed OCR
+  routing, plus graceful restart recovery for persistent Knowledge ingestion
+  jobs.
 - Azure baseline: `8ee1e8a` / `origin/Release-2.2.0`
 - This checkpoint includes private Chat/Ask document upload, native extraction,
   temporary retrieval, prompt-intent evidence scope, ACL-checked citations,
