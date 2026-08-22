@@ -52,6 +52,43 @@
     margin-bottom: 0.5rem;
 }
 
+.documentList {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.documentPreview {
+    align-items: center;
+    background: #ffffff;
+    border: 1px solid #d1d1d1;
+    border-radius: 0.5rem;
+    display: flex;
+    gap: 0.5rem;
+    max-width: 22rem;
+    min-width: 15rem;
+    padding: 0.5rem;
+}
+
+.documentDetails {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.documentDetails span,
+.documentDetails small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.documentDetails small {
+    color: #616161;
+}
+
 .questionInputTextArea {
     width: 100%;
     line-height: 2.5rem;

@@ -37,10 +37,16 @@ def ensure_attachment_metadata_indexes() -> bool:
             expireAfterSeconds=0,
             name="attachment_expiry",
         )
+        collection.create_index(
+            [("owner_id", 1), ("conversation_id", 1), ("upload_id", 1)],
+            unique=True,
+            partialFilterExpression={"upload_id": {"$exists": True}},
+            name="attachment_upload_idempotency",
+        )
         return True
     except PyMongoError:
         logging.warning(
-            "Attachment metadata TTL indexes are unavailable; explicit cleanup is still required",
+            "One or more attachment metadata indexes are unavailable; explicit cleanup and application idempotency remain active",
             exc_info=True,
         )
         return False
@@ -51,6 +57,9 @@ def create_attachment_metadata(
     *,
     storage_backend: str,
     storage_key: str,
+    upload_id: str = "",
+    page_count: int | None = None,
+    scan_status: str = "not_configured",
 ) -> dict[str, Any]:
     backend = str(storage_backend or "").strip().lower()
     key = str(storage_key or "").strip()
@@ -60,6 +69,15 @@ def create_attachment_metadata(
     expires_at = _timestamp(record.expires_at)
     if expires_at <= created_at:
         raise ValueError("Attachment expiry must be after creation")
+    normalized_upload_id = str(upload_id or "").strip()
+    if len(normalized_upload_id) > 128:
+        raise ValueError("upload_id is too long")
+    if page_count is not None and (
+        isinstance(page_count, bool) or not isinstance(page_count, int) or page_count < 1
+    ):
+        raise ValueError("page_count must be a positive integer")
+    if scan_status not in {"not_configured", "clean"}:
+        raise ValueError("Unsupported attachment scan status")
     item = {
         "_id": record.attachment_id,
         "owner_id": record.owner_id,
@@ -71,14 +89,36 @@ def create_attachment_metadata(
         "storage_backend": backend[:50],
         "storage_key": key[:1024],
         "status": "stored",
+        "page_count": page_count,
+        "scan_status": scan_status,
         "error_code": None,
         "created_at": created_at,
         "updated_at": created_at,
         "expires_at": expires_at,
         "delete_at": None,
     }
+    if normalized_upload_id:
+        item["upload_id"] = normalized_upload_id
     collection.insert_one(item)
     return item
+
+
+def get_attachment_metadata_by_upload_id(
+    upload_id: str,
+    *,
+    owner_id: str,
+    conversation_id: str,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    return collection.find_one(
+        {
+            "upload_id": str(upload_id or "").strip(),
+            "owner_id": owner_id,
+            "conversation_id": conversation_id,
+            "delete_at": None,
+            "expires_at": {"$gt": now or _now()},
+        }
+    )
 
 
 def _active_scope_query(
@@ -137,23 +177,40 @@ def update_attachment_status(
     conversation_id: str,
     status: str,
     error_code: str = "",
+    chunk_count: int | None = None,
+    extracted_characters: int | None = None,
 ) -> dict[str, Any] | None:
     if status not in ATTACHMENT_STATUSES:
         raise ValueError("Unsupported attachment status")
     safe_error_code = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(error_code or ""))[:100] or None
+    if chunk_count is not None and (
+        isinstance(chunk_count, bool) or not isinstance(chunk_count, int) or chunk_count < 0
+    ):
+        raise ValueError("chunk_count must be non-negative")
+    if extracted_characters is not None and (
+        isinstance(extracted_characters, bool)
+        or not isinstance(extracted_characters, int)
+        or extracted_characters < 0
+    ):
+        raise ValueError("extracted_characters must be non-negative")
     query = _active_scope_query(
         attachment_id,
         owner_id=owner_id,
         conversation_id=conversation_id,
     )
+    values = {
+        "status": status,
+        "error_code": safe_error_code if status == "failed" else None,
+        "updated_at": _now(),
+    }
+    if chunk_count is not None:
+        values["chunk_count"] = chunk_count
+    if extracted_characters is not None:
+        values["extracted_characters"] = extracted_characters
     result = collection.update_one(
         query,
         {
-            "$set": {
-                "status": status,
-                "error_code": safe_error_code if status == "failed" else None,
-                "updated_at": _now(),
-            }
+            "$set": values
         },
     )
     if not result.modified_count:
@@ -196,6 +253,10 @@ def serialize_attachment_metadata(item: dict[str, Any]) -> dict[str, Any]:
         "content_type": str(item.get("content_type") or ""),
         "size": max(0, int(item.get("size") or 0)),
         "status": str(item.get("status") or ""),
+        "page_count": item.get("page_count"),
+        "scan_status": str(item.get("scan_status") or ""),
+        "chunk_count": max(0, int(item.get("chunk_count") or 0)),
+        "extracted_characters": max(0, int(item.get("extracted_characters") or 0)),
         "error_code": item.get("error_code"),
         "created_at": item.get("created_at").isoformat() if item.get("created_at") else None,
         "expires_at": item.get("expires_at").isoformat() if item.get("expires_at") else None,

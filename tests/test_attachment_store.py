@@ -11,12 +11,71 @@ from core.attachment_store import (
     AttachmentIntegrityError,
     AttachmentNotFoundError,
     AttachmentStoreError,
+    AzureBlobAttachmentStore,
     LocalAttachmentStore,
+    create_attachment_store,
     normalize_attachment_filename,
 )
 
 
 NOW = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
+
+
+class FakeDownloader:
+    def __init__(self, content):
+        self.content = content
+
+    async def readall(self):
+        return self.content
+
+
+class FakeBlobClient:
+    def __init__(self, container, name):
+        self.container = container
+        self.name = name
+
+    async def upload_blob(self, content, *, overwrite):
+        assert overwrite is False
+        if self.name in self.container.blobs:
+            raise RuntimeError("blob already exists")
+        self.container.blobs[self.name] = bytes(content)
+        self.container.modified[self.name] = NOW
+
+    async def download_blob(self):
+        from azure.core.exceptions import ResourceNotFoundError
+
+        if self.name not in self.container.blobs:
+            raise ResourceNotFoundError("missing")
+        return FakeDownloader(self.container.blobs[self.name])
+
+    async def delete_blob(self, *, delete_snapshots):
+        from azure.core.exceptions import ResourceNotFoundError
+
+        assert delete_snapshots == "include"
+        if self.name not in self.container.blobs:
+            raise ResourceNotFoundError("missing")
+        del self.container.blobs[self.name]
+        self.container.modified.pop(self.name, None)
+
+
+class FakeBlobItem:
+    def __init__(self, name, last_modified):
+        self.name = name
+        self.last_modified = last_modified
+
+
+class FakeContainer:
+    def __init__(self):
+        self.blobs = {}
+        self.modified = {}
+
+    def get_blob_client(self, name):
+        return FakeBlobClient(self, name)
+
+    async def list_blobs(self, *, name_starts_with):
+        for name in sorted(self.blobs):
+            if name.startswith(name_starts_with):
+                yield FakeBlobItem(name, self.modified[name])
 
 
 @pytest.fixture
@@ -206,3 +265,133 @@ async def test_local_store_rejects_non_uuid_lookup(store):
 def test_normalize_attachment_filename_handles_windows_paths_and_empty_values():
     assert normalize_attachment_filename(r"C:\Users\owner\report.docx") == "report.docx"
     assert normalize_attachment_filename("../..") == "attachment"
+
+
+@pytest.mark.asyncio
+async def test_azure_store_round_trip_acl_and_delete():
+    container = FakeContainer()
+    store = AzureBlobAttachmentStore(container, clock=lambda: NOW)
+    record = await store.put(
+        owner_id="user-1",
+        conversation_id="conversation-1",
+        filename="private.pdf",
+        content_type="application/pdf",
+        content=b"private document",
+    )
+
+    assert all(name.startswith("chat-attachments/") for name in container.blobs)
+    assert not any(record.filename in name for name in container.blobs)
+    assert (
+        await store.get(record.attachment_id, owner_id="user-1", conversation_id="conversation-1")
+    ).content == b"private document"
+    with pytest.raises(AttachmentAccessError):
+        await store.get(record.attachment_id, owner_id="user-2", conversation_id="conversation-1")
+
+    await store.delete(record.attachment_id, owner_id="user-1", conversation_id="conversation-1")
+    assert container.blobs == {}
+
+
+@pytest.mark.asyncio
+async def test_azure_store_expires_on_read_and_detects_tampering():
+    current = NOW
+    container = FakeContainer()
+    store = AzureBlobAttachmentStore(container, clock=lambda: current)
+    expired = await store.put(
+        owner_id="user-1",
+        conversation_id="conversation-1",
+        filename="temporary.txt",
+        content_type="text/plain",
+        content=b"temporary",
+        ttl=timedelta(minutes=1),
+    )
+    current = NOW + timedelta(minutes=2)
+    with pytest.raises(AttachmentExpiredError):
+        await store.get(expired.attachment_id, owner_id="user-1", conversation_id="conversation-1")
+
+    current = NOW
+    tampered = await store.put(
+        owner_id="user-1",
+        conversation_id="conversation-1",
+        filename="tampered.txt",
+        content_type="text/plain",
+        content=b"original",
+    )
+    payload_name, _ = store._blob_names(tampered.attachment_id)
+    container.blobs[payload_name] = b"modified"
+    with pytest.raises(AttachmentIntegrityError):
+        await store.get(tampered.attachment_id, owner_id="user-1", conversation_id="conversation-1")
+
+
+@pytest.mark.asyncio
+async def test_azure_store_cleanup_removes_expired_corrupt_and_old_orphan_blobs():
+    container = FakeContainer()
+    store = AzureBlobAttachmentStore(container, clock=lambda: NOW)
+    expired = await store.put(
+        owner_id="user-1",
+        conversation_id="conversation-1",
+        filename="expired.txt",
+        content_type="text/plain",
+        content=b"expired",
+        ttl=timedelta(minutes=1),
+    )
+    corrupt = await store.put(
+        owner_id="user-1",
+        conversation_id="conversation-1",
+        filename="corrupt.txt",
+        content_type="text/plain",
+        content=b"corrupt",
+    )
+    _, corrupt_metadata = store._blob_names(corrupt.attachment_id)
+    container.blobs[corrupt_metadata] = b"not-json"
+    orphan_name = "chat-attachments/9a/9aee2161-d67f-45a1-b4a5-7d2042dd1c26.bin"
+    container.blobs[orphan_name] = b"orphan"
+    container.modified[orphan_name] = NOW - timedelta(hours=25)
+
+    assert await store.delete_expired(now=NOW + timedelta(minutes=2)) == 3
+    assert container.blobs == {}
+    with pytest.raises(AttachmentNotFoundError):
+        await store.get(expired.attachment_id, owner_id="user-1", conversation_id="conversation-1")
+
+
+def test_attachment_store_factory_defaults_to_disabled_and_builds_backends(tmp_path):
+    assert create_attachment_store({}) is None
+    local = create_attachment_store(
+        {
+            "CHAT_ATTACHMENT_STORE": "local",
+            "CHAT_ATTACHMENT_LOCAL_PATH": str(tmp_path / "attachments"),
+            "CHAT_ATTACHMENT_TTL_HOURS": "2",
+            "CHAT_ATTACHMENT_MAX_MB": "3",
+        },
+        clock=lambda: NOW,
+    )
+    assert isinstance(local, LocalAttachmentStore)
+    assert local.default_ttl == timedelta(hours=2)
+    assert local.max_bytes == 3 * 1024 * 1024
+
+    container = FakeContainer()
+    azure = create_attachment_store(
+        {"CHAT_ATTACHMENT_STORE": "azure"},
+        azure_container=container,
+        clock=lambda: NOW,
+    )
+    assert isinstance(azure, AzureBlobAttachmentStore)
+    assert azure.container is container
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"CHAT_ATTACHMENT_STORE": "local"},
+        {"CHAT_ATTACHMENT_STORE": "unknown"},
+        {"CHAT_ATTACHMENT_STORE": "local", "CHAT_ATTACHMENT_LOCAL_PATH": "/tmp/x", "CHAT_ATTACHMENT_TTL_HOURS": "nope"},
+        {"CHAT_ATTACHMENT_STORE": "local", "CHAT_ATTACHMENT_LOCAL_PATH": "/tmp/x", "CHAT_ATTACHMENT_MAX_MB": "nan"},
+    ],
+)
+def test_attachment_store_factory_rejects_invalid_configuration(env):
+    with pytest.raises(AttachmentStoreError):
+        create_attachment_store(env)
+
+
+def test_attachment_store_factory_requires_azure_container():
+    with pytest.raises(AttachmentStoreError):
+        create_attachment_store({"CHAT_ATTACHMENT_STORE": "azure"})

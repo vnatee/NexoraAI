@@ -11,6 +11,7 @@ import {
     ChatAppResponse,
     ChatAppRequest,
     ChatAttachmentInput,
+    ChatDocumentAttachment,
     RetrievalMode,
     VectorFields,
     GPT4VInput,
@@ -22,7 +23,8 @@ import {
     get_data_group_by_team,
     AuthProfile,
     User,
-    getFixedPromptsApi
+    getFixedPromptsApi,
+    getTemporaryCitationFilePath
 } from "../../api";
 import { Answer, AnswerError } from "../../components/Answer";
 import { QuestionInput } from "../../components/QuestionInput";
@@ -89,6 +91,8 @@ export function Component(): JSX.Element {
     const [useOidSecurityFilter, setUseOidSecurityFilter] = useState<boolean>(false);
     const [useGroupsSecurityFilter, setUseGroupsSecurityFilter] = useState<boolean>(false);
     const [showGPT4VOptions, setShowGPT4VOptions] = useState<boolean>(false);
+    const [chatDocumentAttachmentsEnabled, setChatDocumentAttachmentsEnabled] = useState(false);
+    const [lastDocumentAttachments, setLastDocumentAttachments] = useState<ChatDocumentAttachment[]>([]);
     const [agentRuntimeMode, setAgentRuntimeMode] = useState<"legacy" | "langgraph" | "per_agent">("per_agent");
     const [llmProfiles, setLlmProfiles] = useState<LLMProfile[]>([]);
     const [showSemanticRankerOption, setShowSemanticRankerOption] = useState<boolean>(false);
@@ -164,23 +168,30 @@ export function Component(): JSX.Element {
     const selectedLlmProfileId = selectedAgent?.config?.llm_profile_id || "system";
     const selectedLlmProfile = llmProfiles.find(profile => profile.id === selectedLlmProfileId);
     const modelSupportsVision = selectedLlmProfile?.supportsVision ?? (selectedLlmProfileId === "system" && showGPT4VOptions);
-    const visionAvailable = modelSupportsVision && !usesLangGraph;
+    const imageInputEnabled = selectedAgent?.config?.image_input_enabled === true;
+    const documentAttachmentsEnabled = selectedAgent?.config?.document_attachments_enabled !== false;
+    const visionAvailable = imageInputEnabled && modelSupportsVision && !usesLangGraph;
+    const documentsAvailable = documentAttachmentsEnabled && chatDocumentAttachmentsEnabled;
+    const showAttachmentButton = imageInputEnabled || documentAttachmentsEnabled;
     const selectedLlmProfileLabel = selectedLlmProfile?.label ?? (selectedLlmProfileId === "system" ? "System default" : selectedLlmProfileId);
-    const visionDisabledReason = !selectedLlmProfile && selectedLlmProfileId !== "system"
+    const visionDisabledReason = !imageInputEnabled
+        ? "Image input is disabled in Agent Management."
+        : !selectedLlmProfile && selectedLlmProfileId !== "system"
         ? `Agent ${selectedAgent?.agent_name ?? "selected"} references unavailable LLM profile ${selectedLlmProfileId}. Re-select its model in Agent Management.`
         : !modelSupportsVision
         ? `${selectedAgent?.agent_name ?? "The selected agent"} uses ${selectedLlmProfileLabel}, which is not marked as vision-capable. Select the tested Vision model in Agent Management.`
         : usesLangGraph
           ? "Vision attachments are not supported by the LangGraph runtime yet."
           : undefined;
+    const attachmentDisabledReason = documentAttachmentsEnabled && !chatDocumentAttachmentsEnabled
+        ? "Document attachment storage is not configured for this deployment."
+        : visionDisabledReason;
 
-    useEffect(() => {
-        if (!visionAvailable) setUseGPT4V(false);
-    }, [visionAvailable]);
 
     const getConfig = async () => {
         configApi().then(config => {
             setShowGPT4VOptions(config.showGPT4VOptions);
+            setChatDocumentAttachmentsEnabled(config.chatDocumentAttachmentsEnabled);
             setAgentRuntimeMode(config.agentRuntimeMode ?? "per_agent");
             setLlmProfiles(config.llmProfiles ?? []);
             setUseSemanticRanker(config.showSemanticRankerOption);
@@ -214,6 +225,7 @@ export function Component(): JSX.Element {
             void configApi().then(config => {
                 setLlmProfiles(config.llmProfiles ?? []);
                 setShowGPT4VOptions(config.showGPT4VOptions);
+                setChatDocumentAttachmentsEnabled(config.chatDocumentAttachmentsEnabled);
                 setAgentRuntimeMode(config.agentRuntimeMode ?? "per_agent");
             });
         };
@@ -303,8 +315,13 @@ export function Component(): JSX.Element {
         }
     };
 
-    const makeApiRequest = async (question: string, attachments: ChatAttachmentInput[] = []) => {
+    const makeApiRequest = async (
+        question: string,
+        attachments: ChatAttachmentInput[] = [],
+        documents: ChatDocumentAttachment[] = []
+    ) => {
         lastQuestionRef.current = question;
+        setLastDocumentAttachments(documents);
 
         error && setError(undefined);
         setIsLoading(true);
@@ -343,6 +360,7 @@ export function Component(): JSX.Element {
                     }
                 ],
                 ...(attachments.length ? { attachments } : {}),
+                ...(documents.length ? { document_attachment_ids: documents.map(document => document.id) } : {}),
                 conversation_id: conversationIdRef.current,
                 context: {
                     overrides: {
@@ -365,10 +383,10 @@ export function Component(): JSX.Element {
                         use_oid_security_filter: useOidSecurityFilter,
                         use_groups_security_filter: useGroupsSecurityFilter,
                         vector_fields: vectorFields,
-                        use_gpt4v: useGPT4V,
+                        use_gpt4v: attachments.length > 0 && visionAvailable,
                         gpt4v_input: gpt4vInput,
                         language: i18n.language,
-                        use_agentic_retrieval: useAgenticRetrieval,
+                        use_agentic_retrieval: attachments.length > 0 ? false : useAgenticRetrieval,
                         max_tokens: activeAgent?.config?.max_tokens,
                         ...(seed !== null ? { seed: activeAgent ? (activeAgent?.config == null ? seed : activeAgent?.config?.seed) : seed } : {})
                     }
@@ -472,8 +490,10 @@ export function Component(): JSX.Element {
     };
 
     const onShowCitation = (citation: string) => {
-        let citationSplit = citation.replace("/content/", "");
-        const isExternal = /^https?:\/\//i.test(citationSplit);
+        const temporaryCitation = getTemporaryCitationFilePath(citation, conversationIdRef.current);
+        const resolvedCitation = temporaryCitation ?? citation;
+        let citationSplit = resolvedCitation.replace("/content/", "");
+        const isExternal = !temporaryCitation && /^https?:\/\//i.test(citationSplit);
 
         if (isExternal) {
             setActiveCitation(undefined);
@@ -481,10 +501,10 @@ export function Component(): JSX.Element {
             setActiveAnalysisPanelTab(AnalysisPanelTabs.WebTab);
         } else {
             setActiveWebUrl(undefined);
-            if (activeCitation === citation && activeAnalysisPanelTab === AnalysisPanelTabs.CitationTab) {
+            if (activeCitation === resolvedCitation && activeAnalysisPanelTab === AnalysisPanelTabs.CitationTab) {
                 setActiveAnalysisPanelTab(undefined);
             } else {
-                setActiveCitation(citation);
+                setActiveCitation(resolvedCitation);
                 setActiveAnalysisPanelTab(AnalysisPanelTabs.CitationTab);
             }
         }
@@ -983,15 +1003,16 @@ export function Component(): JSX.Element {
                         placeholder={t("gpt4vExamples.placeholder")}
                         disabled={isLoading}
                         initQuestion={question}
-                        onSend={(question, attachments) => makeApiRequest(question, attachments)}
+                        onSend={(question, attachments, documents) => makeApiRequest(question, attachments, documents)}
+                        conversationId={conversationIdRef.current}
+                        agentId={selectedAgent?._id}
+                        documentsAvailable={documentsAvailable}
+                        getAccessToken={() => (client ? getToken(client) : Promise.resolve(undefined))}
                         showSpeechInput={showSpeechInput}
-                        visionAvailable={visionAvailable}
-                        visionEnabled={useGPT4V}
-                        visionDisabledReason={visionDisabledReason}
-                        onVisionChange={enabled => {
-                            setUseGPT4V(enabled);
-                            if (enabled) setUseAgenticRetrieval(false);
-                        }}
+                        imagesAvailable={visionAvailable}
+                        imageDisabledReason={visionDisabledReason}
+                        showAttachmentButton={showAttachmentButton}
+                        attachmentDisabledReason={attachmentDisabledReason}
                     />
                 </div>
             </div>
@@ -1020,7 +1041,10 @@ export function Component(): JSX.Element {
                 )}
                 {error ? (
                     <div className={styles.askAnswerContainer}>
-                        <AnswerError error={error.toString()} onRetry={() => makeApiRequest(lastQuestionRef.current)} />
+                        <AnswerError
+                            error={error.toString()}
+                            onRetry={() => makeApiRequest(lastQuestionRef.current, [], lastDocumentAttachments)}
+                        />
                     </div>
                 ) : null}
                 {activeAnalysisPanelTab && answer && (
@@ -1070,7 +1094,7 @@ export function Component(): JSX.Element {
                     showSemanticRankerOption={showSemanticRankerOption}
                     showQueryRewritingOption={showQueryRewritingOption}
                     showReasoningEffortOption={showReasoningEffortOption}
-                    showGPT4VOptions={showGPT4VOptions}
+                    showGPT4VOptions={false}
                     showVectorOption={showVectorOption}
                     useOidSecurityFilter={useOidSecurityFilter}
                     useGroupsSecurityFilter={useGroupsSecurityFilter}

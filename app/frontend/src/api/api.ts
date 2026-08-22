@@ -24,7 +24,8 @@ import {
     Prompt,
     DatabaseConnection,
     MailEmailConfig,
-    IngestionJob
+    IngestionJob,
+    ChatDocumentAttachment
 } from "./models";
 import { useLogin, getToken, isUsingAppServicesLogin } from "../authConfig";
 
@@ -147,6 +148,60 @@ export async function chatApi(request: ChatAppRequest, shouldStream: boolean, id
     });
 }
 
+async function parseChatAttachmentResponse(response: Response): Promise<any> {
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(payload.error || `Document attachment request failed (${response.status})`);
+    }
+    return payload;
+}
+
+export async function uploadChatDocumentApi(
+    file: File,
+    conversationId: string,
+    uploadId: string,
+    agentId: string | undefined,
+    idToken: string | undefined
+): Promise<ChatDocumentAttachment> {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    form.append("conversation_id", conversationId);
+    form.append("upload_id", uploadId);
+    if (agentId) form.append("agent_id", agentId);
+    const response = await fetch(`${BACKEND_URI}/chat/attachments`, {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Idempotency-Key": uploadId },
+        body: form
+    });
+    const payload = await parseChatAttachmentResponse(response);
+    return payload.attachment as ChatDocumentAttachment;
+}
+
+export async function listChatDocumentsApi(
+    conversationId: string,
+    idToken: string | undefined
+): Promise<ChatDocumentAttachment[]> {
+    const query = new URLSearchParams({ conversation_id: conversationId, limit: "20" });
+    const response = await fetch(`${BACKEND_URI}/chat/attachments?${query}`, {
+        headers: await getHeaders(idToken)
+    });
+    const payload = await parseChatAttachmentResponse(response);
+    return (payload.attachments || []) as ChatDocumentAttachment[];
+}
+
+export async function deleteChatDocumentApi(
+    attachmentId: string,
+    conversationId: string,
+    idToken: string | undefined
+): Promise<void> {
+    const response = await fetch(`${BACKEND_URI}/chat/attachments/${encodeURIComponent(attachmentId)}`, {
+        method: "DELETE",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ conversation_id: conversationId })
+    });
+    await parseChatAttachmentResponse(response);
+}
+
 export async function getSpeechApi(text: string): Promise<string | null> {
     return await fetch("/speech", {
         method: "POST",
@@ -173,6 +228,15 @@ export async function getSpeechApi(text: string): Promise<string | null> {
 
 export function getCitationFilePath(citation: string): string {
     return `${BACKEND_URI}/content/${citation}`;
+}
+
+export function getTemporaryCitationFilePath(citation: string, conversationId: string): string | undefined {
+    const match = citation.match(/chat-attachment-([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})--/i);
+    if (!match) return undefined;
+    const hashIndex = citation.indexOf("#");
+    const hash = hashIndex >= 0 ? citation.slice(hashIndex) : "";
+    const query = new URLSearchParams({ conversation_id: conversationId });
+    return `${BACKEND_URI}/chat/attachments/${match[1]}/content?${query}${hash}`;
 }
 
 export async function uploadFileApi(request: FormData, idToken: string): Promise<SimpleAPIResponse> {

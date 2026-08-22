@@ -149,8 +149,12 @@ def test_status_and_soft_delete_are_acl_scoped(collection):
         conversation_id="conversation-1",
         status="failed",
         error_code="Parser failed: private content",
+        chunk_count=3,
+        extracted_characters=450,
     )
     assert failed["error_code"] == "Parser_failed_private_content"
+    assert failed["chunk_count"] == 3
+    assert failed["extracted_characters"] == 450
     assert not metadata.soft_delete_attachment_metadata(
         "attachment-1", owner_id="owner-1", conversation_id="wrong"
     )
@@ -190,6 +194,8 @@ def test_indexes_include_owner_conversation_and_optional_ttl(collection):
     assert metadata.ensure_attachment_metadata_indexes()
     assert collection.indexes[0][1]["name"] == "attachment_owner_conversation"
     assert collection.indexes[1][1] == {"expireAfterSeconds": 0, "name": "attachment_expiry"}
+    assert collection.indexes[2][1]["unique"] is True
+    assert collection.indexes[2][1]["name"] == "attachment_upload_idempotency"
 
 
 def test_create_rejects_invalid_expiry(collection):
@@ -197,3 +203,29 @@ def test_create_rejects_invalid_expiry(collection):
         metadata.create_attachment_metadata(
             record(expires_in=0), storage_backend="local", storage_key="key"
         )
+
+
+def test_upload_id_lookup_is_acl_scoped_and_serializes_safe_processing_metadata(collection):
+    item = metadata.create_attachment_metadata(
+        record(),
+        storage_backend="local",
+        storage_key="key",
+        upload_id="9aee2161-d67f-45a1-b4a5-7d2042dd1c26",
+        page_count=12,
+        scan_status="clean",
+    )
+
+    assert metadata.get_attachment_metadata_by_upload_id(
+        item["upload_id"],
+        owner_id="owner-1",
+        conversation_id="conversation-1",
+    )
+    assert metadata.get_attachment_metadata_by_upload_id(
+        item["upload_id"],
+        owner_id="owner-2",
+        conversation_id="conversation-1",
+    ) is None
+    serialized = metadata.serialize_attachment_metadata(item)
+    assert serialized["page_count"] == 12
+    assert serialized["scan_status"] == "clean"
+    assert "upload_id" not in serialized

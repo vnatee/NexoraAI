@@ -5,6 +5,19 @@
 cd "${0%/*}" || exit 1
 
 cd ../
+
+# Local development uses the private filesystem attachment adapter unless the
+# caller explicitly selected another backend. Production remains opt-in through
+# its deployment environment.
+if [ -z "${CHAT_ATTACHMENT_STORE:-}" ]; then
+    CHAT_ATTACHMENT_STORE=local
+    export CHAT_ATTACHMENT_STORE
+fi
+if [ "$CHAT_ATTACHMENT_STORE" = "local" ] && [ -z "${CHAT_ATTACHMENT_LOCAL_PATH:-}" ]; then
+    CHAT_ATTACHMENT_LOCAL_PATH="${PWD}/.data/chat-attachments"
+    export CHAT_ATTACHMENT_LOCAL_PATH
+fi
+
 echo 'Creating python virtual environment ".venv"'
 python3 -m venv .venv
 
@@ -45,7 +58,7 @@ echo ""
 echo "Building frontend"
 echo ""
 
-npm run build
+npm run build:memory-safe
 out=$?
 if [ $out -ne 0 ]; then
     echo "Failed to build frontend"

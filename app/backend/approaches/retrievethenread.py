@@ -9,6 +9,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionMessageParam
 from approaches.approach import Approach, DataPoints, ExtraInfo, ThoughtStep
 from approaches.promptmanager import PromptManager
 from core.authentication import AuthenticationHelper
+from core.attachment_retrieval import merge_attachment_sources
 from prepdocslib.embeddings import OpenAIEmbeddings
 
 
@@ -80,16 +81,23 @@ class RetrieveThenReadApproach(Approach):
         if not isinstance(q, str):
             raise ValueError("The most recent message content must be a string.")
 
-        if use_agentic_retrieval:
+        if overrides.get("_temporary_attachments_only") is True:
+            extra_info = ExtraInfo(DataPoints(text=[], images=[]), [])
+        elif use_agentic_retrieval:
             extra_info = await self.run_agentic_retrieval_approach(messages, overrides, auth_claims)
         else:
             extra_info = await self.run_search_approach(messages, overrides, auth_claims)
+        extra_info.data_points.text = merge_attachment_sources(extra_info.data_points.text, overrides)
 
         # Process results
         messages = self.prompt_manager.render_prompt(
             self.answer_prompt,
             self.get_system_prompt_variables(overrides.get("prompt_template"))
-            | {"user_query": q, "text_sources": extra_info.data_points.text},
+            | {
+                "user_query": q,
+                "text_sources": extra_info.data_points.text,
+                "has_temporary_attachments": bool(overrides.get("_temporary_attachment_sources")),
+            },
         )
 
         chat_completion = cast(

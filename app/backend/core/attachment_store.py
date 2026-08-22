@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import tempfile
@@ -12,7 +13,9 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Mapping, Protocol
+
+from azure.core.exceptions import ResourceNotFoundError
 
 
 DEFAULT_ATTACHMENT_TTL = timedelta(hours=24)
@@ -60,6 +63,8 @@ class StoredAttachment:
 
 
 class AttachmentStore(Protocol):
+    backend_name: str
+
     async def put(
         self,
         *,
@@ -112,6 +117,54 @@ def _parse_timestamp(value: str) -> datetime:
         raise AttachmentIntegrityError("Attachment metadata contains an invalid timestamp") from error
 
 
+def _build_record(
+    *,
+    owner_id: str,
+    conversation_id: str,
+    filename: str,
+    content_type: str,
+    content: bytes,
+    ttl: timedelta | None,
+    default_ttl: timedelta,
+    max_bytes: int,
+    now: datetime,
+) -> AttachmentRecord:
+    owner = _required_identifier(owner_id, "owner_id")
+    conversation = _required_identifier(conversation_id, "conversation_id")
+    media_type = str(content_type or "").strip().lower()
+    if not media_type or len(media_type) > 255:
+        raise AttachmentStoreError("content_type is required")
+    if not isinstance(content, bytes):
+        raise AttachmentStoreError("Attachment content must be bytes")
+    if not content or len(content) > max_bytes:
+        raise AttachmentStoreError(f"Attachment must contain 1 to {max_bytes} bytes")
+    retention = ttl or default_ttl
+    if retention <= timedelta(0):
+        raise AttachmentStoreError("Attachment TTL must be greater than zero")
+    created_at = _utc(now)
+    return AttachmentRecord(
+        attachment_id=str(uuid.uuid4()),
+        owner_id=owner,
+        conversation_id=conversation,
+        filename=normalize_attachment_filename(filename),
+        content_type=media_type,
+        size=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+        created_at=created_at.isoformat(),
+        expires_at=(created_at + retention).isoformat(),
+    )
+
+
+def _authorize(record: AttachmentRecord, owner_id: str, conversation_id: str) -> None:
+    owner_matches = hmac.compare_digest(record.owner_id, _required_identifier(owner_id, "owner_id"))
+    conversation_matches = hmac.compare_digest(
+        record.conversation_id,
+        _required_identifier(conversation_id, "conversation_id"),
+    )
+    if not owner_matches or not conversation_matches:
+        raise AttachmentAccessError("Attachment does not belong to this owner and conversation")
+
+
 class LocalAttachmentStore:
     """Private filesystem adapter for local/container deployments.
 
@@ -119,6 +172,8 @@ class LocalAttachmentStore:
     public contract keeps callers independent from the later Mongo metadata and
     Azure/S3 object-store adapters.
     """
+
+    backend_name = "local"
 
     def __init__(
         self,
@@ -146,13 +201,6 @@ class LocalAttachmentStore:
             raise AttachmentNotFoundError("Attachment not found") from error
         directory = self.root / normalized_id[:2]
         return directory / f"{normalized_id}.bin", directory / f"{normalized_id}.json"
-
-    @staticmethod
-    def _authorize(record: AttachmentRecord, owner_id: str, conversation_id: str) -> None:
-        owner_matches = hmac.compare_digest(record.owner_id, owner_id)
-        conversation_matches = hmac.compare_digest(record.conversation_id, conversation_id)
-        if not owner_matches or not conversation_matches:
-            raise AttachmentAccessError("Attachment does not belong to this owner and conversation")
 
     @staticmethod
     def _write_private(path: Path, content: bytes) -> None:
@@ -185,33 +233,18 @@ class LocalAttachmentStore:
         content: bytes,
         ttl: timedelta | None,
     ) -> AttachmentRecord:
-        owner = _required_identifier(owner_id, "owner_id")
-        conversation = _required_identifier(conversation_id, "conversation_id")
-        media_type = str(content_type or "").strip().lower()
-        if not media_type or len(media_type) > 255:
-            raise AttachmentStoreError("content_type is required")
-        if not isinstance(content, bytes):
-            raise AttachmentStoreError("Attachment content must be bytes")
-        if not content or len(content) > self.max_bytes:
-            raise AttachmentStoreError(f"Attachment must contain 1 to {self.max_bytes} bytes")
-        retention = ttl or self.default_ttl
-        if retention <= timedelta(0):
-            raise AttachmentStoreError("Attachment TTL must be greater than zero")
-
-        now = _utc(self._clock())
-        attachment_id = str(uuid.uuid4())
-        record = AttachmentRecord(
-            attachment_id=attachment_id,
-            owner_id=owner,
-            conversation_id=conversation,
-            filename=normalize_attachment_filename(filename),
-            content_type=media_type,
-            size=len(content),
-            sha256=hashlib.sha256(content).hexdigest(),
-            created_at=now.isoformat(),
-            expires_at=(now + retention).isoformat(),
+        record = _build_record(
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            filename=filename,
+            content_type=content_type,
+            content=content,
+            ttl=ttl,
+            default_ttl=self.default_ttl,
+            max_bytes=self.max_bytes,
+            now=self._clock(),
         )
-        payload_path, metadata_path = self._paths(attachment_id)
+        payload_path, metadata_path = self._paths(record.attachment_id)
         try:
             self._write_private(payload_path, content)
             self._write_private(
@@ -247,10 +280,8 @@ class LocalAttachmentStore:
             pass
 
     def _get_sync(self, attachment_id: str, *, owner_id: str, conversation_id: str) -> StoredAttachment:
-        owner = _required_identifier(owner_id, "owner_id")
-        conversation = _required_identifier(conversation_id, "conversation_id")
         record, payload_path, metadata_path = self._load_record(attachment_id)
-        self._authorize(record, owner, conversation)
+        _authorize(record, owner_id, conversation_id)
         if _parse_timestamp(record.expires_at) <= _utc(self._clock()):
             self._remove(payload_path, metadata_path)
             raise AttachmentExpiredError("Attachment has expired")
@@ -263,10 +294,8 @@ class LocalAttachmentStore:
         return StoredAttachment(record=record, content=content)
 
     def _delete_sync(self, attachment_id: str, *, owner_id: str, conversation_id: str) -> None:
-        owner = _required_identifier(owner_id, "owner_id")
-        conversation = _required_identifier(conversation_id, "conversation_id")
         record, payload_path, metadata_path = self._load_record(attachment_id)
-        self._authorize(record, owner, conversation)
+        _authorize(record, owner_id, conversation_id)
         self._remove(payload_path, metadata_path)
 
     def _delete_expired_sync(self, now: datetime | None) -> int:
@@ -339,3 +368,180 @@ class LocalAttachmentStore:
 
     async def delete_expired(self, *, now: datetime | None = None) -> int:
         return await asyncio.to_thread(self._delete_expired_sync, now)
+
+
+class AzureBlobAttachmentStore:
+    """Private Azure Blob adapter; the container itself must disallow public access."""
+
+    _PREFIX = "chat-attachments/"
+    backend_name = "azure"
+
+    def __init__(
+        self,
+        container: Any,
+        *,
+        default_ttl: timedelta = DEFAULT_ATTACHMENT_TTL,
+        max_bytes: int = DEFAULT_MAX_ATTACHMENT_BYTES,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        if container is None:
+            raise AttachmentStoreError("Azure attachment container is required")
+        if default_ttl <= timedelta(0) or max_bytes <= 0:
+            raise AttachmentStoreError("Attachment TTL and size limit must be greater than zero")
+        self.container = container
+        self.default_ttl = default_ttl
+        self.max_bytes = max_bytes
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    @classmethod
+    def _blob_names(cls, attachment_id: str) -> tuple[str, str]:
+        try:
+            normalized_id = str(uuid.UUID(str(attachment_id)))
+        except (ValueError, AttributeError, TypeError) as error:
+            raise AttachmentNotFoundError("Attachment not found") from error
+        base = f"{cls._PREFIX}{normalized_id[:2]}/{normalized_id}"
+        return f"{base}.bin", f"{base}.json"
+
+    async def _download(self, name: str) -> bytes:
+        try:
+            stream = await self.container.get_blob_client(name).download_blob()
+            return await stream.readall()
+        except ResourceNotFoundError as error:
+            raise AttachmentNotFoundError("Attachment not found") from error
+
+    async def _delete_names(self, payload_name: str, metadata_name: str) -> None:
+        for name in (payload_name, metadata_name):
+            try:
+                await self.container.get_blob_client(name).delete_blob(delete_snapshots="include")
+            except ResourceNotFoundError:
+                pass
+
+    async def _load_record(self, attachment_id: str) -> tuple[AttachmentRecord, str, str]:
+        payload_name, metadata_name = self._blob_names(attachment_id)
+        try:
+            document = json.loads((await self._download(metadata_name)).decode("utf-8"))
+            record = AttachmentRecord(**document)
+        except AttachmentNotFoundError:
+            raise
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError) as error:
+            raise AttachmentIntegrityError("Attachment metadata is invalid") from error
+        if record.attachment_id != str(uuid.UUID(str(attachment_id))):
+            raise AttachmentIntegrityError("Attachment metadata ID does not match its storage key")
+        return record, payload_name, metadata_name
+
+    async def put(
+        self,
+        *,
+        owner_id: str,
+        conversation_id: str,
+        filename: str,
+        content_type: str,
+        content: bytes,
+        ttl: timedelta | None = None,
+    ) -> AttachmentRecord:
+        record = _build_record(
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            filename=filename,
+            content_type=content_type,
+            content=content,
+            ttl=ttl,
+            default_ttl=self.default_ttl,
+            max_bytes=self.max_bytes,
+            now=self._clock(),
+        )
+        payload_name, metadata_name = self._blob_names(record.attachment_id)
+        payload_client = self.container.get_blob_client(payload_name)
+        metadata_client = self.container.get_blob_client(metadata_name)
+        try:
+            await payload_client.upload_blob(content, overwrite=False)
+            await metadata_client.upload_blob(
+                json.dumps(asdict(record), ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+                overwrite=False,
+            )
+        except Exception:
+            try:
+                await self._delete_names(payload_name, metadata_name)
+            except Exception:
+                # Periodic orphan cleanup is the fallback when storage is also
+                # unavailable during this best-effort rollback.
+                pass
+            raise
+        return record
+
+    async def get(self, attachment_id: str, *, owner_id: str, conversation_id: str) -> StoredAttachment:
+        record, payload_name, metadata_name = await self._load_record(attachment_id)
+        _authorize(record, owner_id, conversation_id)
+        if _parse_timestamp(record.expires_at) <= _utc(self._clock()):
+            await self._delete_names(payload_name, metadata_name)
+            raise AttachmentExpiredError("Attachment has expired")
+        content = await self._download(payload_name)
+        if len(content) != record.size or not hmac.compare_digest(hashlib.sha256(content).hexdigest(), record.sha256):
+            raise AttachmentIntegrityError("Attachment payload failed its integrity check")
+        return StoredAttachment(record=record, content=content)
+
+    async def delete(self, attachment_id: str, *, owner_id: str, conversation_id: str) -> None:
+        record, payload_name, metadata_name = await self._load_record(attachment_id)
+        _authorize(record, owner_id, conversation_id)
+        await self._delete_names(payload_name, metadata_name)
+
+    async def delete_expired(self, *, now: datetime | None = None) -> int:
+        cutoff = _utc(now or self._clock())
+        deleted = 0
+        blobs = [item async for item in self.container.list_blobs(name_starts_with=self._PREFIX)]
+        names = {str(item.name) for item in blobs}
+        for metadata_name in sorted(name for name in names if name.endswith(".json")):
+            payload_name = f"{metadata_name[:-5]}.bin"
+            try:
+                document = json.loads((await self._download(metadata_name)).decode("utf-8"))
+                record = AttachmentRecord(**document)
+                expected_payload, expected_metadata = self._blob_names(record.attachment_id)
+                if expected_metadata != metadata_name or _parse_timestamp(record.expires_at) <= cutoff:
+                    await self._delete_names(payload_name, metadata_name)
+                    deleted += 1
+            except (AttachmentStoreError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError):
+                await self._delete_names(payload_name, metadata_name)
+                deleted += 1
+        orphan_cutoff = cutoff - self.default_ttl
+        for item in blobs:
+            name = str(item.name)
+            if not name.endswith(".bin") or f"{name[:-4]}.json" in names:
+                continue
+            modified_at = getattr(item, "last_modified", None)
+            if modified_at and _utc(modified_at) <= orphan_cutoff:
+                await self._delete_names(name, f"{name[:-4]}.json")
+                deleted += 1
+        return deleted
+
+
+def create_attachment_store(
+    env: Mapping[str, str],
+    *,
+    azure_container: Any = None,
+    clock: Callable[[], datetime] | None = None,
+) -> AttachmentStore | None:
+    backend = str(env.get("CHAT_ATTACHMENT_STORE") or "disabled").strip().lower()
+    if backend == "disabled":
+        return None
+    try:
+        ttl_hours = float(env.get("CHAT_ATTACHMENT_TTL_HOURS") or 24)
+        max_megabytes = float(env.get("CHAT_ATTACHMENT_MAX_MB") or 25)
+        if not math.isfinite(ttl_hours) or not math.isfinite(max_megabytes):
+            raise ValueError
+        ttl = timedelta(hours=ttl_hours)
+        max_bytes = int(max_megabytes * 1024 * 1024)
+    except (OverflowError, ValueError) as error:
+        raise AttachmentStoreError("Attachment TTL and size settings must be numeric") from error
+    if backend == "local":
+        root = str(env.get("CHAT_ATTACHMENT_LOCAL_PATH") or "").strip()
+        if not root:
+            raise AttachmentStoreError("CHAT_ATTACHMENT_LOCAL_PATH is required for local attachment storage")
+        return LocalAttachmentStore(root, default_ttl=ttl, max_bytes=max_bytes, clock=clock)
+    if backend == "azure":
+        return AzureBlobAttachmentStore(
+            azure_container,
+            default_ttl=ttl,
+            max_bytes=max_bytes,
+            clock=clock,
+        )
+    raise AttachmentStoreError("CHAT_ATTACHMENT_STORE must be disabled, local, or azure")

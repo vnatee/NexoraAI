@@ -18,6 +18,15 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+# Default only local development to the private filesystem attachment adapter.
+# An explicitly configured environment (including Azure) still wins.
+if (-not $env:CHAT_ATTACHMENT_STORE) {
+    $env:CHAT_ATTACHMENT_STORE = "local"
+}
+if ($env:CHAT_ATTACHMENT_STORE -eq "local" -and -not $env:CHAT_ATTACHMENT_LOCAL_PATH) {
+    $env:CHAT_ATTACHMENT_LOCAL_PATH = Join-Path (Split-Path $PSScriptRoot -Parent) ".data/chat-attachments"
+}
+
 
 Write-Host 'Creating python virtual environment ".venv"'
 $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
@@ -57,7 +66,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "Building frontend"
 Write-Host ""
-npm run build
+npm run build:memory-safe
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Failed to build frontend"
     exit $LASTEXITCODE

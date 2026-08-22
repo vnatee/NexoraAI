@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
+    "build:memory-safe": "tsc && vite build --sourcemap false",
     "preview": "vite preview"
   },
   "dependencies": {

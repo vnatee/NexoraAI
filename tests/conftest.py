@@ -337,7 +337,7 @@ envs = [
         "AZURE_OPENAI_EMB_DIMENSIONS": "3072",
         "USE_GPT4V": "true",
         "AZURE_OPENAI_GPT4V_MODEL": "gpt-4",
-        "VISION_ENDPOINT": "https://testvision.cognitiveservices.azure.com/",
+        "AZURE_VISION_ENDPOINT": "https://testvision.cognitiveservices.azure.com/",
     },
 ]
 

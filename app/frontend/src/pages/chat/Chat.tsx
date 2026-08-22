@@ -16,6 +16,7 @@ import {
     ChatAppResponseOrError,
     ChatAppRequest,
     ChatAttachmentInput,
+    ChatDocumentAttachment,
     ResponseMessage,
     VectorFields,
     GPT4VInput,
@@ -25,7 +26,8 @@ import {
     get_data_group_by_team,
     AuthProfile,
     get_agent_by_team,
-    getFixedPromptsApi
+    getFixedPromptsApi,
+    getTemporaryCitationFilePath
 } from "../../api";
 import { Answer, AnswerError, AnswerLoading } from "../../components/Answer";
 import { QuestionInput } from "../../components/QuestionInput";
@@ -146,10 +148,12 @@ const Chat = () => {
     const [answers, setAnswers] = useState<[user: string, response: ChatAppResponse][]>([]);
     const [streamedAnswers, setStreamedAnswers] = useState<[user: string, response: ChatAppResponse][]>([]);
     const [turnAttachments, setTurnAttachments] = useState<Record<number, ChatAttachmentInput[]>>({});
+    const [turnDocumentAttachments, setTurnDocumentAttachments] = useState<Record<number, ChatDocumentAttachment[]>>({});
     const isWaitingForStreamedTurn = isStreaming && streamedAnswers.length <= answers.length;
     const [speechUrls, setSpeechUrls] = useState<(string | null)[]>([]);
 
     const [showGPT4VOptions, setShowGPT4VOptions] = useState<boolean>(false);
+    const [chatDocumentAttachmentsEnabled, setChatDocumentAttachmentsEnabled] = useState(false);
     const [agentRuntimeMode, setAgentRuntimeMode] = useState<"legacy" | "langgraph" | "per_agent">("per_agent");
     const [showSemanticRankerOption, setShowSemanticRankerOption] = useState<boolean>(false);
     const [showQueryRewritingOption, setShowQueryRewritingOption] = useState<boolean>(false);
@@ -229,19 +233,25 @@ const Chat = () => {
     const selectedLlmProfileId = selectedAgent?.config?.llm_profile_id || "system";
     const selectedLlmProfile = llmProfiles.find(profile => profile.id === selectedLlmProfileId);
     const modelSupportsVision = selectedLlmProfile?.supportsVision ?? (selectedLlmProfileId === "system" && showGPT4VOptions);
-    const visionAvailable = modelSupportsVision && !usesLangGraph;
+    const imageInputEnabled = selectedAgent?.config?.image_input_enabled === true;
+    const documentAttachmentsEnabled = selectedAgent?.config?.document_attachments_enabled !== false;
+    const visionAvailable = imageInputEnabled && modelSupportsVision && !usesLangGraph;
+    const documentsAvailable = documentAttachmentsEnabled && chatDocumentAttachmentsEnabled;
+    const showAttachmentButton = imageInputEnabled || documentAttachmentsEnabled;
     const selectedLlmProfileLabel = selectedLlmProfile?.label ?? (selectedLlmProfileId === "system" ? "System default" : selectedLlmProfileId);
-    const visionDisabledReason = !selectedLlmProfile && selectedLlmProfileId !== "system"
+    const visionDisabledReason = !imageInputEnabled
+        ? "Image input is disabled in Agent Management."
+        : !selectedLlmProfile && selectedLlmProfileId !== "system"
         ? `Agent ${selectedAgent?.agent_name ?? "selected"} references unavailable LLM profile ${selectedLlmProfileId}. Re-select its model in Agent Management.`
         : !modelSupportsVision
         ? `${selectedAgent?.agent_name ?? "The selected agent"} uses ${selectedLlmProfileLabel}, which is not marked as vision-capable. Select the tested Vision model in Agent Management.`
         : usesLangGraph
           ? "Vision attachments are not supported by the LangGraph runtime yet."
           : undefined;
+    const attachmentDisabledReason = documentAttachmentsEnabled && !chatDocumentAttachmentsEnabled
+        ? "Document attachment storage is not configured for this deployment."
+        : visionDisabledReason;
 
-    useEffect(() => {
-        if (!visionAvailable) setUseGPT4V(false);
-    }, [visionAvailable]);
     const [isAgentsLoading, setIsAgentsLoading] = useState(false);
     const [isGroupsLoading, setIsGroupsLoading] = useState(false);
     const isPageLoading = isUserLoading || isAgentsLoading || isGroupsLoading;
@@ -385,6 +395,7 @@ const Chat = () => {
         configApi().then(config => {
             setLlmProfiles(config.llmProfiles ?? []);
             setShowGPT4VOptions(config.showGPT4VOptions);
+            setChatDocumentAttachmentsEnabled(config.chatDocumentAttachmentsEnabled);
             setAgentRuntimeMode(config.agentRuntimeMode ?? "per_agent");
             setUseSemanticRanker(config.showSemanticRankerOption);
             setShowSemanticRankerOption(config.showSemanticRankerOption);
@@ -603,13 +614,24 @@ const Chat = () => {
         };
     }
 
-    const makeApiRequest = async (question: string, api_result?: any, attachments: ChatAttachmentInput[] = []) => {
+    const makeApiRequest = async (
+        question: string,
+        api_result?: any,
+        attachments: ChatAttachmentInput[] = [],
+        documents: ChatDocumentAttachment[] = []
+    ) => {
         lastQuestionRef.current = question;
 
         const requestIndex = answers.length;
         setTurnAttachments(current => {
             const next = { ...current };
             if (attachments.length > 0) next[requestIndex] = [...attachments];
+            else delete next[requestIndex];
+            return next;
+        });
+        setTurnDocumentAttachments(current => {
+            const next = { ...current };
+            if (documents.length > 0) next[requestIndex] = [...documents];
             else delete next[requestIndex];
             return next;
         });
@@ -649,6 +671,7 @@ const Chat = () => {
             const request: ChatAppRequest = {
                 messages: [...messages, { content: question, role: "user" }],
                 ...(attachments.length ? { attachments } : {}),
+                ...(documents.length ? { document_attachment_ids: documents.map(document => document.id) } : {}),
                 conversation_id: conversationIdRef.current,
                 context: {
                     overrides: {
@@ -670,10 +693,10 @@ const Chat = () => {
                         use_oid_security_filter: useOidSecurityFilter,
                         use_groups_security_filter: useGroupsSecurityFilter,
                         vector_fields: vectorFields,
-                        use_gpt4v: useGPT4V,
+                        use_gpt4v: attachments.length > 0 && visionAvailable,
                         gpt4v_input: gpt4vInput,
                         language: i18n.language,
-                        use_agentic_retrieval: useAgenticRetrieval,
+                        use_agentic_retrieval: attachments.length > 0 ? false : useAgenticRetrieval,
                         max_tokens: activeAgent?.config?.max_tokens,
                         ...(seed !== null ? { seed: activeAgent ? (activeAgent?.config == null ? seed : activeAgent?.config?.seed) : seed } : {})
                     }
@@ -740,6 +763,7 @@ const Chat = () => {
         setSpeechUrls([]);
         setStreamedAnswers([]);
         setTurnAttachments({});
+        setTurnDocumentAttachments({});
         setIsLoading(false);
         setIsStreaming(false);
     };
@@ -756,6 +780,7 @@ const Chat = () => {
             void configApi().then(config => {
                 setLlmProfiles(config.llmProfiles ?? []);
                 setShowGPT4VOptions(config.showGPT4VOptions);
+                setChatDocumentAttachmentsEnabled(config.chatDocumentAttachmentsEnabled);
                 setAgentRuntimeMode(config.agentRuntimeMode ?? "per_agent");
             });
         };
@@ -878,8 +903,10 @@ const Chat = () => {
     };
 
     const onShowCitation = (citation: string, index: number) => {
-        const raw = citation.replace("/content/", "");
-        const isExternal = /^https?:\/\//i.test(raw);
+        const temporaryCitation = getTemporaryCitationFilePath(citation, conversationIdRef.current);
+        const resolvedCitation = temporaryCitation ?? citation;
+        const raw = resolvedCitation.replace("/content/", "");
+        const isExternal = !temporaryCitation && /^https?:\/\//i.test(raw);
 
         if (isExternal) {
             const nextUrl = normalizeExternalUrl(raw);
@@ -902,13 +929,13 @@ const Chat = () => {
             // พฤติกรรมเดิมสำหรับไฟล์/รูป (CitationTab)
             setActiveWebUrl(undefined);
             if (
-                activeCitation === citation &&
+                activeCitation === resolvedCitation &&
                 activeAnalysisPanelTab === AnalysisPanelTabs.CitationTab
                 // จะคงหรือเอา selectedAnswer === index ก็ได้ แต่เพื่อให้พฤติกรรมเหมือนกัน ให้ละออกได้
             ) {
                 setActiveAnalysisPanelTab(undefined);
             } else {
-                setActiveCitation(citation);
+                setActiveCitation(resolvedCitation);
                 setActiveAnalysisPanelTab(AnalysisPanelTabs.CitationTab);
             }
         }
@@ -1029,6 +1056,7 @@ const Chat = () => {
         // Inline images are deliberately session-only and are never restored
         // from browser/Cosmos history.
         setTurnAttachments({});
+        setTurnDocumentAttachments({});
 
         // 2) เซ็ต last question
         if (answersFromHistory.length > 0) {
@@ -1483,7 +1511,7 @@ const Chat = () => {
                             {isStreaming &&
                                 streamedAnswers.map((streamedAnswer, index) => (
                                     <div key={index}>
-                                        <UserChatMessage message={streamedAnswer[0]} attachments={turnAttachments[index]} />
+                                        <UserChatMessage message={streamedAnswer[0]} attachments={turnAttachments[index]} documents={turnDocumentAttachments[index]} />
                                         <div className={styles.chatMessageGpt}>
                                             <Answer
                                                 isStreaming={true}
@@ -1511,7 +1539,7 @@ const Chat = () => {
                             {!isStreaming &&
                                 answers.map((answer, index) => (
                                     <div key={index}>
-                                        <UserChatMessage message={answer[0]} attachments={turnAttachments[index]} />
+                                        <UserChatMessage message={answer[0]} attachments={turnAttachments[index]} documents={turnDocumentAttachments[index]} />
                                         <div className={styles.chatMessageGpt}>
                                             <Answer
                                                 isStreaming={false}
@@ -1538,7 +1566,7 @@ const Chat = () => {
                                 ))}
                             {(isLoading || isWaitingForStreamedTurn) && (
                                 <>
-                                    <UserChatMessage message={lastQuestionRef.current} attachments={turnAttachments[answers.length]} />
+                                    <UserChatMessage message={lastQuestionRef.current} attachments={turnAttachments[answers.length]} documents={turnDocumentAttachments[answers.length]} />
                                     <div className={styles.chatMessageGptMinWidth}>
                                         <AnswerLoading />
                                     </div>
@@ -1546,11 +1574,18 @@ const Chat = () => {
                             )}
                             {error ? (
                                 <>
-                                    <UserChatMessage message={lastQuestionRef.current} attachments={turnAttachments[answers.length]} />
+                                    <UserChatMessage message={lastQuestionRef.current} attachments={turnAttachments[answers.length]} documents={turnDocumentAttachments[answers.length]} />
                                     <div className={styles.chatMessageGptMinWidth}>
                                         <AnswerError
                                             error={error.toString()}
-                                            onRetry={() => makeApiRequest(lastQuestionRef.current, undefined, turnAttachments[answers.length] ?? [])}
+                                            onRetry={() =>
+                                                makeApiRequest(
+                                                    lastQuestionRef.current,
+                                                    undefined,
+                                                    turnAttachments[answers.length] ?? [],
+                                                    turnDocumentAttachments[answers.length] ?? []
+                                                )
+                                            }
                                         />
                                     </div>
                                 </>
@@ -1568,15 +1603,16 @@ const Chat = () => {
                                 clearOnSend
                                 placeholder={t("defaultExamples.placeholder")}
                                 disabled={isLoading}
-                                onSend={(question, attachments) => makeApiRequest(question, undefined, attachments)}
+                                onSend={(question, attachments, documents) => makeApiRequest(question, undefined, attachments, documents)}
+                                conversationId={conversationIdRef.current}
+                                agentId={selectedAgent?._id}
+                                documentsAvailable={documentsAvailable}
+                                getAccessToken={() => (client ? getToken(client) : Promise.resolve(undefined))}
                                 showSpeechInput={showSpeechInput}
-                                visionAvailable={visionAvailable}
-                                visionEnabled={useGPT4V}
-                                visionDisabledReason={visionDisabledReason}
-                                onVisionChange={enabled => {
-                                    setUseGPT4V(enabled);
-                                    if (enabled) setUseAgenticRetrieval(false);
-                                }}
+                                imagesAvailable={visionAvailable}
+                                imageDisabledReason={visionDisabledReason}
+                                showAttachmentButton={showAttachmentButton}
+                                attachmentDisabledReason={attachmentDisabledReason}
                             />
                         </div>
                     )}
@@ -1788,7 +1824,7 @@ const Chat = () => {
                         showSemanticRankerOption={showSemanticRankerOption}
                         showQueryRewritingOption={showQueryRewritingOption}
                         showReasoningEffortOption={showReasoningEffortOption}
-                        showGPT4VOptions={showGPT4VOptions}
+                        showGPT4VOptions={false}
                         showVectorOption={showVectorOption}
                         useOidSecurityFilter={useOidSecurityFilter}
                         useGroupsSecurityFilter={useGroupsSecurityFilter}

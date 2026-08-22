@@ -15,6 +15,7 @@ from approaches.approach import DataPoints, ExtraInfo, ThoughtStep
 from approaches.chatapproach import ChatApproach
 from approaches.promptmanager import PromptManager
 from core.authentication import AuthenticationHelper
+from core.attachment_retrieval import merge_attachment_sources
 from core.chat_attachments import redact_inline_images
 from core.imageshelper import fetch_image
 from prepdocslib.embeddings import OpenAIEmbeddings
@@ -145,32 +146,36 @@ class ChatReadRetrieveReadVisionApproach(ChatApproach):
         # STEP 2: Retrieve relevant documents from the search index with the GPT optimized query
 
         # If retrieval mode includes vectors, compute an embedding for the query
+        attachment_only = overrides.get("_temporary_attachments_only") is True
         vectors = []
-        if use_vector_search:
+        if use_vector_search and not attachment_only:
             if vector_fields == "textEmbeddingOnly" or vector_fields == "textAndImageEmbeddings":
                 vectors.append(await self.compute_text_embedding(query_text))
             if vector_fields == "imageEmbeddingOnly" or vector_fields == "textAndImageEmbeddings":
                 vectors.append(await self.compute_image_embedding(query_text))
 
-        results = await self.search(
-            top,
-            query_text,
-            filter,
-            vectors,
-            use_text_search,
-            use_vector_search,
-            use_semantic_ranker,
-            use_semantic_captions,
-            minimum_search_score,
-            minimum_reranker_score,
-            use_query_rewriting,
-        )
+        results = []
+        if not attachment_only:
+            results = await self.search(
+                top,
+                query_text,
+                filter,
+                vectors,
+                use_text_search,
+                use_vector_search,
+                use_semantic_ranker,
+                use_semantic_captions,
+                minimum_search_score,
+                minimum_reranker_score,
+                use_query_rewriting,
+            )
 
         # STEP 3: Generate a contextual and content specific answer using the search results and chat history
         text_sources = []
         image_sources = []
         if send_text_to_gptvision:
             text_sources = self.get_sources_content(results, use_semantic_captions, use_image_citation=True)
+        text_sources = merge_attachment_sources(text_sources, overrides)
         if send_images_to_gptvision:
             for result in results:
                 url = await fetch_image(self.blob_container_client, result)
@@ -189,6 +194,7 @@ class ChatReadRetrieveReadVisionApproach(ChatApproach):
                 "text_sources": text_sources,
                 "image_sources": prompt_image_sources,
                 "has_user_attachments": bool(overrides.get("_image_attachments")),
+                "has_temporary_attachments": bool(overrides.get("_temporary_attachment_sources")),
             },
         )
 
