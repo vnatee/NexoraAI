@@ -122,17 +122,21 @@ from mongo_table_connecters.ingestion_jobs import (
     latest_indexed_times,
     list_ingestion_jobs,
     list_recoverable_ingestion_jobs,
+    release_ingestion_job,
     restart_failed_ingestion_job,
     serialize_ingestion_job,
     update_ingestion_job_status,
 )
 from mongo_table_connecters.chat_attachment_metadata import (
+    claim_attachment_extraction,
     create_attachment_metadata,
     delete_expired_attachment_metadata,
     ensure_attachment_metadata_indexes,
     get_attachment_metadata,
     get_attachment_metadata_by_upload_id,
     list_attachment_metadata,
+    list_recoverable_attachment_metadata,
+    release_attachment_extraction,
     serialize_attachment_metadata,
     soft_delete_attachment_metadata,
     update_attachment_status,
@@ -196,7 +200,11 @@ from agent_runtime.charting import ChartValidationError, validate_echarts_spec
 from agent_runtime.adapters.mcp import MCPServerConfig, discover_mcp_tools
 from core.chat_attachments import ChatAttachmentError, validate_chat_attachments
 from core.attachment_cleanup import cleanup_expired_attachments
-from core.attachment_extraction import AttachmentExtractionError, extract_attachment_chunks
+from core.attachment_extraction import (
+    AttachmentExtractionError,
+    chunk_attachment_pages,
+    extract_attachment_chunks,
+)
 from core.attachment_index import AttachmentIndex
 from core.attachment_retrieval import (
     ATTACHMENT_EVIDENCE_KNOWLEDGE_ONLY,
@@ -236,6 +244,8 @@ from config import (
     CONFIG_CHAT_ATTACHMENT_CLEANUP_TASK,
     CONFIG_CHAT_ATTACHMENT_CONTAINER_CLIENT,
     CONFIG_CHAT_ATTACHMENT_INDEX,
+    CONFIG_CHAT_ATTACHMENT_PROCESSORS,
+    CONFIG_CHAT_ATTACHMENT_RECOVERY_TASK,
     CONFIG_CHAT_ATTACHMENT_SCANNER,
     CONFIG_CHAT_ATTACHMENT_STORE,
     CONFIG_CHAT_HISTORY_BROWSER_ENABLED,
@@ -246,6 +256,7 @@ from config import (
     CONFIG_GPT4V_DEPLOYED,
     CONFIG_KNOWLEDGE_VISION_ENABLED,
     CONFIG_INGESTER,
+    CONFIG_INGESTION_RECOVERY_TASK,
     CONFIG_LANGUAGE_PICKER_ENABLED,
     CONFIG_OPENAI_CLIENT,
     CONFIG_QUERY_REWRITING_ENABLED,
@@ -3114,6 +3125,14 @@ async def delete_chat_attachment(auth_claims: dict[str, Any], attachment_id: str
 
 BACKGROUND_TASKS = set()
 ATTACHMENT_EXTRACTION_TASKS: set[asyncio.Task] = set()
+INGESTION_TASKS: set[asyncio.Task] = set()
+ATTACHMENT_EXTRACTION_WORKER_ID = f"attachment-{uuid.uuid4()}"
+
+
+class _NamedAttachmentBytesIO(BytesIO):
+    def __init__(self, content: bytes, filename: str):
+        super().__init__(content)
+        self.name = filename
 INGEST_SEM = asyncio.Semaphore(3)
 INGESTION_WORKER_ID = str(uuid.uuid4())
 
@@ -3145,6 +3164,8 @@ def _schedule_ingestion_job(job_id: str) -> None:
     task = asyncio.create_task(_run_ingestion_job(job_id))
     BACKGROUND_TASKS.add(task)
     task.add_done_callback(BACKGROUND_TASKS.discard)
+    INGESTION_TASKS.add(task)
+    task.add_done_callback(INGESTION_TASKS.discard)
 
 
 def _schedule_chat_attachment_extraction(
@@ -3155,6 +3176,7 @@ def _schedule_chat_attachment_extraction(
 ) -> None:
     store: AttachmentStore = current_app.config[CONFIG_CHAT_ATTACHMENT_STORE]
     index: AttachmentIndex = current_app.config[CONFIG_CHAT_ATTACHMENT_INDEX]
+    file_processors = current_app.config.get(CONFIG_CHAT_ATTACHMENT_PROCESSORS) or {}
     task = asyncio.create_task(
         _run_chat_attachment_extraction(
             store,
@@ -3162,12 +3184,47 @@ def _schedule_chat_attachment_extraction(
             attachment_id,
             owner_id=owner_id,
             conversation_id=conversation_id,
+            file_processors=file_processors,
         )
     )
     BACKGROUND_TASKS.add(task)
     task.add_done_callback(BACKGROUND_TASKS.discard)
     ATTACHMENT_EXTRACTION_TASKS.add(task)
     task.add_done_callback(ATTACHMENT_EXTRACTION_TASKS.discard)
+
+
+async def _extract_chat_attachment_chunks(stored, file_processors: dict[str, Any]):
+    try:
+        return await asyncio.to_thread(
+            extract_attachment_chunks,
+            filename=stored.record.filename,
+            content_type=stored.record.content_type,
+            content=stored.content,
+        )
+    except AttachmentExtractionError as error:
+        if "OCR is required" not in str(error):
+            raise
+
+    extension = Path(stored.record.filename).suffix.lower()
+    processor = file_processors.get(extension)
+    if processor is None:
+        raise AttachmentExtractionError("Document has no machine-readable text; OCR is required")
+    content = _NamedAttachmentBytesIO(stored.content, stored.record.filename)
+    parser = processor.parser
+    selected_parser = (
+        parser.select_parser(content, routing_context={"scope": "personal"})
+        if hasattr(parser, "select_parser")
+        else parser
+    )
+    pages = [page async for page in selected_parser.parse(content=content)]
+    return chunk_attachment_pages(
+        (
+            page.page_num + 1,
+            str(page.page_num + 1),
+            page.text,
+        )
+        for page in pages
+    )
 
 
 async def _run_chat_attachment_extraction(
@@ -3177,13 +3234,14 @@ async def _run_chat_attachment_extraction(
     *,
     owner_id: str,
     conversation_id: str,
+    file_processors: dict[str, Any] | None = None,
 ) -> None:
     started = await asyncio.to_thread(
-        update_attachment_status,
+        claim_attachment_extraction,
         attachment_id,
         owner_id=owner_id,
         conversation_id=conversation_id,
-        status="extracting",
+        worker_id=ATTACHMENT_EXTRACTION_WORKER_ID,
     )
     if not started:
         return
@@ -3193,12 +3251,7 @@ async def _run_chat_attachment_extraction(
             owner_id=owner_id,
             conversation_id=conversation_id,
         )
-        chunks = await asyncio.to_thread(
-            extract_attachment_chunks,
-            filename=stored.record.filename,
-            content_type=stored.record.content_type,
-            content=stored.content,
-        )
+        chunks = await _extract_chat_attachment_chunks(stored, file_processors or {})
         chunk_count = await index.replace_attachment(stored.record, chunks)
         completed = await asyncio.to_thread(
             update_attachment_status,
@@ -3208,48 +3261,82 @@ async def _run_chat_attachment_extraction(
             status="ready",
             chunk_count=chunk_count,
             extracted_characters=sum(len(chunk.text) for chunk in chunks),
+            worker_id=ATTACHMENT_EXTRACTION_WORKER_ID,
         )
         if not completed:
-            await index.delete_attachment(
+            active = await asyncio.to_thread(
+                get_attachment_metadata,
                 attachment_id,
                 owner_id=owner_id,
                 conversation_id=conversation_id,
             )
+            if not active:
+                await index.delete_attachment(
+                    attachment_id,
+                    owner_id=owner_id,
+                    conversation_id=conversation_id,
+                )
     except asyncio.CancelledError:
-        raise
-    except AttachmentExtractionError as error:
-        await index.delete_attachment(
+        await asyncio.to_thread(
+            release_attachment_extraction,
             attachment_id,
             owner_id=owner_id,
             conversation_id=conversation_id,
+            worker_id=ATTACHMENT_EXTRACTION_WORKER_ID,
         )
+        raise
+    except AttachmentExtractionError as error:
         error_code = "ocr_required" if "OCR is required" in str(error) else "extraction_failed"
-        await asyncio.to_thread(
+        failed = await asyncio.to_thread(
             update_attachment_status,
             attachment_id,
             owner_id=owner_id,
             conversation_id=conversation_id,
             status="failed",
             error_code=error_code,
+            worker_id=ATTACHMENT_EXTRACTION_WORKER_ID,
         )
-    except Exception:
-        try:
+        if failed:
             await index.delete_attachment(
                 attachment_id,
                 owner_id=owner_id,
                 conversation_id=conversation_id,
             )
-        except Exception:
-            current_app.logger.exception("Unable to clean partial Chat attachment index")
-        await asyncio.to_thread(
+    except Exception:
+        failed = await asyncio.to_thread(
             update_attachment_status,
             attachment_id,
             owner_id=owner_id,
             conversation_id=conversation_id,
             status="failed",
             error_code="extraction_failed",
+            worker_id=ATTACHMENT_EXTRACTION_WORKER_ID,
         )
+        if failed:
+            try:
+                await index.delete_attachment(
+                    attachment_id,
+                    owner_id=owner_id,
+                    conversation_id=conversation_id,
+                )
+            except Exception:
+                current_app.logger.exception("Unable to clean partial Chat attachment index")
         current_app.logger.exception("Chat attachment extraction failed: %s", attachment_id)
+
+
+async def _recover_chat_attachment_extractions(interval_seconds: float = 30) -> None:
+    while True:
+        try:
+            items = await asyncio.to_thread(list_recoverable_attachment_metadata)
+            for item in items:
+                _schedule_chat_attachment_extraction(
+                    str(item["_id"]),
+                    owner_id=str(item["owner_id"]),
+                    conversation_id=str(item["conversation_id"]),
+                )
+        except Exception:
+            current_app.logger.exception("Unable to recover private Chat attachment extractions")
+        await asyncio.sleep(interval_seconds)
 
 
 async def _set_job_blob_status(job: dict[str, Any], status: str) -> None:
@@ -3297,17 +3384,23 @@ async def _run_ingestion_job(job_id: str) -> None:
     job = await asyncio.to_thread(claim_ingestion_job, job_id, INGESTION_WORKER_ID)
     if not job:
         return
+    current_stage = str(job.get("status") or "extracting")
 
     async def update_stage(status: str) -> None:
+        nonlocal current_stage
+        if status == current_stage:
+            return
         await asyncio.to_thread(
             update_ingestion_job_status,
             job_id,
             status,
             worker_id=INGESTION_WORKER_ID,
         )
+        current_stage = status
         await _set_job_blob_status(job, "InProgress")
 
     try:
+        await _set_job_blob_status(job, "InProgress")
         scope = str(job["scope"])
         if scope == "personal":
             file_system: FileSystemClient = current_app.config[CONFIG_USER_BLOB_CONTAINER_CLIENT]
@@ -3352,6 +3445,15 @@ async def _run_ingestion_job(job_id: str) -> None:
             worker_id=INGESTION_WORKER_ID,
         )
         await _set_job_blob_status(job, "Pass")
+    except asyncio.CancelledError:
+        released = await asyncio.to_thread(
+            release_ingestion_job,
+            job_id,
+            INGESTION_WORKER_ID,
+        )
+        if released:
+            await _set_job_blob_status(job, "Pending")
+        raise
     except Exception as error:
         current_app.logger.exception("Ingestion job %s failed", job_id)
         await asyncio.to_thread(
@@ -5677,10 +5779,23 @@ async def setup_clients():
         os.environ,
         azure_container=attachment_container_client,
     )
+    file_processors = None
+    if attachment_store or USE_USER_UPLOAD:
+        file_processors = setup_file_processors(
+            azure_credential=azure_credential,
+            document_intelligence_service=os.getenv("AZURE_DOCUMENTINTELLIGENCE_SERVICE"),
+            document_intelligence_api_version=os.getenv(
+                "AZURE_DOCUMENTINTELLIGENCE_API_VERSION", "2024-11-30"
+            ),
+            local_pdf_parser=os.getenv("USE_LOCAL_PDF_PARSER", "").lower() == "true",
+            local_html_parser=os.getenv("USE_LOCAL_HTML_PARSER", "").lower() == "true",
+            search_images=USE_GPT4V,
+        )
     current_app.config[CONFIG_CHAT_ATTACHMENT_STORE] = attachment_store
     current_app.config[CONFIG_CHAT_ATTACHMENT_SCANNER] = DisabledMalwareScanner()
     attachment_index = MongoAttachmentIndex() if attachment_store else None
     current_app.config[CONFIG_CHAT_ATTACHMENT_INDEX] = attachment_index
+    current_app.config[CONFIG_CHAT_ATTACHMENT_PROCESSORS] = file_processors or {}
     if attachment_container_client:
         current_app.config[CONFIG_CHAT_ATTACHMENT_CONTAINER_CLIENT] = attachment_container_client
     if attachment_store:
@@ -5698,6 +5813,18 @@ async def setup_clients():
         BACKGROUND_TASKS.add(cleanup_task)
         cleanup_task.add_done_callback(BACKGROUND_TASKS.discard)
         current_app.config[CONFIG_CHAT_ATTACHMENT_CLEANUP_TASK] = cleanup_task
+        try:
+            recovery_interval = float(os.getenv("CHAT_ATTACHMENT_RECOVERY_INTERVAL_SECONDS", "30"))
+        except ValueError as error:
+            raise ValueError("CHAT_ATTACHMENT_RECOVERY_INTERVAL_SECONDS must be numeric") from error
+        if not math.isfinite(recovery_interval) or recovery_interval < 5:
+            raise ValueError("CHAT_ATTACHMENT_RECOVERY_INTERVAL_SECONDS must be at least 5")
+        recovery_task = asyncio.create_task(
+            _recover_chat_attachment_extractions(recovery_interval)
+        )
+        BACKGROUND_TASKS.add(recovery_task)
+        recovery_task.add_done_callback(BACKGROUND_TASKS.discard)
+        current_app.config[CONFIG_CHAT_ATTACHMENT_RECOVERY_TASK] = recovery_task
 
     # Set up authentication helper
     search_index = None
@@ -5746,18 +5873,8 @@ async def setup_clients():
         current_app.config[CONFIG_USER_BLOB_CONTAINER_CLIENT] = user_blob_container_client
 
         # Set up ingester
-        file_processors = setup_file_processors(
-            azure_credential=azure_credential,
-            document_intelligence_service=os.getenv(
-                "AZURE_DOCUMENTINTELLIGENCE_SERVICE"),
-            document_intelligence_api_version=os.getenv(
-                "AZURE_DOCUMENTINTELLIGENCE_API_VERSION", "2024-11-30"),
-            local_pdf_parser=os.getenv(
-                "USE_LOCAL_PDF_PARSER", "").lower() == "true",
-            local_html_parser=os.getenv(
-                "USE_LOCAL_HTML_PARSER", "").lower() == "true",
-            search_images=USE_GPT4V,
-        )
+        if file_processors is None:
+            raise RuntimeError("Document processors were not initialized")
         search_info = await setup_search_info(
             search_service=AZURE_SEARCH_SERVICE, index_name=AZURE_SEARCH_INDEX, azure_credential=azure_credential
         )
@@ -5772,6 +5889,7 @@ async def setup_clients():
             recovery_task = asyncio.create_task(_recover_ingestion_jobs())
             BACKGROUND_TASKS.add(recovery_task)
             recovery_task.add_done_callback(BACKGROUND_TASKS.discard)
+            current_app.config[CONFIG_INGESTION_RECOVERY_TASK] = recovery_task
 
     # Used by the OpenAI SDK
     openai_client: AsyncOpenAI
@@ -6050,6 +6168,22 @@ Don’t combine sources, list each source separately, for example [info1.txt][in
 
 @bp.after_app_serving
 async def close_clients():
+    if recovery_task := current_app.config.get(CONFIG_INGESTION_RECOVERY_TASK):
+        recovery_task.cancel()
+        try:
+            await recovery_task
+        except asyncio.CancelledError:
+            pass
+    if recovery_task := current_app.config.get(CONFIG_CHAT_ATTACHMENT_RECOVERY_TASK):
+        recovery_task.cancel()
+        try:
+            await recovery_task
+        except asyncio.CancelledError:
+            pass
+    for ingestion_task in tuple(INGESTION_TASKS):
+        ingestion_task.cancel()
+    if INGESTION_TASKS:
+        await asyncio.gather(*tuple(INGESTION_TASKS), return_exceptions=True)
     for extraction_task in tuple(ATTACHMENT_EXTRACTION_TASKS):
         extraction_task.cancel()
     if ATTACHMENT_EXTRACTION_TASKS:

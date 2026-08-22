@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import re
 import zipfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import PurePath
 from xml.etree import ElementTree
@@ -151,20 +152,13 @@ def _split_text(text: str) -> list[str]:
     return chunks
 
 
-def extract_attachment_chunks(*, filename: str, content_type: str, content: bytes) -> list[ExtractedChunk]:
-    extension = PurePath(str(filename or "")).suffix.lower()
-    if extension == ".pdf" and content_type == "application/pdf":
-        pages = _pdf_pages(content)
-    elif extension in {".docx", ".pptx", ".xlsx"}:
-        pages = _office_pages(extension, content)
-    elif extension in {".txt", ".csv", ".md"}:
-        try:
-            pages = [(1, "1", _normalized_text(content.decode("utf-8-sig")))]
-        except UnicodeDecodeError as error:
-            raise AttachmentExtractionError("Unable to decode document text") from error
-    else:
-        raise AttachmentExtractionError("Unsupported document extraction type")
-
+def chunk_attachment_pages(
+    pages: Iterable[tuple[int | None, str, str]],
+) -> list[ExtractedChunk]:
+    pages = [
+        (page_number, str(page_label or ""), _normalized_text(text))
+        for page_number, page_label, text in pages
+    ]
     total_characters = sum(len(text) for _, _, text in pages)
     if total_characters > MAX_EXTRACTED_CHARACTERS:
         raise AttachmentExtractionError("Extracted document text exceeds the allowed size")
@@ -184,3 +178,19 @@ def extract_attachment_chunks(*, filename: str, content_type: str, content: byte
     if not chunks:
         raise AttachmentExtractionError("Document has no machine-readable text; OCR is required")
     return chunks
+
+
+def extract_attachment_chunks(*, filename: str, content_type: str, content: bytes) -> list[ExtractedChunk]:
+    extension = PurePath(str(filename or "")).suffix.lower()
+    if extension == ".pdf" and content_type == "application/pdf":
+        pages = _pdf_pages(content)
+    elif extension in {".docx", ".pptx", ".xlsx"}:
+        pages = _office_pages(extension, content)
+    elif extension in {".txt", ".csv", ".md"}:
+        try:
+            pages = [(1, "1", _normalized_text(content.decode("utf-8-sig")))]
+        except UnicodeDecodeError as error:
+            raise AttachmentExtractionError("Unable to decode document text") from error
+    else:
+        raise AttachmentExtractionError("Unsupported document extraction type")
+    return chunk_attachment_pages(pages)

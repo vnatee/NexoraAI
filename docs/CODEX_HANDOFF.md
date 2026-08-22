@@ -9,10 +9,11 @@ logs, credentials, attachments, or repetitive conversational text.
 ## Repository state
 
 - Workspace: `/workspaces/NexoraAI`
-- Branch: `feature/agent-platform-foundation`
-- Current checkpoint: `feat: add private chat document workflows` (the commit
-  containing this handoff). The working tree was clean when the checkpoint was
-  created.
+- Branch: `feature/document-extraction-recovery`
+- Base checkpoint: `09eef3e feat: add private chat document workflows`.
+- The current working tree adds private Chat document extraction recovery and
+  managed OCR routing, plus graceful restart recovery for persistent Knowledge
+  ingestion jobs; it is not yet committed.
 - Azure baseline: `8ee1e8a` / `origin/Release-2.2.0`
 - This checkpoint includes private Chat/Ask document upload, native extraction,
   temporary retrieval, prompt-intent evidence scope, ACL-checked citations,
@@ -274,9 +275,14 @@ record is retained; only its Recent-panel visibility is shortened.
 The processing profile resolved at submission is pinned into the private job
 context so rule edits cannot make the displayed provider differ from the parser
 actually used. Mongo worker leases and a recovery sweep resume unclaimed work
-and work whose process lease expired after restart. This remains an in-process
-worker rather than an external durable queue; see `docs/ingestion-jobs.md` for
-the contract and scaling limitation.
+and work whose process lease expired after restart. Claiming now changes the
+visible status from `uploaded` to `extracting` immediately. Graceful application
+shutdown cancels tracked ingestion tasks and atomically returns their owned jobs
+to `uploaded` without a worker lease, so the next process recovers them on its
+first sweep. A hard kill still waits for the existing one-hour lease to expire
+to prevent another live replica from stealing the job. This remains an
+in-process worker rather than an external durable queue; see
+`docs/ingestion-jobs.md` for the contract and scaling limitation.
 
 Example target rules:
 
@@ -329,8 +335,8 @@ after a reload. A non-vision Agent, unavailable
 vision configuration, or LangGraph runtime receives a controlled HTTP 400 with
 a clear reason rather than silently ignoring the image.
 
-Current boundaries are deliberate: OCR-only fallback and LangGraph multimodal
-messages are not implemented in this working tree.
+Current boundaries are deliberate: LangGraph multimodal image messages are not
+implemented in this working tree.
 The approved staged design and security acceptance criteria are in
 `docs/product-backlog.md`.
 
@@ -509,18 +515,26 @@ an unknown Agent fails both policies. Document selection still additionally
 requires the deployment-level private attachment store.
 
 Uploaded Chat documents are not promoted into permanent Knowledge automatically.
-Startup recovery for `stored`/`extracting` records, OCR routing, and a production
-malware scanner remain pending.
+Private attachment extraction now uses an atomic, owner/conversation-scoped
+worker lease. A background recovery scan requeues active `stored` records and
+legacy or lease-expired `extracting` records, while graceful shutdown releases
+its own in-flight claims back to `stored`. The default recovery interval is 30
+seconds and can be changed with
+`CHAT_ATTACHMENT_RECOVERY_INTERVAL_SECONDS` (minimum 5 seconds). Native parsing
+still runs first; documents with no machine-readable text are then sent through
+the existing Personal-scope document-processing rules and managed OCR provider
+adapters. OCR output is normalized into the same bounded private chunks and
+retains page provenance. Failed or revoked work remains fail-closed, and a worker
+that loses its lease cannot overwrite status or delete another worker's chunks.
+A production malware scanner remains pending.
 
 ## Other next work
 
 ### Near-term document work
 
-1. Add startup recovery for interrupted extraction and route `ocr_required`
-   through the configured document-processing/OCR profiles.
-2. Add a production malware-scanner adapter and make its deployment policy
+1. Add a production malware-scanner adapter and make its deployment policy
    explicit before accepting untrusted documents outside development.
-3. Add the requirement-to-Knowledge-evidence matrix, per-model vision/OCR
+2. Add the requirement-to-Knowledge-evidence matrix, per-model vision/OCR
    routing in both runtimes, and speech improvements in that order. See
    `docs/product-backlog.md`.
 
@@ -555,7 +569,9 @@ The guardrail/API/dashboard discussion order is documented in
 - **Ingestion worker:** jobs and leases are persistent, but execution still runs
   inside the web application. Use a dedicated queue/worker before high-volume
   horizontal scaling or extraction calls that can exceed the one-hour lease.
-  No automatic ingestion-job retention/TTL policy is configured yet.
+  Graceful shutdown returns owned jobs to the queue immediately; a hard kill
+  waits for lease expiry. No automatic ingestion-job retention/TTL policy is
+  configured yet.
 - **Local mode:** LLM/provider work is ahead of search, storage, authentication,
   and deployment migration; this is not yet a fully local product.
 - **Tool-capability probes:** detection is a live request and can consume a small
@@ -576,9 +592,9 @@ The guardrail/API/dashboard discussion order is documented in
 - **Chat attachments:** request-local images still support only the Legacy
   vision runtime. Private document storage, native extraction, TTL cleanup, and
   Legacy/LangGraph temporary text retrieval and composer upload/progress/remove
-  behavior and private ACL-checked temporary citation opening exist. LangGraph
-  image messages, scanned-document OCR fallback, restart recovery,
-  and a production malware scanner remain pending.
+  behavior, private ACL-checked temporary citation opening, scanned-document OCR
+  routing, and restart recovery exist. LangGraph image messages and a production
+  malware scanner remain pending.
 - **Cosmos/Mongo compatibility:** PyMongo may warn when connected to Cosmos DB;
   avoid assuming every MongoDB feature is supported.
 - **Dirty diff size:** some frontend files contain large formatting/line-ending
@@ -617,10 +633,15 @@ Do not put real credentials in this file or examples.
 
 ## Validation status
 
-Latest service-free backend regression on 2026-08-21:
+The product owner manually verified graceful-stop recovery of an in-progress
+Knowledge ingestion job on 2026-08-22. A legacy job left with the former
+one-hour lease was reset only after confirming no backend worker was running;
+the restarted service then resumed processing successfully.
+
+Latest service-free backend regression on 2026-08-22:
 
 ```text
-606 passed, 1 deselected
+614 passed, 1 deselected
 ```
 
 Command:
@@ -649,10 +670,17 @@ Command:
 .venv/bin/pytest -q tests/test_attachment_cleanup.py tests/test_attachment_extraction.py tests/test_attachment_retrieval.py tests/test_attachment_store.py tests/test_chat_attachment_extraction_lifecycle.py tests/test_chat_attachment_index.py tests/test_chat_attachment_metadata.py tests/test_chat_attachments.py tests/test_chat_document_attachment_routes.py tests/test_document_attachments.py tests/test_agent_runtime.py -k 'attachment or rag'
 ```
 
-Latest focused OCR/upload/profile-idempotency validation:
+Latest focused attachment extraction recovery, OCR routing, and document
+processing validation:
 
 ```text
 62 passed
+```
+
+Latest focused private attachment and persistent ingestion lifecycle validation:
+
+```text
+26 passed
 ```
 
 Latest focused ingestion/document-processing, splitter, and search-metadata validation:
@@ -745,9 +773,10 @@ Known non-blocking warnings:
 - OCR routing precedence for Personal/Team/Global, Auto selection, authorized
   manual override, conflict rejection, Explain Route, and legacy/system fallback.
 - Persistent job stages for Personal/Team/Global, selected provider/profile/rule,
-  controlled failure and Retry, page refresh persistence, and restart recovery
-  after the worker lease expires. Confirm Indexed leaves Recent after about one
-  minute while Indexed Time remains visible in the relevant file list.
+  controlled failure and Retry, page refresh persistence, immediate recovery
+  after a graceful restart, and lease-expiry recovery after a hard kill. Confirm
+  Indexed leaves Recent after about one minute while Indexed Time remains visible
+  in the relevant file list.
 - At least one Agent per OpenAI/Gemini/Ollama provider and a tool-capable model.
 - Run LLM Provider Test for every configured model and verify supported models
   stay enabled, unsupported switches become disabled, and ambiguous failures
@@ -767,8 +796,8 @@ Known non-blocking warnings:
 
 ```text
 Read AGENTS.md and docs/CODEX_HANDOFF.md completely. Preserve the working tree
-and do not discard unrelated changes. Continue milestone 2 by adding startup
-recovery for interrupted attachment extraction, preserving owner/conversation,
-TTL, idempotency, and deletion-race boundaries. Then route `ocr_required`
-through configured OCR profiles.
+and do not discard unrelated changes. Continue milestone 2 by adding a
+production malware-scanner adapter and explicit deployment policy for private
+Chat document uploads, preserving owner/conversation ACLs, TTL, idempotency,
+and fail-closed behavior.
 ```

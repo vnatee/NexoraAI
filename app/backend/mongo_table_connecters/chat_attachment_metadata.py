@@ -1,8 +1,9 @@
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from pymongo import ReturnDocument
 from pymongo.errors import PyMongoError
 
 from core.attachment_store import AttachmentRecord
@@ -170,6 +171,91 @@ def list_attachment_metadata(
     return list(collection.find(query).sort("created_at", -1).limit(max(1, min(limit, 100))))
 
 
+def list_recoverable_attachment_metadata(
+    *,
+    now: datetime | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    recovery_time = now or _now()
+    query = {
+        "delete_at": None,
+        "expires_at": {"$gt": recovery_time},
+        "$or": [
+            {"status": "stored"},
+            {"status": "extracting", "lease_expires_at": {"$lte": recovery_time}},
+            {"status": "extracting", "lease_expires_at": {"$exists": False}},
+            {"status": "extracting", "lease_expires_at": None},
+        ],
+    }
+    return list(collection.find(query).sort("updated_at", 1).limit(max(1, min(limit, 500))))
+
+
+def claim_attachment_extraction(
+    attachment_id: str,
+    *,
+    owner_id: str,
+    conversation_id: str,
+    worker_id: str,
+    lease_minutes: int = 10,
+) -> dict[str, Any] | None:
+    normalized_worker_id = str(worker_id or "").strip()
+    if not normalized_worker_id:
+        raise ValueError("worker_id is required")
+    now = _now()
+    query = {
+        **_active_scope_query(
+            attachment_id,
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            now=now,
+        ),
+        "$or": [
+            {"status": "stored"},
+            {"status": "extracting", "lease_expires_at": {"$lte": now}},
+            {"status": "extracting", "lease_expires_at": {"$exists": False}},
+            {"status": "extracting", "lease_expires_at": None},
+        ],
+    }
+    return collection.find_one_and_update(
+        query,
+        {
+            "$set": {
+                "status": "extracting",
+                "error_code": None,
+                "worker_id": normalized_worker_id[:128],
+                "lease_expires_at": now + timedelta(minutes=max(1, lease_minutes)),
+                "updated_at": now,
+            }
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+def release_attachment_extraction(
+    attachment_id: str,
+    *,
+    owner_id: str,
+    conversation_id: str,
+    worker_id: str,
+) -> bool:
+    result = collection.update_one(
+        {
+            **_active_scope_query(
+                attachment_id,
+                owner_id=owner_id,
+                conversation_id=conversation_id,
+            ),
+            "status": "extracting",
+            "worker_id": str(worker_id or "").strip(),
+        },
+        {
+            "$set": {"status": "stored", "updated_at": _now()},
+            "$unset": {"worker_id": "", "lease_expires_at": ""},
+        },
+    )
+    return bool(result.modified_count)
+
+
 def update_attachment_status(
     attachment_id: str,
     *,
@@ -179,6 +265,7 @@ def update_attachment_status(
     error_code: str = "",
     chunk_count: int | None = None,
     extracted_characters: int | None = None,
+    worker_id: str = "",
 ) -> dict[str, Any] | None:
     if status not in ATTACHMENT_STATUSES:
         raise ValueError("Unsupported attachment status")
@@ -198,6 +285,8 @@ def update_attachment_status(
         owner_id=owner_id,
         conversation_id=conversation_id,
     )
+    if worker_id:
+        query["worker_id"] = str(worker_id).strip()
     values = {
         "status": status,
         "error_code": safe_error_code if status == "failed" else None,
@@ -207,12 +296,10 @@ def update_attachment_status(
         values["chunk_count"] = chunk_count
     if extracted_characters is not None:
         values["extracted_characters"] = extracted_characters
-    result = collection.update_one(
-        query,
-        {
-            "$set": values
-        },
-    )
+    update: dict[str, Any] = {"$set": values}
+    if status in {"ready", "failed", "stored"}:
+        update["$unset"] = {"worker_id": "", "lease_expires_at": ""}
+    result = collection.update_one(query, update)
     if not result.modified_count:
         return None
     return get_attachment_metadata(
