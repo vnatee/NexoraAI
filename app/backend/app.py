@@ -28,7 +28,7 @@ from tokens_usage.get_usage import get_all_usage
 from feedback.createfeedback import insert_feedback
 from feedback.getfeedback import get_all_feedback
 from mongo_table_connecters.mongo_connector import get_database
-from mongo_table_connecters.teams import insert_team, get_all_teams, get_team_by_id, update_team, get_team_by_user_id, delete_team_by_id
+from mongo_table_connecters.teams import insert_team, get_all_teams, get_team_by_id, get_team_by_data_group_id, update_team, get_team_by_user_id, delete_team_by_id
 from mongo_table_connecters.users import get_user_by_id, get_user_by_ad_email, get_all_user_by_is_sys_admin, get_all_users, insert_user, delete_user_by_id, update_user
 from mongo_table_connecters.agents import insert_agent, get_agent_by_id, update_agent, delete_agent_by_id
 from mongo_table_connecters.llm_providers import (
@@ -209,10 +209,13 @@ from core.attachment_index import AttachmentIndex
 from core.attachment_retrieval import (
     ATTACHMENT_EVIDENCE_KNOWLEDGE_ONLY,
     ATTACHMENT_EVIDENCE_UPLOADED_ONLY,
+    REQUIREMENTS_EVIDENCE_MATRIX_INSTRUCTION,
     AttachmentRetrievalError,
-    classify_attachment_evidence_scope,
+    bounded_attachment_evidence,
     format_attachment_sources,
+    normalize_attachment_evidence_scope,
     normalize_attachment_ids,
+    source_display_filename,
 )
 from core.attachment_store import (
     AttachmentAccessError,
@@ -229,6 +232,7 @@ from core.document_attachments import (
     MAX_DOCUMENT_BYTES,
     validate_document_attachment,
 )
+from core.effective_access import AccessControlError, EffectiveAccess, resolve_effective_access
 from chat_history.cosmosdb import chat_history_cosmosdb_bp
 from config import (
     CONFIG_AGENT_CLIENT,
@@ -490,6 +494,168 @@ def _is_system_admin(auth_claims: dict[str, Any]) -> bool:
     )
     user = get_user_by_ad_email(username) if username else None
     return bool(user and user.get("active", True) and user.get("is_sys_admin"))
+
+
+def _application_user_for_claims(auth_claims: dict[str, Any]) -> dict[str, Any] | None:
+    username = (
+        auth_claims.get("preferred_username")
+        or auth_claims.get("email")
+        or auth_claims.get("upn")
+    )
+    return get_user_by_ad_email(str(username)) if username else None
+
+
+def _require_team_access(
+    auth_claims: dict[str, Any],
+    team_id: str,
+    *,
+    permission: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    user = _application_user_for_claims(auth_claims)
+    team = get_team_by_id(team_id)
+    if not user or user.get("active", True) is not True:
+        raise AccessControlError("The signed-in application user is unavailable")
+    if not team:
+        raise AccessControlError("Team not found", status_code=404)
+    user_id = str(user.get("_id") or "")
+    if user.get("is_sys_admin") is not True and user_id not in {
+        str(item) for item in (team.get("user_id") or [])
+    }:
+        raise AccessControlError("You are not a member of this team")
+    if permission and user.get("is_sys_admin") is not True:
+        permission_ids = {
+            str(item)
+            for record in get_user_permission_by_user_team_id(user_id, team_id)
+            for item in (record.get("permission_id") or [])
+        }
+        permission_names = {
+            str(item.get("name"))
+            for item in get_all_permissions()
+            if str(item.get("_id")) in permission_ids
+        }
+        if permission not in permission_names:
+            raise AccessControlError(f"{permission} permission is required")
+    return user, team
+
+
+def _require_system_permission(
+    auth_claims: dict[str, Any], permission: str
+) -> dict[str, Any]:
+    user = _application_user_for_claims(auth_claims)
+    if not user or user.get("active", True) is not True:
+        raise AccessControlError("The signed-in application user is unavailable")
+    if user.get("is_sys_admin") is True:
+        return user
+    permission_ids = {
+        str(item)
+        for record in get_user_permission_by_user_team_id(str(user.get("_id") or ""), "")
+        for item in (record.get("permission_id") or [])
+    }
+    permission_names = {
+        str(item.get("name"))
+        for item in get_all_permissions()
+        if str(item.get("_id")) in permission_ids
+    }
+    if permission not in permission_names:
+        raise AccessControlError(f"{permission} permission is required")
+    return user
+
+
+def _normalize_data_group_access(
+    *,
+    access_mode: Any,
+    users_id: Any,
+    team: dict[str, Any],
+) -> tuple[str, list[str]]:
+    normalized_mode = str(access_mode or "team").strip().lower()
+    if normalized_mode not in {"team", "selected_users"}:
+        raise AccessControlError("access_mode must be team or selected_users", status_code=400)
+    if not isinstance(users_id, list) or not all(isinstance(item, str) for item in users_id):
+        raise AccessControlError("users_id must be an array of user IDs", status_code=400)
+    normalized_users = list(dict.fromkeys(item.strip() for item in users_id if item.strip()))
+    if normalized_mode == "team":
+        return normalized_mode, []
+    team_user_ids = {str(item) for item in (team.get("user_id") or [])}
+    if not normalized_users:
+        raise AccessControlError("Selected users mode requires at least one user", status_code=400)
+    if any(item not in team_user_ids for item in normalized_users):
+        raise AccessControlError("A selected data-group user is not a member of this team")
+    return normalized_mode, normalized_users
+
+
+def _validate_permission_ids(permission_ids: Any, *, permission_type: str) -> list[str]:
+    if not isinstance(permission_ids, list) or not all(isinstance(item, str) for item in permission_ids):
+        raise AccessControlError("permissions_id must be an array of permission IDs", status_code=400)
+    normalized = list(dict.fromkeys(item.strip() for item in permission_ids if item.strip()))
+    permissions = {str(item.get("_id")): item for item in get_all_permissions()}
+    invalid = [item for item in normalized if item not in permissions]
+    if invalid:
+        raise AccessControlError("One or more permissions do not exist", status_code=400)
+    expected = permission_type.strip().lower()
+    if any(expected not in str(permissions[item].get("type") or "").lower() for item in normalized):
+        raise AccessControlError(f"Only {permission_type} permissions are allowed here", status_code=400)
+    return normalized
+
+
+def _effective_access_for_request(
+    auth_claims: dict[str, Any],
+    *,
+    team_id: str,
+    data_group_ids: Any = None,
+    selected_scopes: Any = None,
+    agent_id: str | None = None,
+) -> EffectiveAccess:
+    team = get_team_by_id(team_id)
+    group_documents = [
+        get_data_group_by_id(str(group_id))
+        for group_id in ((team or {}).get("data_group_id") or [])
+    ]
+    return resolve_effective_access(
+        user=_application_user_for_claims(auth_claims),
+        team=team,
+        data_groups=group_documents,
+        requested_data_group_ids=data_group_ids,
+        requested_scopes=selected_scopes,
+        agent_id=agent_id,
+    )
+
+
+def _authorized_request_claims(
+    request_json: dict[str, Any],
+    auth_claims: dict[str, Any],
+    *,
+    agent_id: str | None,
+) -> dict[str, Any]:
+    team_id = str(request_json.get("team_id") or request_json.get("gid") or "").strip()
+    requested_groups = request_json.get("data_groups_id")
+    requested_scopes = request_json.get("selected_scopes")
+    if not team_id:
+        if requested_groups:
+            raise AccessControlError("A team is required when selecting data groups", status_code=400)
+        claims = dict(auth_claims)
+        if requested_scopes is not None:
+            if not isinstance(requested_scopes, list) or len(requested_scopes) > 2:
+                raise AccessControlError("selected_scopes must be an array", status_code=400)
+            scopes = list(dict.fromkeys(str(item) for item in requested_scopes))
+            if any(item not in {"global", "personal"} for item in scopes):
+                raise AccessControlError("selected_scopes contains an unsupported scope", status_code=400)
+            claims["selected_scopes"] = scopes
+            claims["data_groups_id"] = []
+        return claims
+
+    access = _effective_access_for_request(
+        auth_claims,
+        team_id=team_id,
+        data_group_ids=requested_groups,
+        selected_scopes=requested_scopes,
+        agent_id=agent_id,
+    )
+    claims = dict(auth_claims)
+    claims["team_id"] = access.team_id
+    claims["data_groups_id"] = list(access.selected_data_group_ids)
+    claims["selected_scopes"] = list(access.selected_scopes)
+    claims["application_user_id"] = access.user_id
+    return claims
 
 
 def _normalize_provider_models(
@@ -962,19 +1128,11 @@ async def ask(auth_claims: dict[str, Any]):
         return jsonify({"error": "request must be json"}), 415
     request_json = await request.get_json()
     context = request_json.get("context", {})
-    data_groups_id = request_json.get("data_groups_id")
-    selected_scopes = request_json.get("selected_scopes")
-    team_id = request_json.get("team_id")
     agent_id = request_json.get("agent_id")
-    if team_id:
-        new_auth = auth_claims
-        new_auth['data_groups_id'] = data_groups_id
-        new_auth['selected_scopes'] = selected_scopes
-        new_auth['team_id'] = team_id
-        context["auth_claims"] = new_auth
-    else:
-        context["auth_claims"] = auth_claims
     try:
+        context["auth_claims"] = _authorized_request_claims(
+            request_json, auth_claims, agent_id=agent_id
+        )
         context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
         overrides = context.get("overrides", {})
@@ -999,7 +1157,12 @@ async def ask(auth_claims: dict[str, Any]):
 
         async def _bg():
             try:
-                await asyncio.to_thread(insert_user_usage, auth_claims, r, "ask")
+                await asyncio.to_thread(
+                    insert_user_usage,
+                    context.get("auth_claims") or auth_claims,
+                    r,
+                    "ask",
+                )
             except Exception:
                 current_app.logger.exception("Can't insert user usage")
         if os.getenv("DISABLE_USAGE_PERSISTENCE", "").lower() != "true":
@@ -1081,10 +1244,18 @@ async def _apply_temporary_attachment_retrieval(
         "_temporary_attachment_conversation_id",
         "_temporary_attachments_only",
         "_attachment_evidence_scope",
+        "_requirements_evidence_matrix",
+        "_requirements_attachment_id",
+        "_knowledge_search_context",
     ):
         overrides.pop(key, None)
     attachment_ids = normalize_attachment_ids(request_json.get("document_attachment_ids"))
+    evidence_matrix = request_json.get("evidence_matrix", False)
+    if not isinstance(evidence_matrix, bool):
+        raise AttachmentRetrievalError("evidence_matrix must be a boolean")
     if not attachment_ids:
+        if evidence_matrix:
+            raise AttachmentRetrievalError("Evidence matrix mode requires a requirements attachment")
         return
     if overrides.get("_agent_document_attachments_enabled", True) is not True:
         raise AttachmentRetrievalError("Document attachments are disabled for this agent")
@@ -1118,17 +1289,35 @@ async def _apply_temporary_attachment_retrieval(
     )
     if not query:
         raise AttachmentRetrievalError("A user question is required for document retrieval")
-    evidence_scope = classify_attachment_evidence_scope(query)
+    requested_scope = request_json.get("attachment_evidence_scope")
+    if evidence_matrix and requested_scope is None:
+        requested_scope = ATTACHMENT_EVIDENCE_KNOWLEDGE_ONLY
+    evidence_scope = normalize_attachment_evidence_scope(requested_scope, query=query)
     overrides["_attachment_evidence_scope"] = evidence_scope
-    if evidence_scope == ATTACHMENT_EVIDENCE_KNOWLEDGE_ONLY:
+    if evidence_scope == ATTACHMENT_EVIDENCE_KNOWLEDGE_ONLY and not evidence_matrix:
         return
-    results = await index.search(
-        owner_id=owner_id,
-        conversation_id=conversation_id,
-        query=query,
-        attachment_ids=attachment_ids,
+    search_arguments = {
+        "owner_id": owner_id,
+        "conversation_id": conversation_id,
+        "query": query,
+        "attachment_ids": attachment_ids,
+    }
+    if evidence_matrix:
+        search_arguments["limit"] = 20
+    results = await index.search(**search_arguments)
+    matrix_evidence = (
+        bounded_attachment_evidence(results, max_results=20, max_characters=24_000)
+        if evidence_matrix
+        else None
     )
-    sources = format_attachment_sources(results)
+    sources = (
+        [
+            f"{citation}: Display filename: {source_display_filename(result.filename)}. Content: {text}"
+            for result, citation, text in matrix_evidence
+        ]
+        if matrix_evidence is not None
+        else format_attachment_sources(results)
+    )
     if not sources:
         raise AttachmentRetrievalError("No readable text was found in the selected document attachments")
     overrides["_temporary_attachment_sources"] = sources
@@ -1137,6 +1326,25 @@ async def _apply_temporary_attachment_retrieval(
     overrides["_temporary_attachment_owner_id"] = owner_id
     overrides["_temporary_attachment_conversation_id"] = conversation_id
     overrides["_temporary_attachments_only"] = evidence_scope == ATTACHMENT_EVIDENCE_UPLOADED_ONLY
+    if evidence_matrix:
+        checklist_id = attachment_ids[0]
+        matrix_instruction = (
+            f"{REQUIREMENTS_EVIDENCE_MATRIX_INSTRUCTION}\n"
+            f"The checklist attachment ID is {checklist_id}. The allowed evidence scope is {evidence_scope}."
+        )
+        existing_prompt = str(overrides.get("prompt_template") or "").strip()
+        overrides["prompt_template"] = (
+            f"{existing_prompt}\n\nBackend-enforced workflow:\n{matrix_instruction}".strip()
+        )
+        overrides["_requirements_evidence_matrix"] = True
+        overrides["_requirements_attachment_id"] = checklist_id
+        # Legacy retrieval needs requirement terms before answer synthesis. Keep
+        # this bounded and server-derived; clients cannot inject this override.
+        overrides["_knowledge_search_context"] = "\n".join(
+            text for _, _, text in matrix_evidence or []
+        )[:4_000]
+        overrides["top"] = max(10, min(int(overrides.get("top") or 10), 20))
+        overrides["use_agentic_retrieval"] = False
 
 
 def _use_langgraph_runtime(agent_id: str | None) -> bool:
@@ -1652,16 +1860,12 @@ async def chat(auth_claims: dict[str, Any]):
         return jsonify({"error": "request must be json"}), 415
     request_json = await request.get_json()
     context = request_json.get("context", {})
-    add_group = request_json.get("gid")
-    if add_group:
-        new_auth = auth_claims
-        new_auth['addition_group'] = add_group
-        context["auth_claims"] = new_auth  
-    else:
-        context["auth_claims"] = auth_claims
     try:
-        context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         agent_id = request_json.get("agent_id")
+        context["auth_claims"] = _authorized_request_claims(
+            request_json, auth_claims, agent_id=agent_id
+        )
+        context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
         overrides = context.get("overrides", {})
         _apply_inline_image_attachments(
@@ -1705,10 +1909,14 @@ async def chat_stream(auth_claims: dict[str, Any]):
     request_json = await request.get_json()
     context = request_json.get("context", {})
     base_prompt_template = str((context.get("overrides") or {}).get("prompt_template") or "")
-    data_groups_id = request_json.get("data_groups_id")
-    selected_scopes = request_json.get("selected_scopes")
     team_id = request_json.get("team_id")
     agent_id = request_json.get("agent_id")
+    try:
+        context["auth_claims"] = _authorized_request_claims(
+            request_json, auth_claims, agent_id=agent_id
+        )
+    except Exception as error:
+        return error_response(error, "/chat/stream")
     use_langgraph_runtime = bool(agent_id and _use_langgraph_runtime(agent_id))
     api_result = request_json.get("api_result",None)
     app_message = request_json["messages"]
@@ -1723,11 +1931,6 @@ async def chat_stream(auth_claims: dict[str, Any]):
     has_chart_capability = len(chart_bindings) > 0
     chart_binding_cfg = chart_bindings[0] if chart_bindings else None
     if team_id:
-        new_auth = auth_claims
-        new_auth['data_groups_id'] = data_groups_id
-        new_auth['selected_scopes'] = selected_scopes
-        new_auth['team_id'] = team_id
-        context["auth_claims"] = new_auth
         agent_bindings = get_all_agent_bindings_by_agent_id(agent_id)
 
         db_sources = []
@@ -1987,7 +2190,12 @@ Always respond in the same language as the user"""
 
                     async def _bg():
                         try:
-                            await asyncio.to_thread(insert_user_usage, auth_claims, data_str, "chat")
+                            await asyncio.to_thread(
+                                insert_user_usage,
+                                context.get("auth_claims") or auth_claims,
+                                data_str,
+                                "chat",
+                            )
                         except Exception:
                             logging.exception("Can't insert user usage")
 
@@ -4407,6 +4615,28 @@ async def delete_all_search_document():
 # New DB API
 
 
+@bp.post("/effective-access")
+@authenticated
+async def effective_access(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        if not isinstance(body, dict):
+            raise AccessControlError("request must be json", status_code=400)
+        team_id = str(body.get("team_id") or "").strip()
+        if not team_id:
+            raise AccessControlError("team_id is required", status_code=400)
+        access = _effective_access_for_request(
+            auth_claims,
+            team_id=team_id,
+            data_group_ids=body.get("data_groups_id"),
+            selected_scopes=body.get("selected_scopes"),
+            agent_id=body.get("agent_id"),
+        )
+        return jsonify(access.serialize()), 200
+    except Exception as error:
+        return error_response(error, "/effective-access")
+
+
 @bp.get("/check_user_login")
 @authenticated
 async def check_user_login(auth_claims: dict[str, Any]):
@@ -4457,6 +4687,7 @@ async def check_user_login(auth_claims: dict[str, Any]):
 @authenticated
 async def create_team(auth_claims: dict[str, Any]):
     try:
+        _require_system_permission(auth_claims, "Manage teams")
         body = await request.get_json()
         team_name = body.get("team_name", None)
         if team_name:
@@ -4470,13 +4701,14 @@ async def create_team(auth_claims: dict[str, Any]):
             raise ValueError("Team name is required")
         return jsonify({"success": f"Create team {team_name} success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/create_team")
 
 
 @bp.post("/edit_team_name")
 @authenticated
 async def edit_team_name(auth_claims: dict[str, Any]):
     try:
+        _require_system_permission(auth_claims, "Manage teams")
         body = await request.get_json()
         team_id = body.get("team_id", None)
         team_name = body.get("team_name", None)
@@ -4486,17 +4718,18 @@ async def edit_team_name(auth_claims: dict[str, Any]):
             raise ValueError("Team ID and Team name is required")
         return jsonify({"success": f"Edit team name success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/edit_team_name")
 
 
 @bp.get("/get_all_teams")
 @authenticated
 async def get_all_teams_function(auth_claims: dict[str, Any]):
     try:
+        _require_system_permission(auth_claims, "Manage teams")
         allteam = get_all_teams()
         return jsonify({"result": allteam}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/get_all_teams")
 
 
 @bp.post("/get_team_detail")
@@ -4505,7 +4738,7 @@ async def get_team_detail(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         team_id = body.get("team_id", None)
-        team_data = get_team_by_id(team_id=team_id)
+        _, team_data = _require_team_access(auth_claims, str(team_id or ""))
         user_list, agent_list, data_group_list = [], [], []
         for user_id in team_data.get("user_id"):
             user_list.append(get_user_by_id(str(user_id)))
@@ -4521,7 +4754,7 @@ async def get_team_detail(auth_claims: dict[str, Any]):
             data_group_list.append(data_group)
         return jsonify({"user": user_list, "agent": agent_list, "data_group": data_group_list}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/get_team_detail")
 
 
 @bp.post("/get_team_users")
@@ -4530,7 +4763,9 @@ async def get_team_users(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         team_id = body.get("team_id", None)
-        team_data = get_team_by_id(team_id=team_id)
+        _, team_data = _require_team_access(
+            auth_claims, str(team_id or ""), permission="Manage team permissions"
+        )
         user_list = []
         for user_id in team_data.get("user_id"):
             user = get_user_by_id(str(user_id))
@@ -4542,13 +4777,14 @@ async def get_team_users(auth_claims: dict[str, Any]):
                         {"_id": user["_id"], "name": f"{fname} {lname}", "email": user["email"]})
         return jsonify({"user": user_list}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/get_team_users")
 
 
 @bp.post("/insert_user")
 @authenticated
 async def insert_user_function(auth_claims: dict[str, Any]):
     try:
+        _require_system_permission(auth_claims, "Manage users")
         body = await request.get_json()
         email = body.get("email", None)
         ad_email = body.get("ad_email", None)
@@ -4560,13 +4796,14 @@ async def insert_user_function(auth_claims: dict[str, Any]):
                     employee_id, tel, True, False)
         return jsonify({"success": f"Insert user success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/insert_user")
 
 
 @bp.post("/delete_user")
 @authenticated
 async def delete_user(auth_claims: dict[str, Any]):
     try:
+        _require_system_permission(auth_claims, "Manage users")
         body = await request.get_json()
         user_id = body.get("user_id", None)
         user_per_list = get_user_permission_by_user_id(user_id)
@@ -4588,13 +4825,14 @@ async def delete_user(auth_claims: dict[str, Any]):
         delete_user_by_id(user_id)
         return jsonify({"success": f"Delete user success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/delete_user")
 
 
 @bp.post("/update_user")
 @authenticated
 async def update_user_function(auth_claims: dict[str, Any]):
     try:
+        _require_system_permission(auth_claims, "Manage users")
         body = await request.get_json()
         user_id = body.get("user_id", None)
         email = body.get("email", None)
@@ -4605,10 +4843,10 @@ async def update_user_function(auth_claims: dict[str, Any]):
         employee_id = body.get("employee_id", None)
         active = body.get("active", None)
         update_user(user_id, email, ad_email, first_name,
-                    last_name, employee_id, tel, active, False)
+                    last_name, employee_id, tel, active)
         return jsonify({"success": f"Update user success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/update_user")
 
 
 @bp.post("/get_users_by_team_id")
@@ -4617,24 +4855,27 @@ async def get_users_by_team_id(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         team_id = body.get("team_id", None)
-        team = get_team_by_id(team_id)
-        waiting_approve = team["waiting_approve"]
+        _, team = _require_team_access(auth_claims, str(team_id or ""))
+        waiting_approve = team.get("waiting_approve") or []
         user_list = []
-        for user_id in team["user_id"]:
-            user_list.append(get_user_by_id(str(user_id)))
+        for user_id in team.get("user_id") or []:
+            user = get_user_by_id(str(user_id))
+            if user:
+                user_list.append(user)
         return jsonify({"users": user_list, "waiting_approve": waiting_approve}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/get_users_by_team_id")
 
 
 @bp.get("/get_all_users")
 @authenticated
 async def get_all_users_function(auth_claims: dict[str, Any]):
     try:
+        _require_system_permission(auth_claims, "Manage users")
         allusers = get_all_user_by_is_sys_admin(False)
         return jsonify({"result": allusers}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/get_all_users")
 
 
 @bp.post("/register")
@@ -4692,7 +4933,9 @@ async def approve_users(auth_claims: dict[str, Any]):
         team_id = body.get("team_id", None)
         users = body.get("users", None)
         new_user_list = []
-        team = get_team_by_id(team_id)
+        _, team = _require_team_access(
+            auth_claims, str(team_id or ""), permission="Manage team users"
+        )
         waiting_user_list = team.get("waiting_approve")
         mail_comp = current_app.config[CONFIG_MAIL_COMPONENT]
         permis = get_permission_by_name("Manage team users")
@@ -4727,7 +4970,7 @@ async def approve_users(auth_claims: dict[str, Any]):
                     waiting_approve=waiting_user_list)
         return jsonify({"success": f"Approve users success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/approve_users")
 
 
 @bp.post("/reject_users")
@@ -4738,7 +4981,9 @@ async def reject_users(auth_claims: dict[str, Any]):
         team_id = body.get("team_id", None)
         users = body.get("users", None)
         # users.pop('__temp_id')
-        team = get_team_by_id(team_id)
+        _, team = _require_team_access(
+            auth_claims, str(team_id or ""), permission="Manage team users"
+        )
         waiting_user_list = team.get("waiting_approve")
         mail_comp = current_app.config[CONFIG_MAIL_COMPONENT]
         permis = get_permission_by_name("Manage team users")
@@ -4764,7 +5009,7 @@ async def reject_users(auth_claims: dict[str, Any]):
         update_team(team_id=team_id, waiting_approve=waiting_user_list)
         return jsonify({"success": f"Reject users success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/reject_users")
 
 
 @bp.get("/check_waiting_approve")
@@ -4793,18 +5038,22 @@ async def delete_team_user(auth_claims: dict[str, Any]):
         team_id = body.get("team_id", None)
         user_id = body.get("user_id", None)
         if user_id and team_id:
-            team = get_team_by_id(team_id)
+            _, team = _require_team_access(
+                auth_claims, str(team_id), permission="Manage team users"
+            )
             user_id_list = team.get("user_id")
+            if user_id not in user_id_list:
+                raise AccessControlError("User is not a member of this team", status_code=404)
             user_id_list.remove(user_id)
             users_per = get_user_permission_by_user_team_id(user_id, team_id)
             for user_per in users_per:
-                delete_user_by_id(user_per["_id"])
+                delete_user_permission_by_id(user_per["_id"])
             update_team(team_id=team_id, user_id=user_id_list)
         else:
             raise ValueError("Team ID and User ID is required")
         return jsonify({"success": f"Delete user in team success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/delete_team_user")
 
 
 @bp.post("/insert_team_users")
@@ -4815,15 +5064,21 @@ async def insert_team_users(auth_claims: dict[str, Any]):
         team_id = body.get("team_id", None)
         user_id = body.get("user_id", None)
         if user_id and team_id:
-            team = get_team_by_id(team_id)
+            _, team = _require_team_access(
+                auth_claims, str(team_id), permission="Manage team users"
+            )
             user_id_list = team.get("user_id")
-            user_id_list.extend(user_id)
+            known_user_ids = {str(item.get("_id")) for item in get_all_user_by_is_sys_admin(False)}
+            requested_user_ids = list(dict.fromkeys(str(item) for item in user_id))
+            if any(item not in known_user_ids for item in requested_user_ids):
+                raise AccessControlError("One or more users do not exist", status_code=400)
+            user_id_list.extend(item for item in requested_user_ids if item not in user_id_list)
             update_team(team_id=team_id, user_id=user_id_list)
         else:
             raise ValueError("Team ID and User ID is required")
         return jsonify({"success": f"Insert users to team success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/insert_team_users")
 
 
 async def delete_data_group_function(team_id, data_group_id):
@@ -4851,6 +5106,7 @@ async def delete_data_group_function(team_id, data_group_id):
 @authenticated
 async def delete_team(auth_claims: dict[str, Any]):
     try:
+        _require_system_permission(auth_claims, "Manage teams")
         body = await request.get_json()
         team_id = body.get("team_id", None)
         if team_id:
@@ -4873,7 +5129,7 @@ async def delete_team(auth_claims: dict[str, Any]):
             raise ValueError("Team ID is required")
         return jsonify({"success": f"Delete team success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/delete_team")
 
 
 @bp.post("/create_agent")
@@ -4954,9 +5210,20 @@ async def create_data_group(auth_claims: dict[str, Any]):
         body = await request.get_json()
         team_id = body.get("team_id", None)
         data_group_name = body.get("data_group_name", None)
-        users_id = body.get("users_id", None)
-        result, data_group_id = insert_data_group(data_group_name, users_id)
-        data_group_team = get_team_by_id(team_id=team_id).get("data_group_id")
+        if not str(data_group_name or "").strip():
+            raise AccessControlError("Data group name is required", status_code=400)
+        _, team = _require_team_access(
+            auth_claims, str(team_id or ""), permission="Manage team data groups"
+        )
+        access_mode, users_id = _normalize_data_group_access(
+            access_mode=body.get("access_mode"),
+            users_id=body.get("users_id", []),
+            team=team,
+        )
+        result, data_group_id = insert_data_group(
+            str(data_group_name).strip(), users_id, access_mode
+        )
+        data_group_team = team.get("data_group_id")
         if data_group_team:
             data_group_team.append(str(data_group_id))
         else:
@@ -4964,7 +5231,7 @@ async def create_data_group(auth_claims: dict[str, Any]):
         update_team(team_id=team_id, data_group_id=data_group_team)
         return jsonify({"success": f"Create data group {data_group_name} success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/create_data_group")
 
 
 @bp.post("/get_data_group_by_team")
@@ -4973,19 +5240,27 @@ async def get_data_group_by_team(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         team_id = body.get("team_id", None)
-        data_group_team = get_team_by_id(team_id=team_id).get("data_group_id")
+        _, team = _require_team_access(auth_claims, str(team_id or ""))
+        data_group_team = team.get("data_group_id") or []
         data_group = []
         for data_group_id in data_group_team:
             data_group_info = get_data_group_by_id(str(data_group_id))
+            if not data_group_info:
+                continue
+            data_group_info["access_mode"] = str(data_group_info.get("access_mode") or (
+                "team" if not data_group_info.get("user_id") else "selected_users"
+            ))
             if data_group_info["user_id"] != []:
                 user_list = []
                 for user in data_group_info["user_id"]:
-                    user_list.append(get_user_by_id(str(user)))
+                    member = get_user_by_id(str(user))
+                    if member:
+                        user_list.append(member)
                 data_group_info["user_id"] = user_list
             data_group.append(data_group_info)
         return jsonify({"result": data_group}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/get_data_group_by_team")
 
 
 @bp.post("/edit_data_group")
@@ -4995,11 +5270,21 @@ async def edit_data_group(auth_claims: dict[str, Any]):
         body = await request.get_json()
         data_group_id = body.get("data_group_id", None)
         data_group_name = body.get("data_group_name", None)
-        users_id = body.get("users_id", None)
-        update_data_group(data_group_id, data_group_name, users_id)
+        team = get_team_by_data_group_id(str(data_group_id or ""))
+        if not team:
+            raise AccessControlError("Data group does not belong to an active team", status_code=404)
+        _require_team_access(
+            auth_claims, str(team["_id"]), permission="Manage team data groups"
+        )
+        access_mode, users_id = _normalize_data_group_access(
+            access_mode=body.get("access_mode"),
+            users_id=body.get("users_id", []),
+            team=team,
+        )
+        update_data_group(data_group_id, data_group_name, users_id, access_mode)
         return jsonify({"success": f"Edit data group success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/edit_data_group")
 
 
 @bp.post("/delete_data_group")
@@ -5009,14 +5294,19 @@ async def delete_data_group(auth_claims: dict[str, Any]):
         body = await request.get_json()
         team_id = body.get("team_id", None)
         data_group_id = body.get("data_group_id", None)
-        data_group_team = get_team_by_id(team_id=team_id).get("data_group_id")
+        _, team = _require_team_access(
+            auth_claims, str(team_id or ""), permission="Manage team data groups"
+        )
+        data_group_team = team.get("data_group_id") or []
+        if data_group_id not in data_group_team:
+            raise AccessControlError("Data group does not belong to this team", status_code=404)
         data_group_team.remove(data_group_id)
         update_team(team_id=team_id, data_group_id=data_group_team)
         await delete_data_group_function(team_id, data_group_id)
         delete_data_group_by_id(data_group_id)
         return jsonify({"success": f"Delete data group success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/delete_data_group")
 
 
 @bp.post("/create_role")
@@ -5027,10 +5317,18 @@ async def create_role(auth_claims: dict[str, Any]):
         name = body.get("name", None)
         permissions_id = body.get("permissions_id", None)
         team_id = body.get("team_id", None)
+        _require_team_access(
+            auth_claims, str(team_id or ""), permission="Manage team permissions"
+        )
+        permissions_id = _validate_permission_ids(
+            permissions_id, permission_type="team"
+        )
+        if not str(name or "").strip():
+            raise AccessControlError("Role name is required", status_code=400)
         insert_role(name, permissions_id, team_id)
         return jsonify({"success": f"Create role {name} success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/create_role")
 
 
 @bp.post("/delete_role")
@@ -5039,10 +5337,16 @@ async def delete_role(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         role_id = body.get("role_id", None)
+        role = get_role_by_id(str(role_id or ""))
+        if not role:
+            raise AccessControlError("Role not found", status_code=404)
+        _require_team_access(
+            auth_claims, str(role.get("team_id") or ""), permission="Manage team permissions"
+        )
         delete_role_by_id(role_id)
         return jsonify({"success": f"Delete role success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/delete_role")
 
 
 @bp.post("/edit_role")
@@ -5054,10 +5358,21 @@ async def edit_role(auth_claims: dict[str, Any]):
         name = body.get("name", None)
         permissions_id = body.get("permissions_id", None)
         team_id = body.get("team_id", None)
+        role = get_role_by_id(str(role_id or ""))
+        if not role or str(role.get("team_id") or "") != str(team_id or ""):
+            raise AccessControlError("Role does not belong to this team", status_code=404)
+        _require_team_access(
+            auth_claims, str(team_id or ""), permission="Manage team permissions"
+        )
+        permissions_id = _validate_permission_ids(
+            permissions_id, permission_type="team"
+        )
+        if not str(name or "").strip():
+            raise AccessControlError("Role name is required", status_code=400)
         update_role(role_id, name, permissions_id, team_id)
         return jsonify({"success": f"Edit role success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/edit_role")
 
 
 @bp.post("/get_roles_by_team")
@@ -5066,10 +5381,11 @@ async def get_roles_by_team(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         team_id = body.get("team_id", None)
+        _require_team_access(auth_claims, str(team_id or ""))
         all_roles = get_all_roles_by_team(team_id)
         return jsonify({"roles": all_roles}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/get_roles_by_team")
 
 
 async def insert_permissions():
@@ -5105,15 +5421,21 @@ async def get_user_permissions(auth_claims: dict[str, Any]):
         user_id = body.get("user_id", None)
         team_id = body.get("team_id", None)
         if team_id:
+            _, team = _require_team_access(
+                auth_claims, str(team_id), permission="Manage team permissions"
+            )
+            if str(user_id or "") not in {str(item) for item in (team.get("user_id") or [])}:
+                raise AccessControlError("User is not a member of this team", status_code=404)
             user_per = get_user_permission_by_user_team_id(user_id, team_id)
         else:
+            _require_system_permission(auth_claims, "Manage users")
             user_per = get_user_permission_by_user_team_id(user_id, "")
         if user_per == []:
             return jsonify({"user_permissions": None}), 200
         else:
             return jsonify({"user_permissions": user_per}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/get_user_permissions")
 
 
 @bp.post("/create_edit_user_permissions")
@@ -5125,17 +5447,33 @@ async def create_edit_user_permissions(auth_claims: dict[str, Any]):
         team_id = body.get("team_id", None)
         permissions_id = body.get("permission_id", None)
         is_sys_admin = body.get("is_sys_admin", None)
-        update_user(user_id=user_id, is_sys_admin=is_sys_admin)
-        if not is_sys_admin:
-            if team_id:
-                user_per = get_user_permission_by_user_team_id(
-                    user_id, team_id)
-                if user_per == []:
-                    insert_user_permission(team_id, user_id, permissions_id)
-                else:
-                    update_user_permission(
-                        user_per[0]["_id"], team_id, user_id, permissions_id)
+        if team_id:
+            _, team = _require_team_access(
+                auth_claims, str(team_id), permission="Manage team permissions"
+            )
+            if str(user_id or "") not in {str(item) for item in (team.get("user_id") or [])}:
+                raise AccessControlError("User is not a member of this team", status_code=404)
+            permissions_id = _validate_permission_ids(
+                permissions_id, permission_type="team"
+            )
+            user_per = get_user_permission_by_user_team_id(user_id, team_id)
+            if user_per == []:
+                insert_user_permission(team_id, user_id, permissions_id)
             else:
+                update_user_permission(
+                    user_per[0]["_id"], team_id, user_id, permissions_id)
+        else:
+            actor = _require_system_permission(auth_claims, "Manage users")
+            target_user = get_user_by_id(str(user_id or ""))
+            if not target_user:
+                raise AccessControlError("User not found", status_code=404)
+            if (bool(is_sys_admin) or target_user.get("is_sys_admin") is True) and actor.get("is_sys_admin") is not True:
+                raise AccessControlError("Only a system administrator can change system-administrator status")
+            permissions_id = _validate_permission_ids(
+                permissions_id, permission_type="system"
+            )
+            update_user(user_id=user_id, is_sys_admin=bool(is_sys_admin))
+            if not is_sys_admin:
                 user_per = get_user_permission_by_user_team_id(user_id, "")
                 if user_per == []:
                     insert_user_permission("", user_id, permissions_id)
@@ -5144,7 +5482,7 @@ async def create_edit_user_permissions(auth_claims: dict[str, Any]):
                         user_per[0]["_id"], "", user_id, permissions_id)
         return jsonify({"Success": "Create/Edit User permissions success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/create_edit_user_permissions")
 
 
 @bp.post("/insert_database_connection")

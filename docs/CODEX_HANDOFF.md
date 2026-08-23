@@ -1,6 +1,6 @@
 # Codex handoff — NexoraAI
 
-Last updated: 2026-08-22 UTC
+Last updated: 2026-08-23 UTC
 
 This document replaces a raw chat transcript as the engineering handoff. It
 captures the decisions and evidence needed to continue without storing copied
@@ -477,6 +477,36 @@ streaming the original file with `private, no-store`; mismatched scope returns
 The analysis panel now rejects non-2xx responses instead of rendering an HTML
 Forbidden page as citation content.
 
+The first built-in requirement-to-evidence slice is now wired through both the
+Chat and Ask composers. With one or more document drafts selected, users can
+enable **Evidence matrix** and choose `knowledge_only` (the recommended
+default), `uploaded_only`, or `both`. These are top-level validated request
+fields; client-supplied internal overrides are still removed. The first
+selected attachment is the requirements checklist. Backend-owned instructions
+require a fixed Markdown matrix (Requirement, Status, Explanation, Evidence,
+Source file, Page, Confidence, Gap), restrict status values, require page-aware
+citations for supported/partial rows, and prohibit the checklist itself from
+being used as proof. Evidence metadata now separates a basename-only display
+filename from the full citation locator: the Source file column must show only
+`report.pdf`, while the inline citation retains its authorized storage locator
+so citation opening continues to work. The Evidence column contains only the
+supporting quote; filenames, page numbers, and citations belong in the separate
+Source file/Page columns. Team-scoped permanent citation authorization now
+resolves the Team UUID path prefix through the same application-user/Data Group
+policy as Chat retrieval instead of comparing application Data Group IDs only
+with Entra groups. Non-Team and access-control-disabled paths retain the legacy
+behavior. Legacy retrieval uses a bounded server-derived checklist
+query and at least ten ACL-filtered Knowledge results; LangGraph receives the
+same workflow contract and retains its permission-aware `search_knowledge`
+tool. Attached-only requests still suppress enterprise retrieval.
+
+This is intentionally the synchronous first slice: checklist input is bounded
+to 20 temporary chunks / 24,000 characters, the returned table is model-rendered
+Markdown rather than server-validated row JSON, and CSV/Excel export is not yet
+implemented. A later batch/job slice should extract stable requirement IDs,
+search/evaluate each row independently, persist progress, and expose validated
+JSON plus export without weakening document or Knowledge ACLs.
+
 The shared Chat/Ask composer now accepts PDF, DOCX, PPTX, XLSX, TXT, CSV, and
 Markdown alongside the existing image types. Document selection remains local
 until Send. Each draft receives a stable UUID `upload_id`; Send uploads through
@@ -529,20 +559,67 @@ retains page provenance. Failed or revoked work remains fail-closed, and a worke
 that loses its lease cannot overwrite status or delete another worker's chunks.
 A production malware scanner remains pending.
 
+### Team access and Data Group authorization
+
+- Team settings now use the selected Team passed by the parent dialog instead
+  of independently reading a potentially stale Active Team from browser
+  storage. Tabs are ordered by the administration flow: Members, Data access,
+  Roles & permissions, Agents, and Integrations, followed by system-only tools.
+- Data Groups have an explicit access mode: `team` means every current and
+  future Team member; `selected_users` requires at least one selected Team
+  member. Legacy records retain their previous meaning (`user_id=[]` is
+  inferred as Team-wide). The management UI labels these modes, shows distinct
+  email/employee identity details, and no longer describes Team-wide access as
+  “No users”.
+- `core/effective_access.py` is the provider-neutral authorization boundary for
+  Chat/Ask data selection. `POST /effective-access` returns only the groups the
+  signed-in application user may use. Chat and Ask use this endpoint for the
+  selector; `/ask`, `/chat`, and `/chat/stream` independently rebuild trusted
+  Team/Data Group/scope claims server-side and reject cross-Team groups, agents,
+  non-members, and unsupported scopes. Client-selected IDs are never trusted as
+  RAG filters directly.
+- Data Group create/edit/delete requires `Manage team data groups` on the
+  server. Selected users are verified against Team membership. Team member
+  listing requires Team membership.
+- Member approval/rejection/removal/addition requires `Manage team users` on
+  the server. Removing a Team member now deletes the applicable permission
+  record rather than incorrectly calling the user deletion connector with a
+  permission-record ID.
+- Team role create/edit/delete and user permission assignment require `Manage
+  team permissions`. Role permissions are restricted to Team permission IDs.
+  Team-level permission changes cannot modify `is_sys_admin`; only the existing
+  system-admin path may modify system roles/permissions.
+- System Team CRUD requires `Manage teams`; User directory CRUD requires
+  `Manage users`. A delegated system-permission manager cannot promote or
+  demote a system administrator. User profile editing no longer silently resets
+  the target user's `is_sys_admin` field.
+- This authorization core uses application user/team IDs and is intentionally
+  independent of Azure Search and Entra token shape after identity resolution.
+  The remaining Entra-specific username-to-application-user lookup should be
+  moved behind an identity-provider interface in the next local-runtime slice.
+- Chat/Ask usage persistence now consumes the server-validated request claims.
+  Requests without a Team store `group: null` instead of failing after the
+  response stream with `KeyError: team_id`; Team-scoped requests retain the
+  validated Team ID and name.
+
 ## Other next work
 
 ### Near-term document work
 
 1. Add a production malware-scanner adapter and make its deployment policy
    explicit before accepting untrusted documents outside development.
-2. Add the requirement-to-Knowledge-evidence matrix, per-model vision/OCR
-   routing in both runtimes, and speech improvements in that order. See
-   `docs/product-backlog.md`.
+2. Continue the requirement-to-Knowledge-evidence matrix with long-document
+   batch evaluation, validated row JSON, progress/retry, and CSV/Excel export.
+   Then add per-model vision/OCR routing in both runtimes and speech
+   improvements. See `docs/product-backlog.md`.
 
 ### Platform roadmap
 
-- Internal username/password authentication and User Management, without
-  requiring Entra ID.
+- **Immediate next slice:** introduce an identity-provider/session interface,
+  keep the existing Entra adapter, and add internal username/password login
+  with password hashing, secure cookie/session lifecycle, bootstrap-admin and
+  account lockout/rate-limit policy. Feed both adapters into the same
+  application-user/effective-access boundary; do not fork authorization rules.
 - Provider interfaces and local implementations for object storage, vector
   search/RAG, and embeddings. `APP_RUNTIME_MODE=local` is still partial; search
   and storage remain Azure-dependent.
@@ -560,10 +637,10 @@ The guardrail/API/dashboard discussion order is documented in
 
 ## Critical known limitations and risks
 
-- **Admin authorization:** OCR provider/profile/rule management now enforces
-  system-admin authorization server-side. Continue auditing mail, messaging and
-  other newer management routes that still use only the generic authenticated
-  decorator or UI visibility.
+- **Admin authorization:** OCR and the Team member/Data Group/role-permission
+  routes described above enforce authorization server-side. Continue auditing
+  Agent, mail, messaging, external database, and other newer management routes
+  that still use only the generic authenticated decorator or UI visibility.
 - **OCR routing:** automated tests cover precedence, conflicts, fallback and
   override authorization, but live Personal/Team/Global uploads with multiple
   providers still require manual smoke testing before checkpointing.
@@ -639,10 +716,10 @@ Knowledge ingestion job on 2026-08-22. A legacy job left with the former
 one-hour lease was reset only after confirming no backend worker was running;
 the restarted service then resumed processing successfully.
 
-Latest service-free backend regression on 2026-08-22:
+Latest service-free backend regression on 2026-08-23:
 
 ```text
-614 passed, 1 deselected
+635 passed, 1 deselected
 ```
 
 Command:
@@ -650,6 +727,25 @@ Command:
 ```bash
 .venv/bin/pytest -q -m 'not data_integration'
 ```
+
+Latest focused evidence-matrix, attachment retrieval, Agent RAG, and document
+validation regression:
+
+```text
+63 passed
+```
+
+Latest focused effective-access and authentication-filter regression:
+
+```text
+33 passed
+```
+
+An unfiltered `.venv/bin/pytest -q` run reached `617 passed` but the single
+`data_integration` splitter test failed on a repository `data/` PDF whose local
+parser returned no text sections. The supported service-free command above
+passes; no user data file was modified or removed to mask that dataset-specific
+failure.
 
 Latest focused provider capability, Chat attachment, configuration, and mocked
 route/vision regression:
@@ -771,6 +867,14 @@ Known non-blocking warnings:
   independently enabled.
 
 - Azure startup, Personal/Team/Global upload, search, deletion, and citations.
+- Open **Team settings** for two different Teams and confirm Members, Data
+  access, and Roles & permissions always remain on the Team named in the dialog
+  header. Create one Entire team Data Group and one Selected users group; verify
+  the access badges and member identities, then confirm an assigned member sees
+  both in Chat/Ask while another Team member sees only the Team-wide group.
+  Confirm a user without the relevant management permission cannot create,
+  edit, or delete the group through a direct API request. Verify a Team
+  permission editor cannot grant a System permission or change `is_sys_admin`.
 - OCR routing precedence for Personal/Team/Global, Auto selection, authorized
   manual override, conflict rejection, Explain Route, and legacy/system fallback.
 - Persistent job stages for Personal/Team/Global, selected provider/profile/rule,

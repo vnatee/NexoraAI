@@ -21,7 +21,7 @@ from agent_runtime.policy import ToolExecutionPolicy
 from agent_runtime.runtime import AgentRuntime, AgentRuntimeConfig
 from agent_runtime.tools import ToolRegistry, ToolRuntimeContext
 from approaches.approach import Approach
-from core.attachment_retrieval import ATTACHMENT_SECURITY_INSTRUCTION
+from core.attachment_retrieval import ATTACHMENT_SECURITY_INSTRUCTION, REQUIREMENTS_EVIDENCE_MATRIX_INSTRUCTION
 from mongo_table_connecters.agent_bindings import get_all_agent_bindings_by_agent_id
 from mongo_table_connecters.agents import get_agent_by_id
 from mongo_table_connecters.chart_binding import get_enabled_chart_bindings_by_agent_id
@@ -248,7 +248,12 @@ async def create_agent_runtime(
             tool_choice=tool_choice,
         )
 
-    if has_temporary_attachments and not include_enterprise_knowledge:
+    if overrides.get("_requirements_evidence_matrix") is True:
+        runtime_contract = f"""You are running the built-in requirement evidence matrix workflow.
+{REQUIREMENTS_EVIDENCE_MATRIX_INSTRUCTION}
+The checklist attachment ID is {overrides.get("_requirements_attachment_id") or "unknown"}. The allowed evidence scope is {attachment_evidence_scope}.
+First use search_knowledge to read the requirement checklist. Then search each distinct requirement against the allowed evidence sources. Never treat the checklist attachment itself as proof in any scope."""
+    elif has_temporary_attachments and not include_enterprise_knowledge:
         runtime_contract = """You are a helpful AI agent with access to the enabled tools.
 The user selected private temporary document attachments. For this request, search_knowledge is scoped only to those selected attachments. Cite their temporary source names and do not claim to have searched company Knowledge."""
     elif has_temporary_attachments:

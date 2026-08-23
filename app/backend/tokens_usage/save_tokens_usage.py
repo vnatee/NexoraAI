@@ -145,19 +145,29 @@ def insert_user_usage(auth_claims,response,mode="chat"):
         tokens = summarize_turn(response)
     else:
         tokens = summarize_turn_for_ask(response)
+    username = str(
+        auth_claims.get("preferred_username")
+        or auth_claims.get("email")
+        or auth_claims.get("upn")
+        or ""
+    )
+    application_user = get_user_by_ad_email(username) if username else None
+    team_id = str(auth_claims.get("team_id") or "").strip()
+    team = get_team_by_id(team_id) if team_id else None
     usage_data = {
         "_id": str(uuid.uuid4()),       
         "create_at": datetime.utcnow(), 
         "update_at": datetime.utcnow(),  
         "delete_at": None,
         "user": {
-            "_id": get_user_by_ad_email(auth_claims["preferred_username"])['_id'],
-            "name": auth_claims["preferred_username"]
-        },               
-        "group": {
-            "_id": auth_claims["team_id"],
-            "name": get_team_by_id(auth_claims["team_id"])['name']
-        },                                          
+            "_id": str(auth_claims.get("application_user_id") or (application_user or {}).get("_id") or ""),
+            "name": username,
+        },
+        "group": (
+            {"_id": team_id, "name": str(team.get("name") or team_id)}
+            if team
+            else None
+        ),
         "tokens_prompt_sum": tokens["tokens_prompt_sum"],             
         "tokens_completion_sum": tokens["tokens_completion_sum"],
         "tokens_total_sum": tokens["tokens_total_sum"],

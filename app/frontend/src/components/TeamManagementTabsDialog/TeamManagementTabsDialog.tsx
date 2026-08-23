@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Dialog, DialogTitle, DialogContent, DialogActions, Button, Tabs, Tab } from "@mui/material";
+import { Box, Dialog, DialogTitle, DialogContent, DialogActions, Button, Tabs, Tab, Typography } from "@mui/material";
 
 import { TabPanel } from "./common/TabPanel";
 import { TeamUserManagementPage } from "./Tabs/TeamUserManagementPage";
@@ -29,9 +29,19 @@ export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin
 
     const tabs = [
         {
-            label: "Team Users",
+            label: "Members",
             permission: ["Manage team users"],
             element: <TeamUserManagementPage team={selectTeamData} />
+        },
+        {
+            label: "Data access",
+            permission: ["Manage team data groups"],
+            element: <DataGroupManagementPage team={selectTeamData} />
+        },
+        {
+            label: "Roles & permissions",
+            permission: ["Manage team permissions"],
+            element: <RBACManagementPage team={selectTeamData} />
         },
         {
             label: "Agents",
@@ -44,17 +54,7 @@ export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin
             element: <IntegrationManagementPage team={selectTeamData} isSystemAdmin={is_sys_admin} />
         },
         {
-            label: "Data Groups",
-            permission: ["Manage team data groups"],
-            element: <DataGroupManagementPage />
-        },
-        {
-            label: "RBAC",
-            permission: ["Manage team permissions"],
-            element: <RBACManagementPage />
-        },
-        {
-            label: "Manage User",
+            label: "User directory",
             permission: ["Manage users", "Manage teams"],
             element: <ManageUserTabs />
         },
@@ -97,7 +97,22 @@ export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin
 
     return (
         <Dialog open={open} onClose={onClose} maxWidth="xl" fullWidth>
-            <Tabs value={tab} onChange={(_, v) => setTab(v)} sx={{ px: 2, borderBottom: 1, borderColor: "divider" }}>
+            <DialogTitle>
+                <Box>
+                    <Typography variant="h6">Team settings · {teamName}</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                        Manage membership, document access, roles, agents, and integrations for this team.
+                    </Typography>
+                </Box>
+            </DialogTitle>
+            <Tabs
+                value={tab}
+                onChange={(_, v) => setTab(v)}
+                variant="scrollable"
+                scrollButtons="auto"
+                allowScrollButtonsMobile
+                sx={{ px: 2, borderBottom: 1, borderColor: "divider" }}
+            >
                 {allowedTabs.map(t => (
                     <Tab key={t.label} label={t.label} />
                 ))}

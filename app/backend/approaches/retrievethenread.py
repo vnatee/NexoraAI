@@ -142,15 +142,16 @@ class RetrieveThenReadApproach(Approach):
         minimum_reranker_score = overrides.get("minimum_reranker_score", 0.0)
         filter = self.build_filter(overrides, auth_claims)
         q = str(messages[-1]["content"])
+        search_query = str(overrides.get("_knowledge_search_context") or q)
 
         # If retrieval mode includes vectors, compute an embedding for the query
         vectors: list[VectorQuery] = []
         if use_vector_search:
-            vectors.append(await self.compute_text_embedding(q))
+            vectors.append(await self.compute_text_embedding(search_query))
 
         results = await self.search(
             top,
-            q,
+            search_query,
             filter,
             vectors,
             use_text_search,
@@ -162,14 +163,19 @@ class RetrieveThenReadApproach(Approach):
             use_query_rewriting,
         )
 
-        text_sources = self.get_sources_content(results, use_semantic_captions, use_image_citation=False)
+        text_sources = self.get_sources_content(
+            results,
+            use_semantic_captions,
+            use_image_citation=False,
+            include_display_filename=overrides.get("_requirements_evidence_matrix") is True,
+        )
 
         return ExtraInfo(
             DataPoints(text=text_sources),
             thoughts=[
                 ThoughtStep(
                     "Search using user query",
-                    q,
+                    search_query,
                     {
                         "use_semantic_captions": use_semantic_captions,
                         "use_semantic_ranker": use_semantic_ranker,
@@ -212,7 +218,12 @@ class RetrieveThenReadApproach(Approach):
             results_merge_strategy=results_merge_strategy,
         )
 
-        text_sources = self.get_sources_content(results, use_semantic_captions=False, use_image_citation=False)
+        text_sources = self.get_sources_content(
+            results,
+            use_semantic_captions=False,
+            use_image_citation=False,
+            include_display_filename=overrides.get("_requirements_evidence_matrix") is True,
+        )
 
         extra_info = ExtraInfo(
             DataPoints(text=text_sources),

@@ -5,7 +5,7 @@ from azure.search.documents.models import VectorizedQuery
 
 from agent_runtime.tools import ToolRegistry, ToolSpec
 from approaches.approach import Approach
-from core.attachment_retrieval import bounded_attachment_evidence
+from core.attachment_retrieval import bounded_attachment_evidence, source_display_filename
 
 
 def register_rag_tool(
@@ -64,9 +64,15 @@ def register_rag_tool(
             f"{citation}: {text}"
             for _, citation, text in attachment_evidence
         ]
+        serialized_documents = [document.serialize_for_results() for document in documents]
+        if overrides.get("_requirements_evidence_matrix") is True:
+            for serialized, document in zip(serialized_documents, documents):
+                serialized["sourcefile"] = source_display_filename(
+                    document.sourcefile or document.sourcepage
+                )
         return {
             "query": query,
-            "results": [document.serialize_for_results() for document in documents],
+            "results": serialized_documents,
             "temporary_attachment_results": [
                 {
                     "source": citation,
@@ -83,6 +89,7 @@ def register_rag_tool(
                     documents,
                     use_semantic_captions=bool(overrides.get("semantic_captions")),
                     use_image_citation=False,
+                    include_display_filename=overrides.get("_requirements_evidence_matrix") is True,
                 ),
                 *attachment_sources,
             ],
