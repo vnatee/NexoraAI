@@ -144,6 +144,53 @@ def test_auth_setup_required_access_control_and_unauthenticated_access(
     snapshot.assert_match(json.dumps(result, indent=4), "result.json")
 
 
+@pytest.mark.asyncio
+async def test_local_session_is_resolved_without_entra():
+    helper = AuthenticationHelper(
+        search_index=MockSearchIndex,
+        use_authentication=False,
+        server_app_id=None,
+        server_app_secret=None,
+        client_app_id=None,
+        tenant_id=None,
+        local_authentication_enabled=True,
+        local_session_resolver=lambda token: {
+            "auth_provider": "local",
+            "oid": "user-1",
+            "application_user_id": "user-1",
+            "preferred_username": "admin",
+            "groups": [],
+        },
+        local_bootstrap_required=lambda: True,
+    )
+
+    claims = await helper.get_auth_claims_if_enabled(
+        headers={"Authorization": "Bearer nx_local_session"}
+    )
+
+    assert claims["auth_provider"] == "local"
+    assert helper.get_auth_setup_for_client()["localBootstrapRequired"] is True
+
+
+@pytest.mark.asyncio
+async def test_local_auth_rejects_missing_session_even_without_document_acl():
+    helper = AuthenticationHelper(
+        search_index=MockSearchIndex,
+        use_authentication=False,
+        server_app_id=None,
+        server_app_secret=None,
+        client_app_id=None,
+        tenant_id=None,
+        local_authentication_enabled=True,
+        local_session_resolver=lambda token: {},
+    )
+
+    with pytest.raises(AuthError) as exc_info:
+        await helper.get_auth_claims_if_enabled(headers={})
+
+    assert exc_info.value.status_code == 401
+
+
 def test_get_auth_token(mock_confidential_client_success, mock_validate_token_success):
     with pytest.raises(AuthError) as exc_info:
         AuthenticationHelper.get_token_auth_header({})

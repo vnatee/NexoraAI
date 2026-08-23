@@ -1,8 +1,7 @@
 import { Dialog, DialogTitle, DialogContent, DialogActions, TextField, Button, Stack } from "@mui/material";
 import { useEffect, useState } from "react";
 import { User } from "../../../api/models";
-import { useMsal } from "@azure/msal-react";
-import { getUsername } from "../../../authConfig";
+import { localAuthenticationEnabled } from "../../../authConfig";
 
 type Props = {
     open: boolean;
@@ -17,7 +16,9 @@ export function CreateUserDialog({ open, onClose, onCreate }: Props) {
         last_name: "",
         email: "",
         ad_email: "",
-        tel: ""
+        tel: "",
+        local_username: "",
+        local_password: ""
     });
 
     const handleCreate = () => {
@@ -38,7 +39,9 @@ export function CreateUserDialog({ open, onClose, onCreate }: Props) {
                 last_name: "",
                 email: "",
                 ad_email: "",
-                tel: ""
+                tel: "",
+                local_username: "",
+                local_password: ""
             });
         }
     }, [open]);
@@ -54,13 +57,23 @@ export function CreateUserDialog({ open, onClose, onCreate }: Props) {
                     <TextField label="Last Name" value={form.last_name} onChange={e => setForm({ ...form, last_name: e.target.value })} />
                     <TextField label="Email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} />
                     <TextField label="Entra ID" value={form.ad_email} onChange={e => setForm({ ...form, ad_email: e.target.value })} />
+                    {localAuthenticationEnabled && (
+                        <>
+                            <TextField label="Local username (optional)" value={form.local_username} onChange={e => setForm({ ...form, local_username: e.target.value })} autoComplete="off" />
+                            <TextField label="Temporary local password" type="password" helperText="At least 12 characters. Leave both local fields empty for an Entra-only user." value={form.local_password} onChange={e => setForm({ ...form, local_password: e.target.value })} autoComplete="new-password" />
+                        </>
+                    )}
                     <TextField label="Tel" value={form.tel} onChange={e => setForm({ ...form, tel: e.target.value })} />
                 </Stack>
             </DialogContent>
 
             <DialogActions>
                 <Button onClick={onClose}>Cancel</Button>
-                <Button variant="contained" onClick={handleCreate}>
+                <Button
+                    variant="contained"
+                    onClick={handleCreate}
+                    disabled={Boolean(form.local_username) !== Boolean(form.local_password) || (Boolean(form.local_password) && form.local_password.length < 12)}
+                >
                     Create
                 </Button>
             </DialogActions>

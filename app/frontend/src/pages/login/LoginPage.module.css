@@ -162,13 +162,35 @@
     border-radius: 0.625rem;
     font-size: 0.9375rem;
     font-weight: 600;
-    cursor: not-allowed;
-    color: #94a3b8;
-    background: rgba(255, 255, 255, 0.08);
+    cursor: pointer;
+    color: #fff;
+    background: #4f46e5;
     transition: all 0.2s;
     margin-top: 0.25rem;
     position: relative;
     overflow: hidden;
+}
+
+.loginBtn:hover:not(:disabled) {
+    background: #4338ca;
+}
+
+.loginBtn:disabled {
+    cursor: not-allowed;
+    color: #94a3b8;
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.setupHint {
+    margin: 0;
+    color: #cbd5e1;
+    font-size: 0.875rem;
+}
+
+.nameRow {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.75rem;
 }
 
 .comingSoonBadge {

@@ -26,11 +26,15 @@ import {
     MailEmailConfig,
     IngestionJob,
     ChatDocumentAttachment,
-    EffectiveAccessResponse
+    EffectiveAccessResponse,
+    AuthenticationSettings
 } from "./models";
 import { useLogin, getToken, isUsingAppServicesLogin } from "../authConfig";
 
 export async function getHeaders(idToken: string | undefined): Promise<Record<string, string>> {
+    if (idToken?.startsWith("nx_local_")) {
+        return { Authorization: `Bearer ${idToken}` };
+    }
     // If using login and not using app services, add the id token of the logged in account as the authorization
     if (useLogin && !isUsingAppServicesLogin) {
         if (idToken) {
@@ -39,6 +43,36 @@ export async function getHeaders(idToken: string | undefined): Promise<Record<st
     }
 
     return {};
+}
+
+export async function getAuthenticationSettings(idToken: string): Promise<AuthenticationSettings> {
+    const response = await fetch("/admin/auth-settings", { headers: await getHeaders(idToken) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to load authentication settings");
+    return data;
+}
+
+export async function updateAuthenticationSettings(
+    settings: Partial<AuthenticationSettings> & { client_secret?: string },
+    idToken: string
+): Promise<AuthenticationSettings> {
+    const response = await fetch("/admin/auth-settings", {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(settings)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to save authentication settings");
+    return data;
+}
+
+export async function resetAuthenticationSettings(idToken: string): Promise<void> {
+    const response = await fetch("/admin/auth-settings", {
+        method: "DELETE",
+        headers: await getHeaders(idToken)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to restore environment settings");
 }
 
 export async function configApi(): Promise<Config> {
@@ -1102,6 +1136,35 @@ export async function get_all_users(idToken: string): Promise<any> {
     return dataResponse;
 }
 
+export async function updateMyProfile(
+    profile: Pick<User, "first_name" | "last_name" | "email" | "tel">,
+    idToken: string
+): Promise<User> {
+    const response = await fetch("/auth/profile", {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(profile)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to update profile");
+    return data.user as User;
+}
+
+export async function changeMyLocalPassword(
+    currentPassword: string,
+    newPassword: string,
+    idToken: string
+): Promise<{ success: boolean; reauthentication_required: boolean }> {
+    const response = await fetch("/auth/local/password", {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to change password");
+    return data;
+}
+
 export async function get_team_users(team_id: string, idToken: string): Promise<any> {
     const headers = await getHeaders(idToken);
 
@@ -1121,6 +1184,26 @@ export async function get_team_users(team_id: string, idToken: string): Promise<
 
 export async function add_users(user: User, idToken: string): Promise<any> {
     const headers = await getHeaders(idToken);
+    if (user.local_username && user.local_password) {
+        const response = await fetch("/admin/local-users", {
+            method: "POST",
+            headers: { ...headers, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                username: user.local_username,
+                password: user.local_password,
+                ad_email: user.ad_email,
+                email: user.email,
+                first_name: user.first_name,
+                last_name: user.last_name,
+                tel: user.tel,
+                employee_id: user.employee_id,
+                active: user.active
+            })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Create local user failed (${response.status})`);
+        return data;
+    }
     let ad_email = user.ad_email;
     let email = user.email;
     let first_name = user.first_name;
@@ -1165,6 +1248,16 @@ export async function update_user(user: User, idToken: string): Promise<any> {
 
     const dataResponse: any = await response.json();
     return await dataResponse;
+}
+
+export async function resetLocalUserPassword(userId: string, password: string, idToken: string): Promise<void> {
+    const response = await fetch(`/admin/local-users/${encodeURIComponent(userId)}/password`, {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ password })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to reset local password");
 }
 
 export async function delete_user(user_id: string, idToken: string): Promise<any> {

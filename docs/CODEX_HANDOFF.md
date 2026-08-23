@@ -47,8 +47,9 @@ Decisions already made with the product owner:
 - LLM selection is per Agent.
 - Internet access is allowed for explicitly selected cloud LLM, embedding, or
   document-processing providers; “local” does not mean air-gapped by default.
-- Internal authentication will eventually use application-managed
-  username/password and an internal User Management page, not Keycloak.
+- Internal authentication uses application-managed username/password and the
+  internal User Management page, not Keycloak. Microsoft Entra remains
+  available and may be enabled alongside local login.
 - Existing Azure AI Search/Blob/Mongo data does not need migration; a new local
   deployment may start empty, but Azure behavior should have minimal impact.
 - Agent tools may execute automatically. Server-side tool policy and audit are
@@ -602,6 +603,49 @@ A production malware scanner remains pending.
   response stream with `KeyError: team_id`; Team-scoped requests retain the
   validated Team ID and name.
 
+### Local and Microsoft Entra authentication
+
+- `LOCAL_AUTH_ENABLED=true` enables a provider-neutral local login alongside
+  the existing Entra adapter. Both providers resolve to the existing
+  application User ID before Team, Data Group, permission, document ACL, and
+  audit checks; authorization rules were not forked by provider.
+- A new deployment bootstraps exactly one local system administrator from the
+  Login page using `LOCAL_AUTH_BOOTSTRAP_TOKEN`. A persistent singleton guard
+  and the unique local username index prevent duplicate bootstrap accounts.
+  Remove the bootstrap token from the runtime environment after setup.
+- Passwords use salted scrypt hashes. Opaque 12-hour session tokens are kept in
+  browser `sessionStorage`, while MongoDB stores only their SHA-256 digests and
+  a TTL expiry. Five failed logins lock the account for 15 minutes; a shared
+  Mongo-backed source limit allows 30 login attempts per 15-minute bucket.
+- User Management can create Entra-only or local users. Local password reset
+  revokes all existing sessions for that user. Disabled/deleted application
+  users cannot resolve a valid local session.
+- The account menu now displays the application user's full name and exposes a
+  self-service **My profile** dialog. Users may edit only first name, last name,
+  contact email, and telephone; identity, employee ID, status, administrator,
+  Team, role, and permission fields are read-only. Local users can change their
+  password only after supplying the current password. The password policy is
+  reused, the replacement must differ, and every Local session is revoked;
+  Entra-only users are directed to Microsoft password management. The local
+  logout route also now revokes its server-side token instead of leaving it
+  valid until TTL expiry.
+- User Management and User Permission now list system administrators instead of
+  silently filtering them out, so the currently signed-in administrator is
+  visible in the directory. System-admin badges are explicit. Delegated
+  `Manage users` holders may view but cannot edit, delete, reset, promote, or
+  demote a system administrator. A system administrator cannot remove their own
+  account or the final active administrator.
+- System administrators have an Authentication tab for managed Entra tenant,
+  server-app, SPA-app and client-secret settings. The secret uses the existing
+  Fernet helper and is never returned to the browser. Managed settings override
+  environment Entra settings and can be removed to restore the environment
+  configuration. Browser reload is required after changing MSAL settings.
+- Azure-only startup behavior is unchanged: managed authentication storage is
+  read only when Local Auth is enabled, preventing an unnecessary MongoDB call
+  in existing Azure startup/test paths.
+
+See `docs/local-authentication.md`.
+
 ## Other next work
 
 ### Near-term document work
@@ -615,11 +659,13 @@ A production malware scanner remains pending.
 
 ### Platform roadmap
 
-- **Immediate next slice:** introduce an identity-provider/session interface,
-  keep the existing Entra adapter, and add internal username/password login
-  with password hashing, secure cookie/session lifecycle, bootstrap-admin and
-  account lockout/rate-limit policy. Feed both adapters into the same
-  application-user/effective-access boundary; do not fork authorization rules.
+- **Immediate next slice:** manually smoke-test Local-only and hybrid
+  Local+Entra login against a real MongoDB deployment, including bootstrap,
+  restart persistence, lockout, password reset/session revocation, managed
+  Entra save/reload, self-profile editing/password change, and Team/Data Group
+  ACLs. Then design verified-channel forgotten-password recovery and decide
+  whether production deployments should move the local bearer from
+  `sessionStorage` to an HttpOnly cookie/BFF flow.
 - Provider interfaces and local implementations for object storage, vector
   search/RAG, and embeddings. `APP_RUNTIME_MODE=local` is still partial; search
   and storage remain Azure-dependent.
@@ -650,8 +696,9 @@ The guardrail/API/dashboard discussion order is documented in
   Graceful shutdown returns owned jobs to the queue immediately; a hard kill
   waits for lease expiry. No automatic ingestion-job retention/TTL policy is
   configured yet.
-- **Local mode:** LLM/provider work is ahead of search, storage, authentication,
-  and deployment migration; this is not yet a fully local product.
+- **Local mode:** local authentication now has a functional first slice, but
+  vector search/RAG, Knowledge object storage, and deployment packaging remain
+  Azure-dependent; this is not yet a fully local product.
 - **Tool-capability probes:** detection is a live request and can consume a small
   number of tokens per model. Rate limits or ambiguous provider errors produce
   `unknown` rather than incorrectly disabling tools. Re-test after changing a
@@ -662,7 +709,12 @@ The guardrail/API/dashboard discussion order is documented in
   `ALLOW_PRIVATE_INTEGRATION_ENDPOINTS=true`. Enable this only for trusted
   container-network integrations.
 - **Secrets:** changing or losing `APP_DATA_ENCRYPTION_KEY` makes stored provider,
-  database, MCP, mail, messaging, and OCR credentials unreadable.
+  database, MCP, mail, messaging, OCR, and managed Entra credentials unreadable.
+- **Local-auth hardening:** local bearer tokens are opaque, persisted only as
+  hashes server-side, and stored in browser `sessionStorage`, but they remain
+  sensitive to a successful same-origin XSS attack. Production deployment must
+  enforce HTTPS and should evaluate an HttpOnly-cookie/BFF flow. MFA and
+  self-service password recovery are not implemented yet.
 - **Paddle resource usage:** the CPU image and first model download are large;
   pin versions/digests and bake/cache models for production.
 - **Frontend bundle:** the existing vendor chunk is large and requires a larger
@@ -716,10 +768,14 @@ Knowledge ingestion job on 2026-08-22. A legacy job left with the former
 one-hour lease was reset only after confirming no backend worker was running;
 the restarted service then resumed processing successfully.
 
+The product owner manually verified the account-menu full-name display,
+self-service profile editing, and Local current-password change flow on
+2026-08-23.
+
 Latest service-free backend regression on 2026-08-23:
 
 ```text
-635 passed, 1 deselected
+647 passed, 1 deselected
 ```
 
 Command:
@@ -738,7 +794,20 @@ validation regression:
 Latest focused effective-access and authentication-filter regression:
 
 ```text
-33 passed
+45 passed
+
+Latest focused local/Entra authentication, password/session, effective-access,
+profile-boundary, and usage validation:
+
+```text
+54 passed
+```
+
+The current profile slice also passed the memory-safe TypeScript/production
+build. A new full service-free run was started after this slice and showed no
+failures while progressing, but was manually stopped because legacy tests were
+still running after an unusually long wait; do not treat that interrupted run
+as a replacement for the last completed `647 passed, 1 deselected` baseline.
 ```
 
 An unfiltered `.venv/bin/pytest -q` run reached `617 passed` but the single
@@ -826,6 +895,22 @@ Known non-blocking warnings:
 
 ## Manual smoke-test checklist before the next checkpoint
 
+- Start with `LOCAL_AUTH_ENABLED=true`, a stable
+  `APP_DATA_ENCRYPTION_KEY`, and a temporary `LOCAL_AUTH_BOOTSTRAP_TOKEN`.
+  Create the first administrator from Login, remove the bootstrap token and
+  restart. Verify local sign-in survives the restart; five bad passwords lock
+  the account; User Management can create a local user; password reset signs
+  out that user's existing session; Team/Data Group selection and citations
+  obey the same ACLs as Entra. As the local administrator, save valid Entra
+  settings in **Users & Access → Authentication**, reload, verify both login
+  methods, then verify **Use environment settings** restores the environment
+  configuration. Open the account menu and verify the full name and sign-in ID
+  are distinct, update only the editable My profile fields, and confirm account
+  IDs/privileges remain read-only. For a Local user, reject a wrong current
+  password, change to a different 12+ character password, verify all previous
+  Local sessions are rejected, and sign in with the new password. Confirm an
+  Entra-only profile shows Microsoft-managed password guidance. Perform this
+  over HTTPS outside local development.
 - Chat/Ask normal text paste remains unchanged. In **Agent Management → Agent
   Info → Message attachments**, verify image input cannot be enabled for a
   non-Vision model or LangGraph runtime. With both Agent policies off, confirm

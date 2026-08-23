@@ -429,12 +429,25 @@ export interface User {
     last_name: string;
     tel?: string;
     update_at?: string;
+    local_username?: string;
+    local_password?: string;
+    auth_providers?: string[];
 }
 
 export interface AuthProfile {
     teams: TeamProfile[];
     user: User;
     sys_permissions: string[];
+}
+
+export interface AuthenticationSettings {
+    local_enabled: boolean;
+    entra_enabled: boolean;
+    tenant_id: string;
+    server_app_id: string;
+    client_app_id: string;
+    has_client_secret: boolean;
+    source?: "environment" | "managed";
 }
 
 export interface TeamProfile {

@@ -339,6 +339,9 @@ Once the environment variables are set, run the script using the following comma
 
 The following environment variables are used to setup the optional login and document level access control:
 
+- `LOCAL_AUTH_ENABLED`: Enables application-managed username/password login. When enabled for a new deployment, configure `LOCAL_AUTH_BOOTSTRAP_TOKEN` and create the first system administrator from the Login page. See [Local and Microsoft Entra authentication](local-authentication.md).
+- `LOCAL_AUTH_BOOTSTRAP_TOKEN`: One-time high-entropy token required by the first-administrator setup endpoint. Remove it from the runtime environment after bootstrap.
+- `APP_DATA_ENCRYPTION_KEY`: Stable Fernet key used to encrypt managed Microsoft Entra client secrets and other application credentials. It must be shared by every replica and preserved across restarts.
 - `AZURE_USE_AUTHENTICATION`: Enables Entra ID login and document level access control. Set to true before running `azd up`.
 - `AZURE_ENFORCE_ACCESS_CONTROL`: Enforces Entra ID based login and document level access control on documents with access control assigned. Set to true before running `azd up`. If `AZURE_ENFORCE_ACCESS_CONTROL` is enabled and `AZURE_ENABLE_UNAUTHENTICATED_ACCESS` is not enabled, then authentication is required to use the app.
 - `AZURE_ENABLE_GLOBAL_DOCUMENT_ACCESS`: Allows users to search on documents that have no access controls assigned
@@ -354,7 +357,10 @@ The following environment variables are used to setup the optional login and doc
 
 ### Authentication behavior by environment
 
-This application uses an in-memory token cache. User sessions are only available in memory while the application is running. When the application server is restarted, all users will need to log-in again.
+The Entra adapter uses the existing MSAL token cache behavior. Local sessions
+are persisted as hashed, expiring records in MongoDB, so a backend restart does
+not by itself sign out local users. See
+[Local and Microsoft Entra authentication](local-authentication.md).
 
 The following table describes the impact of the `AZURE_USE_AUTHENTICATION` and `AZURE_ENFORCE_ACCESS_CONTROL` variables depending on the environment you are deploying the application in:
 

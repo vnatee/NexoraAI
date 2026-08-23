@@ -20,6 +20,9 @@ interface AuthSetup {
     requireAccessControl: boolean;
     // Set to true if the application allows unauthenticated access (only applies for documents without access control)
     enableUnauthenticatedAccess: boolean;
+    localAuthenticationEnabled: boolean;
+    entraAuthenticationEnabled: boolean;
+    localBootstrapRequired: boolean;
     /**
      * Configuration object to be passed to MSAL instance on creation.
      * For a full list of MSAL.js configuration parameters, visit:
@@ -57,6 +60,9 @@ const defaultAuthSetup: AuthSetup = {
     useLogin: true,
     requireAccessControl: false,
     enableUnauthenticatedAccess: true,
+    localAuthenticationEnabled: false,
+    entraAuthenticationEnabled: true,
+    localBootstrapRequired: false,
     msalConfig: {
         auth: {
             clientId: "",
@@ -98,8 +104,61 @@ export const useLogin = authSetup.useLogin;
 export const requireAccessControl = authSetup.requireAccessControl;
 
 export const enableUnauthenticatedAccess = authSetup.enableUnauthenticatedAccess;
+export const localAuthenticationEnabled = authSetup.localAuthenticationEnabled;
+export const entraAuthenticationEnabled = authSetup.entraAuthenticationEnabled;
+export const localBootstrapRequired = authSetup.localBootstrapRequired;
 
 export const requireLogin = true; // Always require login
+
+const LOCAL_TOKEN_KEY = "nexora.localAccessToken";
+const LOCAL_USERNAME_KEY = "nexora.localUsername";
+
+export const getLocalToken = (): string | undefined => sessionStorage.getItem(LOCAL_TOKEN_KEY) || undefined;
+
+export const isUsingLocalLogin = (): boolean => Boolean(getLocalToken());
+
+export const localLogin = async (username: string, password: string): Promise<void> => {
+    const response = await fetch("/auth/local/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Local sign-in failed");
+    sessionStorage.setItem(LOCAL_TOKEN_KEY, data.access_token);
+    sessionStorage.setItem(LOCAL_USERNAME_KEY, data.username || username);
+};
+
+export const bootstrapLocalAdmin = async (payload: Record<string, string>, bootstrapToken: string): Promise<void> => {
+    const response = await fetch("/auth/local/bootstrap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Bootstrap-Token": bootstrapToken },
+        body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Local administrator setup failed");
+};
+
+export const localLogout = async (): Promise<void> => {
+    const token = getLocalToken();
+    if (token) {
+        await fetch("/auth/local/logout", { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => undefined);
+    }
+    sessionStorage.removeItem(LOCAL_TOKEN_KEY);
+    sessionStorage.removeItem(LOCAL_USERNAME_KEY);
+};
+
+export const validateLocalSession = async (): Promise<boolean> => {
+    const token = getLocalToken();
+    if (!token) return false;
+    const response = await fetch("/auth/local/me", { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) {
+        sessionStorage.removeItem(LOCAL_TOKEN_KEY);
+        sessionStorage.removeItem(LOCAL_USERNAME_KEY);
+        return false;
+    }
+    return true;
+};
 
 /**
  * Configuration object to be passed to MSAL instance on creation.
@@ -205,6 +264,7 @@ export const appServicesLogout = () => {
  * @returns {Promise<boolean>} A promise that resolves to true if the user is logged in, false otherwise.
  */
 export const checkLoggedIn = async (client: IPublicClientApplication | undefined): Promise<boolean> => {
+    if (getLocalToken()) return true;
     if (client) {
         const activeAccount = client.getActiveAccount();
         if (activeAccount) {
@@ -284,6 +344,8 @@ export const checkLoggedIn = async (client: IPublicClientApplication | undefined
 
 export const getToken = async (client: IPublicClientApplication): Promise<string | undefined> => {
     try {
+        const localToken = getLocalToken();
+        if (localToken) return localToken;
         const appServicesToken = await getAppServicesToken();
         if (appServicesToken) {
             return appServicesToken.access_token;
@@ -315,6 +377,8 @@ export const getToken = async (client: IPublicClientApplication): Promise<string
  * @returns {Promise<string | null>} The username of the active account, or null if no username is found.
  */
 export const getUsername = async (client: IPublicClientApplication): Promise<string | null> => {
+    const localUsername = sessionStorage.getItem(LOCAL_USERNAME_KEY);
+    if (localUsername) return localUsername;
     const activeAccount = client.getActiveAccount();
     if (activeAccount) {
         return activeAccount.username;

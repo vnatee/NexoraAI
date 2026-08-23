@@ -18,14 +18,18 @@ import {
     ListItemButton,
     ListItemIcon,
     ListItemText,
-    Radio
+    Radio,
+    TextField,
+    Alert,
+    Chip,
+    Stack
 } from "@mui/material";
 import CircularProgress from "@mui/material/CircularProgress";
 import styles from "./LoginButton.module.css";
-import { getRedirectUri, loginRequest, appServicesLogout, getUsername, getToken } from "../../authConfig";
+import { getRedirectUri, loginRequest, appServicesLogout, getUsername, getToken, isUsingLocalLogin, localLogout } from "../../authConfig";
 import { useState, useEffect, useContext } from "react";
 import { LoginContext } from "../../loginContext";
-import { currentAgentConfig, check_user_login, register, check_waiting_approve } from "../../api/api";
+import { currentAgentConfig, check_user_login, register, check_waiting_approve, updateMyProfile, changeMyLocalPassword } from "../../api/api";
 import { GroupDetail, AuthProfile, TeamProfile, User } from "../../api/models";
 import { RegisterDialog } from "./RegisterDialog";
 import { Storage } from "../../utill/storage";
@@ -51,12 +55,28 @@ export const LoginButton = () => {
     const [activeTeam, setActiveTeam] = useState<TeamProfile | null>(null);
     const [selectedTeam, setSelectedTeam] = useState<TeamProfile | null>(null);
     const [haveUser, setHaveUser] = useState<User | null>(null);
+    const [openProfileDialog, setOpenProfileDialog] = useState(false);
+    const [profileDraft, setProfileDraft] = useState({ first_name: "", last_name: "", email: "", tel: "" });
+    const [profileSaving, setProfileSaving] = useState(false);
+    const [profileError, setProfileError] = useState("");
+    const [profileSuccess, setProfileSuccess] = useState("");
+    const [currentPassword, setCurrentPassword] = useState("");
+    const [newPassword, setNewPassword] = useState("");
+    const [confirmPassword, setConfirmPassword] = useState("");
+    const [passwordSaving, setPasswordSaving] = useState(false);
+    const [passwordError, setPasswordError] = useState("");
+    const [passwordSuccess, setPasswordSuccess] = useState("");
 
     // ===============================
     // Restore session
     // ===============================
     useEffect(() => {
         const restore = async () => {
+            if (isUsingLocalLogin()) {
+                setLoggedIn(true);
+                setUsername((await getUsername(instance)) ?? "");
+                return;
+            }
             const accounts = instance.getAllAccounts();
             if (accounts.length > 0) {
                 instance.setActiveAccount(accounts[0]);
@@ -175,6 +195,10 @@ export const LoginButton = () => {
         setLoggedIn(false);
         setUsername("");
 
+        if (isUsingLocalLogin()) {
+            await localLogout();
+            return;
+        }
         const active = instance.getActiveAccount();
         if (active) {
             await instance.logoutPopup({
@@ -203,6 +227,8 @@ export const LoginButton = () => {
                 const authProfile = await check_user_login(token);
                 Storage.set(STORAGE_KEYS.AUTH_PROFILE, authProfile as AuthProfile);
                 AuthStorage.set(authProfile);
+                setHaveUser(authProfile.user);
+                setUserDetails(authProfile.user as any);
             }
         } catch (err) {
             console.error("Failed to reload profile after team switch:", err);
@@ -271,6 +297,7 @@ export const LoginButton = () => {
     const initUserAfterLogin = async (token: string) => {
         const authProfile = await check_user_login(token);
         setHaveUser(authProfile ? authProfile.user : null);
+        setUserDetails(authProfile?.user as any);
 
         const hasNoTeam = !authProfile.teams || authProfile.teams.length === 0;
         const isSysAdmin = authProfile.user?.is_sys_admin;
@@ -286,6 +313,7 @@ export const LoginButton = () => {
         }
 
         Storage.set(STORAGE_KEYS.AUTH_PROFILE, authProfile as AuthProfile);
+        AuthStorage.set(authProfile);
 
         const teams = authProfile.teams ?? [];
         setTeams(teams);
@@ -377,6 +405,92 @@ export const LoginButton = () => {
         };
     }, [isWaitingApprove, loggedIn, msalInstance]);
 
+    const displayName = [haveUser?.first_name, haveUser?.last_name].filter(Boolean).join(" ").trim() || username;
+    const hasLocalIdentity = haveUser?.auth_providers?.includes("local") === true;
+
+    const openOwnProfile = () => {
+        setProfileDraft({
+            first_name: haveUser?.first_name ?? "",
+            last_name: haveUser?.last_name ?? "",
+            email: haveUser?.email ?? "",
+            tel: haveUser?.tel ?? ""
+        });
+        setProfileError("");
+        setProfileSuccess("");
+        setPasswordError("");
+        setPasswordSuccess("");
+        setCurrentPassword("");
+        setNewPassword("");
+        setConfirmPassword("");
+        setOpenProfileDialog(true);
+        handleCloseMenu();
+    };
+
+    const saveOwnProfile = async () => {
+        setProfileError("");
+        setProfileSuccess("");
+        if (!profileDraft.first_name.trim() || !profileDraft.last_name.trim() || !profileDraft.email.trim()) {
+            setProfileError("First name, last name, and contact email are required.");
+            return;
+        }
+        setProfileSaving(true);
+        try {
+            const token = await getToken(msalInstance);
+            if (!token) throw new Error("Your session has expired. Please sign in again.");
+            const updated = await updateMyProfile(profileDraft, token);
+            setHaveUser(updated);
+            setUserDetails(updated as any);
+            const authProfile = AuthStorage.get();
+            if (authProfile) AuthStorage.set({ ...authProfile, user: updated });
+            setProfileSuccess("Profile updated.");
+        } catch (error: any) {
+            setProfileError(error?.message || "Unable to update profile.");
+        } finally {
+            setProfileSaving(false);
+        }
+    };
+
+    const changeOwnPassword = async () => {
+        setPasswordError("");
+        setPasswordSuccess("");
+        if (newPassword.length < 12) {
+            setPasswordError("New password must contain at least 12 characters.");
+            return;
+        }
+        if (newPassword !== confirmPassword) {
+            setPasswordError("New password and confirmation do not match.");
+            return;
+        }
+        if (currentPassword === newPassword) {
+            setPasswordError("New password must be different from the current password.");
+            return;
+        }
+        setPasswordSaving(true);
+        try {
+            const token = await getToken(msalInstance);
+            if (!token) throw new Error("Your session has expired. Please sign in again.");
+            const result = await changeMyLocalPassword(currentPassword, newPassword, token);
+            setCurrentPassword("");
+            setNewPassword("");
+            setConfirmPassword("");
+            setPasswordSuccess("Password changed. Existing local sessions have been signed out.");
+            if (result.reauthentication_required) {
+                window.setTimeout(async () => {
+                    await localLogout();
+                    AuthStorage.clear();
+                    Storage.remove(STORAGE_KEYS.Active_Teams);
+                    setOpenProfileDialog(false);
+                    setLoggedIn(false);
+                    setUsername("");
+                }, 1200);
+            }
+        } catch (error: any) {
+            setPasswordError(error?.message || "Unable to change password.");
+        } finally {
+            setPasswordSaving(false);
+        }
+    };
+
     // ===============================
     // Render
     // ===============================
@@ -390,13 +504,16 @@ export const LoginButton = () => {
                 ) : (
                     <>
                         <IconButton onClick={e => setAnchorEl(e.currentTarget)}>
-                            <Avatar {...stringAvatar(username)} />
+                            <Avatar {...stringAvatar(displayName)} />
                         </IconButton>
 
                         <Menu anchorEl={anchorEl} open={Boolean(anchorEl)} onClose={() => setAnchorEl(null)}>
                             <Box sx={{ px: 2, py: 1 }}>
                                 <Typography variant="subtitle1" fontWeight={600}>
-                                    {username || "Username"}
+                                    {displayName || "User"}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                    {haveUser?.local_username || haveUser?.ad_email || username}
                                 </Typography>
 
                                 <Divider sx={{ my: 1 }} />
@@ -407,6 +524,8 @@ export const LoginButton = () => {
                             </Box>
 
                             <Divider />
+
+                            <MenuItem onClick={openOwnProfile}>My profile</MenuItem>
 
                             <MenuItem
                                 disabled={teams.length === 0}
@@ -459,6 +578,125 @@ export const LoginButton = () => {
                                     }}
                                 >
                                     Confirm
+                                </Button>
+                            </DialogActions>
+                        </Dialog>
+
+                        <Dialog open={openProfileDialog} onClose={() => !profileSaving && !passwordSaving && setOpenProfileDialog(false)} fullWidth maxWidth="sm">
+                            <DialogTitle>My profile</DialogTitle>
+                            <DialogContent dividers>
+                                <Stack spacing={2} sx={{ pt: 1 }}>
+                                    {profileError && <Alert severity="error">{profileError}</Alert>}
+                                    {profileSuccess && <Alert severity="success">{profileSuccess}</Alert>}
+                                    <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                                        <TextField
+                                            label="First name"
+                                            value={profileDraft.first_name}
+                                            onChange={event => setProfileDraft(value => ({ ...value, first_name: event.target.value }))}
+                                            fullWidth
+                                            required
+                                            inputProps={{ maxLength: 100 }}
+                                        />
+                                        <TextField
+                                            label="Last name"
+                                            value={profileDraft.last_name}
+                                            onChange={event => setProfileDraft(value => ({ ...value, last_name: event.target.value }))}
+                                            fullWidth
+                                            required
+                                            inputProps={{ maxLength: 100 }}
+                                        />
+                                    </Stack>
+                                    <TextField
+                                        label="Contact email"
+                                        type="email"
+                                        value={profileDraft.email}
+                                        onChange={event => setProfileDraft(value => ({ ...value, email: event.target.value }))}
+                                        fullWidth
+                                        required
+                                    />
+                                    <TextField
+                                        label="Telephone"
+                                        value={profileDraft.tel}
+                                        onChange={event => setProfileDraft(value => ({ ...value, tel: event.target.value }))}
+                                        fullWidth
+                                        inputProps={{ maxLength: 50 }}
+                                    />
+
+                                    <Divider />
+                                    <Typography variant="subtitle2">Account information</Typography>
+                                    <TextField label="Local username" value={haveUser?.local_username ?? "Not configured"} fullWidth InputProps={{ readOnly: true }} />
+                                    <TextField
+                                        label="Microsoft Entra ID"
+                                        value={haveUser?.auth_providers?.includes("entra") ? haveUser?.ad_email ?? "Not configured" : "Not configured"}
+                                        fullWidth
+                                        InputProps={{ readOnly: true }}
+                                    />
+                                    <TextField label="Employee ID" value={haveUser?.employee_id ?? ""} fullWidth InputProps={{ readOnly: true }} />
+                                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                        {(haveUser?.auth_providers ?? []).map(provider => (
+                                            <Chip key={provider} label={provider === "entra" ? "Microsoft Entra ID" : "Local account"} size="small" />
+                                        ))}
+                                        {haveUser?.is_sys_admin && <Chip label="System administrator" color="primary" size="small" />}
+                                    </Stack>
+                                    <Typography variant="caption" color="text.secondary">
+                                        Account IDs, status, teams, roles, and permissions are managed by an administrator.
+                                    </Typography>
+
+                                    <Divider />
+                                    <Typography variant="h6">Password</Typography>
+                                    {hasLocalIdentity ? (
+                                        <>
+                                            {passwordError && <Alert severity="error">{passwordError}</Alert>}
+                                            {passwordSuccess && <Alert severity="success">{passwordSuccess}</Alert>}
+                                            <TextField
+                                                label="Current password"
+                                                type="password"
+                                                value={currentPassword}
+                                                onChange={event => setCurrentPassword(event.target.value)}
+                                                autoComplete="current-password"
+                                                fullWidth
+                                            />
+                                            <TextField
+                                                label="New password"
+                                                type="password"
+                                                value={newPassword}
+                                                onChange={event => setNewPassword(event.target.value)}
+                                                autoComplete="new-password"
+                                                helperText="Use at least 12 characters."
+                                                fullWidth
+                                            />
+                                            <TextField
+                                                label="Confirm new password"
+                                                type="password"
+                                                value={confirmPassword}
+                                                onChange={event => setConfirmPassword(event.target.value)}
+                                                autoComplete="new-password"
+                                                fullWidth
+                                            />
+                                            <Button
+                                                variant="outlined"
+                                                onClick={changeOwnPassword}
+                                                disabled={passwordSaving || !currentPassword || !newPassword || !confirmPassword}
+                                                startIcon={passwordSaving ? <CircularProgress size={16} /> : undefined}
+                                                sx={{ alignSelf: "flex-start" }}
+                                            >
+                                                {passwordSaving ? "Changing…" : "Change password"}
+                                            </Button>
+                                        </>
+                                    ) : (
+                                        <Alert severity="info">Password is managed by Microsoft Entra ID.</Alert>
+                                    )}
+                                </Stack>
+                            </DialogContent>
+                            <DialogActions>
+                                <Button onClick={() => setOpenProfileDialog(false)} disabled={profileSaving || passwordSaving}>Close</Button>
+                                <Button
+                                    variant="contained"
+                                    onClick={saveOwnProfile}
+                                    disabled={profileSaving || passwordSaving}
+                                    startIcon={profileSaving ? <CircularProgress size={16} /> : undefined}
+                                >
+                                    {profileSaving ? "Saving…" : "Save profile"}
                                 </Button>
                             </DialogActions>
                         </Dialog>
