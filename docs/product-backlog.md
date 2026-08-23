@@ -118,9 +118,25 @@ Thai/English prompt-intent scope (`uploaded_only`, `knowledge_only`, or `both`)
 in both Legacy and LangGraph, with attachment-only as the safe fallback so
 unrelated permanent RAG results are not merged into summaries. Temporary
 citations now open through a private ready-only owner/conversation-scoped route,
-not the permanent Knowledge content route. A real malware-scanner adapter,
-LangGraph images, OCR-only fallback, and
-interrupted-extraction recovery remain pending.
+not the permanent Knowledge content route. Scanned-document OCR fallback and
+interrupted-extraction recovery are implemented. A real malware-scanner
+adapter, LangGraph image input, and finer per-model OCR/vision routing remain
+pending.
+
+The first requirement-to-evidence slice is implemented in the shared Chat/Ask
+composer. After attaching a requirements file, users can enable **Evidence
+matrix** and select **Knowledge only** (the recommended default), **Attached
+files only**, or **Attached files + Knowledge**. The request sends explicit,
+validated fields rather than relying on prompt wording. The backend treats the
+first attachment as the checklist, preserves owner/conversation checks and the
+Knowledge ACL filter, prohibits the checklist from being treated as proof,
+broadens Knowledge retrieval, and enforces a fixed Markdown matrix with
+requirement, status, explanation, evidence quote, source file, page,
+confidence, and gap columns. Legacy and LangGraph receive the same
+backend-enforced workflow contract. This synchronous first slice reads at most
+20 temporary chunks / 24,000 source characters; long-document batch
+evaluation, server-validated row JSON, and CSV/Excel export remain future
+phases.
 
 ## Proposed — AI guardrails
 

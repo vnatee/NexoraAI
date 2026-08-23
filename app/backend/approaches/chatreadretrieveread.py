@@ -150,8 +150,9 @@ class ChatReadRetrieveReadApproach(ChatApproach):
         if not isinstance(original_user_query, str):
             raise ValueError("The most recent message content must be a string.")
 
+        search_input = str(overrides.get("_knowledge_search_context") or original_user_query)
         query_messages = self.prompt_manager.render_prompt(
-            self.query_rewrite_prompt, {"user_query": original_user_query, "past_messages": messages[:-1]}
+            self.query_rewrite_prompt, {"user_query": search_input, "past_messages": messages[:-1]}
         )
         tools: list[ChatCompletionToolParam] = self.query_rewrite_tools
 
@@ -173,7 +174,7 @@ class ChatReadRetrieveReadApproach(ChatApproach):
             ),
         )
 
-        query_text = self.get_search_query(chat_completion, original_user_query)
+        query_text = self.get_search_query(chat_completion, search_input)
 
         # STEP 2: Retrieve relevant documents from the search index with the GPT optimized query
 
@@ -197,7 +198,12 @@ class ChatReadRetrieveReadApproach(ChatApproach):
         )
 
         # STEP 3: Generate a contextual and content specific answer using the search results and chat history
-        text_sources = self.get_sources_content(results, use_semantic_captions, use_image_citation=False)
+        text_sources = self.get_sources_content(
+            results,
+            use_semantic_captions,
+            use_image_citation=False,
+            include_display_filename=overrides.get("_requirements_evidence_matrix") is True,
+        )
 
         extra_info = ExtraInfo(
             DataPoints(text=text_sources),
@@ -257,7 +263,12 @@ class ChatReadRetrieveReadApproach(ChatApproach):
             results_merge_strategy=results_merge_strategy,
         )
 
-        text_sources = self.get_sources_content(results, use_semantic_captions=False, use_image_citation=False)
+        text_sources = self.get_sources_content(
+            results,
+            use_semantic_captions=False,
+            use_image_citation=False,
+            include_display_filename=overrides.get("_requirements_evidence_matrix") is True,
+        )
 
         extra_info = ExtraInfo(
             DataPoints(text=text_sources),

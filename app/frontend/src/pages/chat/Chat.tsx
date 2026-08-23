@@ -17,14 +17,14 @@ import {
     ChatAppRequest,
     ChatAttachmentInput,
     ChatDocumentAttachment,
+    EvidenceMatrixOptions,
     ResponseMessage,
     VectorFields,
     GPT4VInput,
     SpeechConfig,
     createFeedbackApi,
     deleteFeedbackApi,
-    get_data_group_by_team,
-    AuthProfile,
+    getEffectiveAccess,
     get_agent_by_team,
     getFixedPromptsApi,
     getTemporaryCitationFilePath
@@ -83,7 +83,7 @@ import CheckIcon from "@mui/icons-material/Check";
 import Checkbox from "@mui/material/Checkbox";
 import { AuthStorage } from "../../utill/authStorage";
 import { hasPermission } from "../../utill/hasPermission";
-import { Agent, DataGroup, LLMProfile, TeamProfile, User } from "../../api/models";
+import { Agent, EffectiveDataGroup, LLMProfile, TeamProfile, User } from "../../api/models";
 import { Storage } from "../../utill/storage";
 import { STORAGE_KEYS } from "../../utill/storageKeys";
 import { useNotification } from "../../utill/NotificationProvider";
@@ -213,7 +213,8 @@ const Chat = () => {
     const [draftScopes, setDraftScopes] = useState<DataScope[]>(["global"]);
     const [draftDataGroupIds, setDraftDataGroupIds] = useState<string[]>([]);
 
-    const [dataGroups, setDataGroups] = useState<DataGroup[]>([]);
+    const [dataGroups, setDataGroups] = useState<EffectiveDataGroup[]>([]);
+    const [effectiveAccessError, setEffectiveAccessError] = useState("");
 
     const [selectedDataGroupIds, setSelectedDataGroupIds] = useState<string[]>([]);
     const [groupKeyword, setGroupKeyword] = useState("");
@@ -295,7 +296,8 @@ const Chat = () => {
             const prefs = prefsMap?.[agentId];
 
             const scopes = prefs?.selectedScopes ?? [];
-            const groups = prefs?.selectedDataGroupIds ?? [];
+            const availableGroupIds = new Set(dataGroups.map(group => group._id));
+            const groups = (prefs?.selectedDataGroupIds ?? []).filter(groupId => availableGroupIds.has(groupId));
 
             return {
                 agentId,
@@ -618,7 +620,8 @@ const Chat = () => {
         question: string,
         api_result?: any,
         attachments: ChatAttachmentInput[] = [],
-        documents: ChatDocumentAttachment[] = []
+        documents: ChatDocumentAttachment[] = [],
+        evidenceOptions?: EvidenceMatrixOptions
     ) => {
         lastQuestionRef.current = question;
 
@@ -672,6 +675,12 @@ const Chat = () => {
                 messages: [...messages, { content: question, role: "user" }],
                 ...(attachments.length ? { attachments } : {}),
                 ...(documents.length ? { document_attachment_ids: documents.map(document => document.id) } : {}),
+                ...(evidenceOptions?.evidenceMatrix
+                    ? {
+                          evidence_matrix: true,
+                          attachment_evidence_scope: evidenceOptions.attachmentEvidenceScope
+                      }
+                    : {}),
                 conversation_id: conversationIdRef.current,
                 context: {
                     overrides: {
@@ -1274,19 +1283,13 @@ const Chat = () => {
             const teamId = team?._id;
             if (!teamId) return;
 
-            const authProfile = Storage.get(STORAGE_KEYS.AUTH_PROFILE) as AuthProfile;
-            const user_id = authProfile?.user?._id ?? null;
-
-            const list = await get_data_group_by_team(teamId, token);
-            const filtered = (list ?? []).filter((group: any) => {
-                if (!group.user_id || group.user_id.length === 0) return true;
-                return group.user_id.some((u: any) => u?._id === user_id);
-            });
-
-            setDataGroups(filtered);
+            const access = await getEffectiveAccess(teamId, token);
+            setDataGroups(access.data_groups);
+            setEffectiveAccessError("");
         } catch (err) {
             console.error("load data groups failed:", err);
             setDataGroups([]);
+            setEffectiveAccessError(err instanceof Error ? err.message : "Unable to load effective data access.");
         } finally {
             setIsGroupsLoading(false);
         }
@@ -1325,50 +1328,6 @@ const Chat = () => {
     }, [loggedIn, isUserLoading]);
 
     useEffect(() => {
-        const loadDataGroups = async () => {
-            // ✅ กัน StrictMode dev ยิงซ้ำ
-            // if (didLoadGroupsRef.current) return;
-            // didLoadGroupsRef.current = true;
-            if (!loggedIn) return;
-
-            setIsGroupsLoading(true);
-            try {
-                const token = await getToken(instance);
-                if (!token) return;
-
-                const activeTeams = Storage.get(STORAGE_KEYS.Active_Teams) as Record<string, any> | null;
-                if (!activeTeams) return;
-
-                const username = (await getUsername(instance)) ?? "";
-                if (!username) return;
-
-                const team = activeTeams[username];
-                const teamId = team?._id;
-                if (!teamId) return;
-
-                const authProfile = Storage.get(STORAGE_KEYS.AUTH_PROFILE) as AuthProfile;
-                const user_id = authProfile ? (authProfile?.user ? authProfile?.user._id : null) : null;
-
-                const list = await get_data_group_by_team(teamId, token);
-                const filtered = (list ?? []).filter((group: any) => {
-                    if (!group.user_id || group.user_id.length === 0) return true;
-                    return group.user_id.some((u: any) => u?._id === user_id);
-                });
-
-                setDataGroups(filtered);
-                // setDataGroups(list ?? []);
-            } catch (err) {
-                console.error("load data groups failed:", err);
-                setDataGroups([]);
-            } finally {
-                setIsGroupsLoading(false);
-            }
-        };
-
-        loadDataGroups();
-    }, [loggedIn, instance]);
-
-    useEffect(() => {
         const ensureDefaultGroupPref = async () => {
             if (!selectedAgent?._id) return;
             if (dataGroups.length === 0) return;
@@ -1395,6 +1354,13 @@ const Chat = () => {
 
         ensureDefaultGroupPref();
     }, [dataGroups, selectedAgent?._id]);
+
+    useEffect(() => {
+        if (isGroupsLoading) return;
+        const availableIds = new Set(dataGroups.map(group => group._id));
+        setSelectedDataGroupIds(current => current.filter(id => availableIds.has(id)));
+        setDraftDataGroupIds(current => current.filter(id => availableIds.has(id)));
+    }, [dataGroups, isGroupsLoading]);
 
     useEffect(() => {
         if (!loggedIn || isUserLoading) return;
@@ -1603,7 +1569,9 @@ const Chat = () => {
                                 clearOnSend
                                 placeholder={t("defaultExamples.placeholder")}
                                 disabled={isLoading}
-                                onSend={(question, attachments, documents) => makeApiRequest(question, undefined, attachments, documents)}
+                                onSend={(question, attachments, documents, evidenceOptions) =>
+                                    makeApiRequest(question, undefined, attachments, documents, evidenceOptions)
+                                }
                                 conversationId={conversationIdRef.current}
                                 agentId={selectedAgent?._id}
                                 documentsAvailable={documentsAvailable}
@@ -2051,6 +2019,14 @@ const Chat = () => {
                                             <Typography variant="subtitle2">Data Groups</Typography>
                                         </MenuItem>
 
+                                        {effectiveAccessError && (
+                                            <Box px={2} pb={1}>
+                                                <Typography variant="caption" color="error">
+                                                    {effectiveAccessError}
+                                                </Typography>
+                                            </Box>
+                                        )}
+
                                         <Box px={1} pb={1}>
                                             <TextField
                                                 size="small"
@@ -2080,7 +2056,10 @@ const Chat = () => {
                                                             <ListItemIcon>
                                                                 <Checkbox checked={checked} />
                                                             </ListItemIcon>
-                                                            <ListItemText primary={group.name} />
+                                                            <ListItemText
+                                                                primary={group.name}
+                                                                secondary={group.access_mode === "team" ? "Available to entire team" : "Assigned to selected users"}
+                                                            />
                                                         </MenuItem>
                                                     );
                                                 })}

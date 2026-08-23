@@ -118,6 +118,8 @@ export type ChatAppRequest = {
     messages: ResponseMessage[];
     attachments?: ChatAttachmentInput[];
     document_attachment_ids?: string[];
+    evidence_matrix?: boolean;
+    attachment_evidence_scope?: AttachmentEvidenceScope;
     conversation_id: string;
     context?: ChatAppRequestContext;
     session_state: any;
@@ -128,6 +130,13 @@ export type ChatAppRequest = {
     data_groups_id?: string[] | null;
     selected_scopes?: any[] | null;
     api_result?: any;
+};
+
+export type AttachmentEvidenceScope = "uploaded_only" | "knowledge_only" | "both";
+
+export type EvidenceMatrixOptions = {
+    evidenceMatrix: boolean;
+    attachmentEvidenceScope: AttachmentEvidenceScope;
 };
 
 export type Config = {
@@ -459,6 +468,24 @@ export interface DataGroup {
     create_at?: string;
     delete_at?: string;
     user_id: string[];
+    access_mode?: "team" | "selected_users";
+}
+
+export interface EffectiveDataGroup {
+    _id: string;
+    name: string;
+    access_mode: "team" | "selected_users";
+    member_count: number;
+}
+
+export interface EffectiveAccessResponse {
+    user_id: string;
+    team: { _id: string; name: string };
+    data_groups: EffectiveDataGroup[];
+    selected_data_group_ids: string[];
+    selected_scopes: Array<"global" | "personal">;
+    agent_id?: string | null;
+    is_system_admin: boolean;
 }
 
 export interface DataGroupDisplay {
@@ -468,6 +495,7 @@ export interface DataGroupDisplay {
     create_at?: string;
     delete_at?: string;
     user_id: User[];
+    access_mode: "team" | "selected_users";
 }
 
 export interface DataGroupWithView {

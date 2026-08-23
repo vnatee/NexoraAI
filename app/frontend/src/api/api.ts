@@ -25,7 +25,8 @@ import {
     DatabaseConnection,
     MailEmailConfig,
     IngestionJob,
-    ChatDocumentAttachment
+    ChatDocumentAttachment,
+    EffectiveAccessResponse
 } from "./models";
 import { useLogin, getToken, isUsingAppServicesLogin } from "../authConfig";
 
@@ -1408,37 +1409,72 @@ export async function get_data_group_by_team(team_id: string, idToken: string): 
     return await dataResponse.result;
 }
 
-export async function create_data_group(team_id: string, data_group_name: string, users_id: string[], idToken: string): Promise<any> {
+export async function getEffectiveAccess(
+    teamId: string,
+    idToken: string,
+    agentId?: string | null,
+    dataGroupIds?: string[],
+    selectedScopes?: string[]
+): Promise<EffectiveAccessResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/effective-access", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+            team_id: teamId,
+            ...(agentId ? { agent_id: agentId } : {}),
+            ...(dataGroupIds ? { data_groups_id: dataGroupIds } : {}),
+            ...(selectedScopes ? { selected_scopes: selectedScopes } : {})
+        })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(payload?.error || `Unable to resolve effective access (${response.status})`);
+    }
+    return payload as EffectiveAccessResponse;
+}
+
+export async function create_data_group(
+    team_id: string,
+    data_group_name: string,
+    users_id: string[],
+    access_mode: "team" | "selected_users",
+    idToken: string
+): Promise<any> {
     const headers = await getHeaders(idToken);
 
     const response = await fetch("/create_data_group", {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ team_id, data_group_name, users_id })
+        body: JSON.stringify({ team_id, data_group_name, users_id, access_mode })
     });
 
+    const dataResponse: any = await response.json().catch(() => ({}));
     if (!response.ok) {
-        throw new Error(`create data group failed: ${response.statusText}`);
+        throw new Error(dataResponse?.error || `create data group failed: ${response.statusText}`);
     }
-
-    const dataResponse: any = await response.json();
     return await dataResponse;
 }
 
-export async function edit_data_group(data_group_id: string, data_group_name: string, users_id: string[], idToken: string): Promise<any> {
+export async function edit_data_group(
+    data_group_id: string,
+    data_group_name: string,
+    users_id: string[],
+    access_mode: "team" | "selected_users",
+    idToken: string
+): Promise<any> {
     const headers = await getHeaders(idToken);
 
     const response = await fetch("/edit_data_group", {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ data_group_id, data_group_name, users_id })
+        body: JSON.stringify({ data_group_id, data_group_name, users_id, access_mode })
     });
 
+    const dataResponse: any = await response.json().catch(() => ({}));
     if (!response.ok) {
-        throw new Error(`edit data group failed: ${response.statusText}`);
+        throw new Error(dataResponse?.error || `edit data group failed: ${response.statusText}`);
     }
-
-    const dataResponse: any = await response.json();
     return await dataResponse;
 }
 

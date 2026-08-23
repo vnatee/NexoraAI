@@ -22,9 +22,7 @@ import CancelIcon from "@mui/icons-material/Cancel";
 import { User, TeamProfile } from "../../../api/models";
 import { useMsal } from "@azure/msal-react";
 import { get_users_by_team_id, delete_team_user, approve_users, reject_users } from "../../../api/api";
-import { Storage } from "../../../utill/storage";
-import { STORAGE_KEYS } from "../../../utill/storageKeys";
-import { getToken, getUsername } from "../../../authConfig";
+import { getToken } from "../../../authConfig";
 import Skeleton from "@mui/material/Skeleton";
 import { useNotification } from "../../../utill/NotificationProvider";
 
@@ -39,7 +37,6 @@ interface TeamUserManagementPageProps {
 ========================================================= */
 export function TeamUserManagementPage({ team }: TeamUserManagementPageProps) {
     const { instance: msalInstance } = useMsal();
-    const { instance } = useMsal();
     const { showNotification } = useNotification();
 
     const [users, setUsers] = useState<User[]>([]);
@@ -557,13 +554,14 @@ function RowContainer({ children }: { children: React.ReactNode }) {
 }
 
 function UserInfo({ user }: { user: User }) {
+    const email = user.email || user.ad_email || "No email";
     return (
         <Box>
             <Typography>
                 {user.first_name} {user.last_name}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-                {user.email}
+                {email}{user.employee_id ? ` · Employee ID: ${user.employee_id}` : ""}
             </Typography>
         </Box>
     );

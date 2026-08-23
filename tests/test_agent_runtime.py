@@ -254,6 +254,45 @@ async def test_rag_is_an_on_demand_permission_aware_tool():
 
 
 @pytest.mark.asyncio
+async def test_evidence_matrix_rag_exposes_only_source_basename_for_display():
+    approach = MagicMock()
+    approach.build_filter.return_value = None
+    approach.search = AsyncMock(
+        return_value=[
+            Document(
+                id="1",
+                content="Evidence",
+                sourcefile="team-uuid/ProductBrief.pdf",
+                sourcepage="team-uuid/ProductBrief.pdf#page=2",
+            )
+        ]
+    )
+    approach.get_sources_content.return_value = [
+        "team-uuid/ProductBrief.pdf#page=2: Display filename: ProductBrief.pdf. Content: Evidence"
+    ]
+    registry = ToolRegistry(
+        ToolRuntimeContext(agent_id="agent-1", auth_claims={"oid": "user-1"})
+    )
+    overrides = {
+        "retrieval_mode": "text",
+        "top": 3,
+        "_requirements_evidence_matrix": True,
+    }
+    register_rag_tool(registry, approach, overrides)
+
+    output = json.loads(await registry.execute("search_knowledge", {"query": "requirement"}))
+
+    assert output["results"][0]["sourcefile"] == "ProductBrief.pdf"
+    assert output["results"][0]["sourcepage"] == "team-uuid/ProductBrief.pdf#page=2"
+    approach.get_sources_content.assert_called_once_with(
+        approach.search.return_value,
+        use_semantic_captions=False,
+        use_image_citation=False,
+        include_display_filename=True,
+    )
+
+
+@pytest.mark.asyncio
 async def test_rag_can_search_only_scoped_temporary_attachments():
     attachment_id = "9aee2161-d67f-45a1-b4a5-7d2042dd1c26"
     conversation_id = "00ec4e94-1e98-4bc5-8a7a-982f33c6b7af"

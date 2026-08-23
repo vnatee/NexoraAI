@@ -35,6 +35,7 @@ from openai.types.chat import (
 
 from approaches.promptmanager import PromptManager
 from core.authentication import AuthenticationHelper
+from core.attachment_retrieval import source_display_filename
 from core.llm_vendors import apply_llm_vendor_chat_policy
 from prepdocslib.embeddings import OpenAIEmbeddings
 
@@ -323,17 +324,28 @@ class Approach(ABC):
         return response, results
 
     def get_sources_content(
-        self, results: list[Document], use_semantic_captions: bool, use_image_citation: bool
+        self,
+        results: list[Document],
+        use_semantic_captions: bool,
+        use_image_citation: bool,
+        include_display_filename: bool = False,
     ) -> list[str]:
 
         def nonewlines(s: str) -> str:
             return s.replace("\n", " ").replace("\r", " ")
 
+        def format_source(doc: Document, citation: str, content: str) -> str:
+            if include_display_filename:
+                filename = source_display_filename(doc.sourcefile or doc.sourcepage)
+                return f"{citation}: Display filename: {filename}. Content: {content}"
+            return f"{citation}: {content}"
+
         if use_semantic_captions:
             final_result = []
             for doc in results:
                 source = str(doc.sourcefile).replace(str(doc.sourcefile).split("/")[-1],"") + str(doc.sourcepage)
-                final_result.append((self.get_citation((source), use_image_citation)) + ": " + nonewlines(" . ".join([cast(str, c.text) for c in (doc.captions or [])])))
+                citation = self.get_citation(source, use_image_citation)
+                final_result.append(format_source(doc, citation, nonewlines(" . ".join([cast(str, c.text) for c in (doc.captions or [])]))))
             return final_result
             # return [
             #     (self.get_citation((doc.sourcepage or ""), use_image_citation))
@@ -345,7 +357,8 @@ class Approach(ABC):
             final_result = []
             for doc in results:
                 source = str(doc.sourcefile).replace(str(doc.sourcefile).split("/")[-1],"") + str(doc.sourcepage)
-                final_result.append((self.get_citation((source), use_image_citation)) + ": " + nonewlines(doc.content or ""))
+                citation = self.get_citation(source, use_image_citation)
+                final_result.append(format_source(doc, citation, nonewlines(doc.content or "")))
             return final_result
             # return [
             #     (self.get_citation((doc.sourcepage or ""), use_image_citation)) + ": " + nonewlines(doc.content or "")

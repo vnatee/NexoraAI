@@ -9,7 +9,7 @@ import { SpeechInput } from "./SpeechInput";
 import { LoginContext } from "../../loginContext";
 import { requireLogin } from "../../authConfig";
 import { deleteChatDocumentApi, listChatDocumentsApi, uploadChatDocumentApi } from "../../api/api";
-import { ChatAttachmentInput, ChatDocumentAttachment } from "../../api/models";
+import { ChatAttachmentInput, ChatDocumentAttachment, EvidenceMatrixOptions } from "../../api/models";
 
 const ACCEPTED_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 const MAX_IMAGE_COUNT = 4;
@@ -32,7 +32,12 @@ type DocumentDraft = {
 };
 
 interface Props {
-    onSend: (question: string, attachments?: ChatAttachmentInput[], documents?: ChatDocumentAttachment[]) => void | Promise<void>;
+    onSend: (
+        question: string,
+        attachments?: ChatAttachmentInput[],
+        documents?: ChatDocumentAttachment[],
+        evidenceOptions?: EvidenceMatrixOptions
+    ) => void | Promise<void>;
     disabled: boolean;
     initQuestion?: string;
     placeholder?: string;
@@ -72,6 +77,8 @@ export const QuestionInput = ({
     const [documents, setDocuments] = useState<DocumentDraft[]>([]);
     const [attachmentError, setAttachmentError] = useState("");
     const [isPreparingDocuments, setIsPreparingDocuments] = useState(false);
+    const [evidenceMatrix, setEvidenceMatrix] = useState(false);
+    const [attachmentEvidenceScope, setAttachmentEvidenceScope] = useState<EvidenceMatrixOptions["attachmentEvidenceScope"]>("knowledge_only");
     const fileInputRef = useRef<HTMLInputElement>(null);
     const conversationIdRef = useRef(conversationId);
 
@@ -82,6 +89,7 @@ export const QuestionInput = ({
     useEffect(() => {
         conversationIdRef.current = conversationId;
         setDocuments([]);
+        setEvidenceMatrix(false);
         setAttachmentError("");
     }, [conversationId]);
 
@@ -164,9 +172,13 @@ export const QuestionInput = ({
         try {
             const readyDocuments = await prepareDocuments();
             const fallback = readyDocuments.length ? "Please analyze the attached document(s)." : "Please analyze the attached image(s).";
-            const sendResult = onSend(question.trim() || fallback, attachments, readyDocuments);
+            const sendResult = onSend(question.trim() || fallback, attachments, readyDocuments, {
+                evidenceMatrix,
+                attachmentEvidenceScope
+            });
             setAttachments([]);
             setDocuments([]);
+            setEvidenceMatrix(false);
             if (clearOnSend) setQuestion("");
             await sendResult;
         } catch (error) {
@@ -326,8 +338,9 @@ export const QuestionInput = ({
                 </div>
             )}
             {documents.length > 0 && (
-                <div className={styles.documentList} aria-label="Document attachments">
-                    {documents.map(document => (
+                <>
+                    <div className={styles.documentList} aria-label="Document attachments">
+                        {documents.map(document => (
                         <div className={styles.documentPreview} key={document.uploadId}>
                             <Document24Regular />
                             <div className={styles.documentDetails}>
@@ -359,8 +372,35 @@ export const QuestionInput = ({
                                 }}
                             />
                         </div>
-                    ))}
-                </div>
+                        ))}
+                    </div>
+                    <div className={styles.evidenceControls}>
+                        <Button
+                            appearance={evidenceMatrix ? "primary" : "outline"}
+                            disabled={disabled || isPreparingDocuments}
+                            onClick={() => setEvidenceMatrix(value => !value)}
+                        >
+                            Evidence matrix
+                        </Button>
+                        {evidenceMatrix && (
+                            <label className={styles.evidenceScopeLabel}>
+                                Evidence from
+                                <select
+                                    aria-label="Evidence source scope"
+                                    value={attachmentEvidenceScope}
+                                    disabled={disabled || isPreparingDocuments}
+                                    onChange={event =>
+                                        setAttachmentEvidenceScope(event.target.value as EvidenceMatrixOptions["attachmentEvidenceScope"])
+                                    }
+                                >
+                                    <option value="knowledge_only">Knowledge only (recommended)</option>
+                                    <option value="uploaded_only">Attached files only</option>
+                                    <option value="both">Attached files + Knowledge</option>
+                                </select>
+                            </label>
+                        )}
+                    </div>
+                </>
             )}
             {attachmentError && <div className={styles.attachmentError} role="alert">{attachmentError}</div>}
             <Stack horizontal className={styles.questionInputContainer} style={{ background: disableRequiredAccessControl ? "#f2f2f2" : "white" }}>

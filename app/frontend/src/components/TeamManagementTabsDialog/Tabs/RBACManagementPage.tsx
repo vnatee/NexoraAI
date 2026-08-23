@@ -31,45 +31,26 @@ import {
     get_team_users,
     create_edit_user_permissions,
     User,
-    get_user_permissions
+    get_user_permissions,
+    TeamProfile
 } from "../../../api";
 
-import { getToken, getUsername } from "../../../authConfig";
-import { STORAGE_KEYS } from "../../../utill/storageKeys";
-import { Storage } from "../../../utill/storage";
+import { getToken } from "../../../authConfig";
 import { useNotification } from "../../../utill/NotificationProvider";
 
 /* =========================================================
    PAGE
 ========================================================= */
 
-export function RBACManagementPage() {
+export function RBACManagementPage({ team }: { team: TeamProfile | null }) {
     const { instance } = useMsal();
 
     const [tab, setTab] = useState(0);
-    const [team, setTeam] = useState<{ _id: string } | null>(null);
     const [userTabEnabled, setUserTabEnabled] = useState(false);
 
     // ✅ permissions from API
     const [permissions, setPermissions] = useState<Permission[]>([]);
     const [permLoading, setPermLoading] = useState(false);
-
-    /* =========================
-       LOAD ACTIVE TEAM
-    ========================= */
-    useEffect(() => {
-        const loadTeam = async () => {
-            const activeTeams = Storage.get<Record<string, any>>(STORAGE_KEYS.Active_Teams);
-            if (!activeTeams) return;
-
-            const username = await getUsername(instance);
-            if (!username) return;
-
-            setTeam(activeTeams[username] ?? null);
-        };
-
-        loadTeam();
-    }, [instance]);
 
     /* =========================
        LOAD PERMISSIONS

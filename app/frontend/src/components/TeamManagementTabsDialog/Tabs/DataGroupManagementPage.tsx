@@ -13,7 +13,14 @@ import {
     DialogActions,
     TextField,
     Checkbox,
-    Skeleton
+    Skeleton,
+    Alert,
+    Chip,
+    FormControl,
+    FormControlLabel,
+    FormLabel,
+    Radio,
+    RadioGroup
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import VisibilityIcon from "@mui/icons-material/Visibility";
@@ -21,19 +28,25 @@ import GroupAddIcon from "@mui/icons-material/GroupAdd";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { useMsal } from "@azure/msal-react";
 
-import { get_data_group_by_team, create_data_group, edit_data_group, delete_data_group, get_users_by_team_id, DataGroupDisplay, User } from "../../../api";
+import {
+    get_data_group_by_team,
+    create_data_group,
+    edit_data_group,
+    delete_data_group,
+    get_users_by_team_id,
+    DataGroupDisplay,
+    TeamProfile,
+    User
+} from "../../../api";
 
-import { getToken, getUsername } from "../../../authConfig";
-import { STORAGE_KEYS } from "../../../utill/storageKeys";
-import { Storage } from "../../../utill/storage";
+import { getToken } from "../../../authConfig";
 import { useNotification } from "../../../utill/NotificationProvider";
 
 /* =========================================================
    PAGE
 ========================================================= */
-export function DataGroupManagementPage() {
+export function DataGroupManagementPage({ team }: { team: TeamProfile | null }) {
     const { instance } = useMsal();
-    const [team, setTeam] = useState<{ _id: string } | null>(null);
     const [dataGroups, setDataGroups] = useState<DataGroupDisplay[]>([]);
     const [users, setUsers] = useState<User[]>([]);
     const [search, setSearch] = useState("");
@@ -46,23 +59,6 @@ export function DataGroupManagementPage() {
     const [deleteGroup, setDeleteGroup] = useState<DataGroupDisplay | null>(null);
     const [usersLoading, setUsersLoading] = useState(false);
     const { showNotification } = useNotification();
-    /* =========================
-       LOAD ACTIVE TEAM
-    ========================= */
-    useEffect(() => {
-        const loadTeam = async () => {
-            const activeTeams = Storage.get<Record<string, any>>(STORAGE_KEYS.Active_Teams);
-            if (!activeTeams) return;
-
-            const username = await getUsername(instance);
-            if (!username) return;
-
-            setTeam(activeTeams[username] ?? null);
-        };
-
-        loadTeam();
-    }, [instance]);
-
     /* =========================
        LOAD DATA GROUP BY TEAM
     ========================= */
@@ -79,6 +75,7 @@ export function DataGroupManagementPage() {
                 setDataGroups(result ?? []);
             } catch (err) {
                 console.error("load data group failed:", err);
+                showNotification(err instanceof Error ? err.message : "Failed to load data groups", "error");
             } finally {
                 setLoading(false);
             }
@@ -105,9 +102,11 @@ export function DataGroupManagementPage() {
 
                 // ✅ สำคัญ: API response เป็น { users: [] }
                 setUsers(result?.users ?? []);
-                setUsersLoading(false);
             } catch (err) {
                 console.error("load users failed:", err);
+                showNotification(err instanceof Error ? err.message : "Failed to load team members", "error");
+            } finally {
+                setUsersLoading(false);
             }
         };
 
@@ -173,9 +172,13 @@ export function DataGroupManagementPage() {
                                         >
                                             <Box>
                                                 <Typography fontWeight={600}>{dg.name}</Typography>
-                                                <Typography variant="caption" color="text.secondary">
-                                                    Users: {dg.user_id?.length ?? 0}
-                                                </Typography>
+                                                <Stack direction="row" spacing={1} alignItems="center" mt={0.5}>
+                                                    <Chip
+                                                        size="small"
+                                                        color={dg.access_mode === "team" ? "success" : "default"}
+                                                        label={dg.access_mode === "team" ? "Entire team" : `Selected users (${dg.user_id?.length ?? 0})`}
+                                                    />
+                                                </Stack>
                                             </Box>
 
                                             <Box>
@@ -202,8 +205,10 @@ export function DataGroupManagementPage() {
             <NewDataGroupDialog
                 open={openNew}
                 loading={saving}
+                users={users}
+                usersLoading={usersLoading}
                 onClose={() => setOpenNew(false)}
-                onCreate={async (name: string) => {
+                onCreate={async payload => {
                     if (!team?._id) return;
 
                     try {
@@ -211,7 +216,7 @@ export function DataGroupManagementPage() {
                         const token = await getToken(instance);
                         if (!token) return;
 
-                        await create_data_group(team._id, name, [], token);
+                        await create_data_group(team._id, payload.name, payload.users_id, payload.access_mode, token);
 
                         const refreshed = await get_data_group_by_team(team._id, token);
                         setDataGroups(refreshed ?? []);
@@ -219,7 +224,7 @@ export function DataGroupManagementPage() {
                         showNotification("Data group created successfully", "success");
                     } catch (err) {
                         console.error("create data group failed:", err);
-                        showNotification("Failed to create data group", "error");
+                        showNotification(err instanceof Error ? err.message : "Failed to create data group", "error");
                     } finally {
                         setSaving(false);
                     }
@@ -236,7 +241,7 @@ export function DataGroupManagementPage() {
                 loading={saving}
                 usersLoading={usersLoading}
                 onCancel={() => setAssignGroup(null)}
-                onConfirm={async (payload: { name: string; users_id: string[] }) => {
+                onConfirm={async (payload: DataGroupFormPayload) => {
                     if (!assignGroup || !team?._id) return;
 
                     try {
@@ -245,7 +250,7 @@ export function DataGroupManagementPage() {
                         if (!token) return;
 
                         const dataGroupId = assignGroup._id;
-                        await edit_data_group(dataGroupId, payload.name, payload.users_id, token);
+                        await edit_data_group(dataGroupId, payload.name, payload.users_id, payload.access_mode, token);
 
                         const refreshed = await get_data_group_by_team(team._id, token);
                         setDataGroups(refreshed ?? []);
@@ -253,7 +258,7 @@ export function DataGroupManagementPage() {
                         showNotification("Data group updated successfully", "success");
                     } catch (err) {
                         console.error("edit data group failed:", err);
-                        showNotification("Failed to update data group", "error");
+                        showNotification(err instanceof Error ? err.message : "Failed to update data group", "error");
                     } finally {
                         setSaving(false);
                     }
@@ -295,21 +300,140 @@ export function DataGroupManagementPage() {
    DIALOG COMPONENTS
 ========================================================= */
 
+type DataGroupAccessMode = "team" | "selected_users";
+
+type DataGroupFormPayload = {
+    name: string;
+    access_mode: DataGroupAccessMode;
+    users_id: string[];
+};
+
+function userIdentity(user: User): string {
+    const email = user.email || user.ad_email || "No email";
+    return user.employee_id ? `${email} · Employee ID: ${user.employee_id}` : email;
+}
+
+function DataGroupAccessEditor({
+    accessMode,
+    onAccessModeChange,
+    selectedIds,
+    onSelectedIdsChange,
+    users,
+    usersLoading,
+    disabled
+}: {
+    accessMode: DataGroupAccessMode;
+    onAccessModeChange: (mode: DataGroupAccessMode) => void;
+    selectedIds: string[];
+    onSelectedIdsChange: (ids: string[]) => void;
+    users: User[];
+    usersLoading: boolean;
+    disabled: boolean;
+}) {
+    const [userSearch, setUserSearch] = useState("");
+    const filteredUsers = useMemo(() => {
+        const query = userSearch.trim().toLowerCase();
+        if (!query) return users;
+        return users.filter(user =>
+            [user.first_name, user.last_name, user.email, user.ad_email, user.employee_id]
+                .filter(Boolean)
+                .some(value => String(value).toLowerCase().includes(query))
+        );
+    }, [userSearch, users]);
+
+    return (
+        <Stack spacing={2} mt={2}>
+            <Divider />
+            <FormControl disabled={disabled}>
+                <FormLabel>Who can use this data group?</FormLabel>
+                <RadioGroup value={accessMode} onChange={event => onAccessModeChange(event.target.value as DataGroupAccessMode)}>
+                    <FormControlLabel value="team" control={<Radio />} label="Entire team" />
+                    <FormControlLabel value="selected_users" control={<Radio />} label="Selected users only" />
+                </RadioGroup>
+            </FormControl>
+
+            {accessMode === "team" ? (
+                <Alert severity="info">All current and future members of this team can retrieve documents assigned to this data group.</Alert>
+            ) : (
+                <>
+                    <Alert severity={selectedIds.length > 0 ? "info" : "warning"}>
+                        {selectedIds.length > 0 ? `${selectedIds.length} user(s) selected.` : "Select at least one team member."}
+                    </Alert>
+                    <TextField
+                        size="small"
+                        fullWidth
+                        placeholder="Search by name, email, or employee ID..."
+                        value={userSearch}
+                        disabled={disabled}
+                        onChange={event => setUserSearch(event.target.value)}
+                    />
+                    <Typography variant="caption" color="text.secondary">
+                        Showing {filteredUsers.length} of {users.length} team members
+                    </Typography>
+                    <Box sx={{ maxHeight: 300, overflowY: "auto", border: "1px solid", borderColor: "divider", borderRadius: 1, px: 1 }}>
+                        {usersLoading ? (
+                            <UserListSkeleton count={8} />
+                        ) : filteredUsers.length === 0 ? (
+                            <Typography color="text.secondary" sx={{ p: 2 }}>
+                                No matching team members
+                            </Typography>
+                        ) : (
+                            filteredUsers.map(user => (
+                                <Box key={user._id} display="flex" alignItems="center" py={0.5}>
+                                    <Checkbox
+                                        disabled={disabled}
+                                        checked={selectedIds.includes(user._id)}
+                                        onChange={() =>
+                                            onSelectedIdsChange(
+                                                selectedIds.includes(user._id)
+                                                    ? selectedIds.filter(id => id !== user._id)
+                                                    : [...selectedIds, user._id]
+                                            )
+                                        }
+                                    />
+                                    <Box minWidth={0}>
+                                        <Typography noWrap>
+                                            {user.first_name} {user.last_name}
+                                        </Typography>
+                                        <Typography variant="caption" color="text.secondary" noWrap>
+                                            {userIdentity(user)}
+                                        </Typography>
+                                    </Box>
+                                </Box>
+                            ))
+                        )}
+                    </Box>
+                </>
+            )}
+        </Stack>
+    );
+}
+
 function NewDataGroupDialog({
     open,
     loading,
+    users,
+    usersLoading,
     onClose,
     onCreate
 }: {
     open: boolean;
     loading: boolean;
+    users: User[];
+    usersLoading: boolean;
     onClose: () => void;
-    onCreate: (name: string) => Promise<void>;
+    onCreate: (payload: DataGroupFormPayload) => Promise<void>;
 }) {
     const [name, setName] = useState("");
+    const [accessMode, setAccessMode] = useState<DataGroupAccessMode>("team");
+    const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
     useEffect(() => {
-        if (!open) setName("");
+        if (!open) {
+            setName("");
+            setAccessMode("team");
+            setSelectedIds([]);
+        }
     }, [open]);
 
     return (
@@ -317,12 +441,25 @@ function NewDataGroupDialog({
             <DialogTitle>New Data Group</DialogTitle>
             <DialogContent dividers>
                 <TextField label="Data Group Name" fullWidth disabled={loading} value={name} onChange={e => setName(e.target.value)} />
+                <DataGroupAccessEditor
+                    accessMode={accessMode}
+                    onAccessModeChange={setAccessMode}
+                    selectedIds={selectedIds}
+                    onSelectedIdsChange={setSelectedIds}
+                    users={users}
+                    usersLoading={usersLoading}
+                    disabled={loading}
+                />
             </DialogContent>
             <DialogActions>
                 <Button onClick={onClose} disabled={loading}>
                     Cancel
                 </Button>
-                <Button variant="contained" disabled={!name || loading} onClick={() => onCreate(name)}>
+                <Button
+                    variant="contained"
+                    disabled={!name.trim() || loading || (accessMode === "selected_users" && selectedIds.length === 0)}
+                    onClick={() => onCreate({ name: name.trim(), access_mode: accessMode, users_id: accessMode === "team" ? [] : selectedIds })}
+                >
                     {loading ? "Creating..." : "Create"}
                 </Button>
             </DialogActions>
@@ -378,17 +515,20 @@ function ViewDataGroupDialog({ group, onClose }: { group: DataGroupDisplay | nul
         <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
             <DialogTitle>{group.name}</DialogTitle>
             <DialogContent dividers>
-                {(group.user_id?.length ?? 0) === 0 ? (
-                    <Typography color="text.secondary">No users</Typography>
+                {group.access_mode === "team" ? (
+                    <Alert severity="success">Everyone in this team can use this data group.</Alert>
                 ) : (
-                    group.user_id.map((u: User) => (
+                    <Stack spacing={1}>
+                        <Typography variant="subtitle2">Selected users ({group.user_id?.length ?? 0})</Typography>
+                        {group.user_id.map((u: User) => (
                         <Box key={u._id} mb={1}>
                             <Typography>
                                 {u.first_name} {u.last_name}
                             </Typography>
-                            <Typography variant="caption">{u.email}</Typography>
+                            <Typography variant="caption" color="text.secondary">{userIdentity(u)}</Typography>
                         </Box>
-                    ))
+                        ))}
+                    </Stack>
                 )}
             </DialogContent>
             <DialogActions>
@@ -427,45 +567,29 @@ function AssignUserDialog({
     loading: boolean;
     usersLoading: boolean;
     onCancel: () => void;
-    onConfirm: (payload: { name: string; users_id: string[] }) => Promise<void>;
+    onConfirm: (payload: DataGroupFormPayload) => Promise<void>;
 }) {
-    if (!group) return null;
-
     const [name, setName] = useState("");
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
-
-    // ✅ ADD: search
-    const [userSearch, setUserSearch] = useState("");
+    const [accessMode, setAccessMode] = useState<DataGroupAccessMode>("team");
 
     useEffect(() => {
-        // init dialog state
+        if (!group) return;
         setName(group.name);
         setSelectedIds(group.user_id.map(u => u._id));
-
-        // ✅ reset search when open new group
-        setUserSearch("");
+        setAccessMode(group.access_mode ?? (group.user_id.length === 0 ? "team" : "selected_users"));
     }, [group]);
 
-    const originalIds = useMemo(() => group.user_id.map(u => u._id).sort(), [group]);
+    const originalIds = useMemo(() => (group?.user_id ?? []).map(u => u._id).sort(), [group]);
 
     const hasUserChange = JSON.stringify([...selectedIds].sort()) !== JSON.stringify(originalIds);
-    const hasNameChange = name.trim() !== group.name.trim();
-    const hasChange = hasUserChange || hasNameChange;
+    const originalAccessMode = group?.access_mode ?? ((group?.user_id.length ?? 0) === 0 ? "team" : "selected_users");
+    const hasNameChange = name.trim() !== (group?.name ?? "").trim();
+    const hasChange = hasUserChange || hasNameChange || accessMode !== originalAccessMode;
 
     const isDisabled = loading;
 
-    // ✅ ADD: filtered users
-    const filteredUsers = useMemo(() => {
-        const q = userSearch.trim().toLowerCase();
-        if (!q) return users;
-
-        return users.filter(u => {
-            const fullName = `${u.first_name ?? ""} ${u.last_name ?? ""}`.toLowerCase();
-            const email = (u.email ?? "").toLowerCase();
-            const emp = (u.employee_id ?? "").toLowerCase();
-            return fullName.includes(q) || email.includes(q) || emp.includes(q);
-        });
-    }, [users, userSearch]);
+    if (!group) return null;
 
     return (
         <Dialog open onClose={loading ? undefined : onCancel} maxWidth="sm" fullWidth>
@@ -477,78 +601,15 @@ function AssignUserDialog({
                     <TextField label="Data Group Name" fullWidth disabled={isDisabled} value={name} onChange={e => setName(e.target.value)} />
                 </Box>
 
-                <Divider sx={{ mb: 2 }} />
-
-                {/* ✅ ADD: SEARCH USERS */}
-                <TextField
-                    size="small"
-                    fullWidth
-                    placeholder="Search user by name, email, employee id..."
-                    value={userSearch}
+                <DataGroupAccessEditor
+                    accessMode={accessMode}
+                    onAccessModeChange={setAccessMode}
+                    selectedIds={selectedIds}
+                    onSelectedIdsChange={setSelectedIds}
+                    users={users}
+                    usersLoading={usersLoading}
                     disabled={isDisabled}
-                    onChange={e => setUserSearch(e.target.value)}
-                    sx={{ mb: 1 }}
                 />
-
-                {/* ✅ USER COUNT */}
-                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
-                    Showing {filteredUsers.length} of {users.length} users
-                </Typography>
-
-                {/* ✅ SCROLLABLE USER LIST */}
-                <Box
-                    sx={{
-                        maxHeight: 360, // ✅ รองรับ users เยอะ
-                        overflowY: "auto",
-                        border: "1px solid",
-                        borderColor: "divider",
-                        borderRadius: 1,
-                        px: 1
-                    }}
-                >
-                    <Box
-                        sx={{
-                            maxHeight: 360,
-                            overflowY: "auto",
-                            border: "1px solid",
-                            borderColor: "divider",
-                            borderRadius: 1,
-                            px: 1
-                        }}
-                    >
-                        {usersLoading ? (
-                            <UserListSkeleton count={10} />
-                        ) : filteredUsers.length === 0 ? (
-                            <Typography color="text.secondary" sx={{ p: 2 }}>
-                                No users found
-                            </Typography>
-                        ) : (
-                            filteredUsers.map(u => (
-                                <Box key={u._id} display="flex" alignItems="center" py={0.5}>
-                                    <Checkbox
-                                        disabled={isDisabled}
-                                        checked={selectedIds.includes(u._id)}
-                                        onChange={() => setSelectedIds(prev => (prev.includes(u._id) ? prev.filter(id => id !== u._id) : [...prev, u._id]))}
-                                    />
-                                    <Box>
-                                        <Typography>
-                                            {u.first_name} {u.last_name}
-                                        </Typography>
-                                        <Typography variant="caption" color="text.secondary">
-                                            {u.email}
-                                        </Typography>
-                                    </Box>
-                                </Box>
-                            ))
-                        )}
-                    </Box>
-
-                    {filteredUsers.length === 0 && (
-                        <Typography color="text.secondary" sx={{ p: 2 }}>
-                            No users found
-                        </Typography>
-                    )}
-                </Box>
             </DialogContent>
 
             <DialogActions>
@@ -558,8 +619,8 @@ function AssignUserDialog({
 
                 <Button
                     variant="contained"
-                    disabled={!hasChange || isDisabled || !name.trim()}
-                    onClick={() => onConfirm({ name: name.trim(), users_id: selectedIds })}
+                    disabled={!hasChange || isDisabled || !name.trim() || (accessMode === "selected_users" && selectedIds.length === 0)}
+                    onClick={() => onConfirm({ name: name.trim(), access_mode: accessMode, users_id: accessMode === "team" ? [] : selectedIds })}
                 >
                     {loading ? "Saving..." : "Save"}
                 </Button>

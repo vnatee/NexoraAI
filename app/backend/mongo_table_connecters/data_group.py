@@ -5,7 +5,7 @@ from mongo_table_connecters.mongo_connector import get_database
 db = get_database()
 data_groups_collection = db["data_group"]
 
-def insert_data_group(name: str,user_id: list[str]):
+def insert_data_group(name: str,user_id: list[str], access_mode: str = "team"):
     data_group_id = str(uuid.uuid4())
     data_group_data = {
         "_id": data_group_id,         
@@ -13,7 +13,8 @@ def insert_data_group(name: str,user_id: list[str]):
         "update_at": datetime.utcnow(),  
         "delete_at": None,              
         "name": name,                  
-        "user_id": user_id,                          
+        "user_id": user_id,
+        "access_mode": access_mode,
     }
 
     result = data_groups_collection.insert_one(data_group_data)
@@ -31,7 +32,7 @@ def get_all_data_groups_by_user_id(user_id: str):
     data_groups = list(data_groups_collection.find({"user_id": user_id,"delete_at": None}))
     return data_groups
 
-def update_data_group(data_group_id: str, name: str = None,user_id: list[str] = None):
+def update_data_group(data_group_id: str, name: str = None,user_id: list[str] = None, access_mode: str = None):
     update_data = {
         "update_at": datetime.utcnow()
     }
@@ -39,6 +40,8 @@ def update_data_group(data_group_id: str, name: str = None,user_id: list[str] = 
         update_data["name"] = name
     if user_id is not None:
         update_data["user_id"] = user_id
+    if access_mode is not None:
+        update_data["access_mode"] = access_mode
 
     result = data_groups_collection.update_one(
         {"_id": data_group_id}, {"$set": update_data})

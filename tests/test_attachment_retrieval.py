@@ -12,12 +12,15 @@ from core.attachment_retrieval import (
     ATTACHMENT_EVIDENCE_KNOWLEDGE_ONLY,
     ATTACHMENT_EVIDENCE_UPLOADED_ONLY,
     ATTACHMENT_SECURITY_INSTRUCTION,
+    REQUIREMENTS_EVIDENCE_MATRIX_INSTRUCTION,
     AttachmentRetrievalError,
     bounded_attachment_evidence,
     classify_attachment_evidence_scope,
     format_attachment_sources,
     merge_attachment_sources,
+    normalize_attachment_evidence_scope,
     normalize_attachment_ids,
+    source_display_filename,
 )
 from error import error_dict
 
@@ -50,6 +53,19 @@ def _result(text="Requirement text"):
 )
 def test_attachment_evidence_scope_follows_prompt_intent(query, expected):
     assert classify_attachment_evidence_scope(query) == expected
+
+
+def test_explicit_attachment_evidence_scope_overrides_auto_classifier():
+    assert (
+        normalize_attachment_evidence_scope("knowledge_only", query="summarize attachment")
+        == ATTACHMENT_EVIDENCE_KNOWLEDGE_ONLY
+    )
+    assert (
+        normalize_attachment_evidence_scope("auto", query="compare with Knowledge")
+        == ATTACHMENT_EVIDENCE_BOTH
+    )
+    with pytest.raises(AttachmentRetrievalError, match="scope is invalid"):
+        normalize_attachment_evidence_scope("all_data_without_acl", query="hello")
 
 
 def test_attachment_ids_are_uuid_bounded_and_deduplicated():
@@ -87,6 +103,32 @@ def test_structured_attachment_evidence_uses_the_same_result_and_character_budge
 
     assert len(evidence) <= 8
     assert sum(len(citation) + len(text) + 2 for _, citation, text in evidence) <= 12_000
+
+    matrix_evidence = bounded_attachment_evidence(
+        results,
+        max_results=20,
+        max_characters=24_000,
+    )
+    assert len(matrix_evidence) > len(evidence)
+    assert sum(len(citation) + len(text) + 2 for _, citation, text in matrix_evidence) <= 24_000
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("9e2fa6ed-769b-4809-84e8-8c1636c08f2b/ProductBrief.pdf", "ProductBrief.pdf"),
+        (r"team\\folder\\requirements.docx", "requirements.docx"),
+        ("folder/report.pdf#page=7", "report.pdf"),
+    ],
+)
+def test_source_display_filename_hides_storage_paths(source, expected):
+    assert source_display_filename(source) == expected
+
+
+def test_evidence_matrix_keeps_citations_out_of_evidence_column():
+    assert "Evidence column must contain only a short supporting quote" in REQUIREMENTS_EVIDENCE_MATRIX_INSTRUCTION
+    assert "append the required inline [source#page=N] citation" in REQUIREMENTS_EVIDENCE_MATRIX_INSTRUCTION
+    assert "Put only the page number in the Page column" in REQUIREMENTS_EVIDENCE_MATRIX_INSTRUCTION
 
 
 @pytest.mark.asyncio
@@ -128,6 +170,61 @@ async def test_prepare_temporary_retrieval_requires_ready_exact_scope(monkeypatc
         query="What does requirement 12 say?",
         attachment_ids=[ATTACHMENT_ID],
     )
+
+
+@pytest.mark.asyncio
+async def test_evidence_matrix_uses_attachment_as_checklist_and_knowledge_as_default_evidence(monkeypatch):
+    index = AsyncMock()
+    index.search.return_value = [_result("1. Supplier must retain audit logs for 90 days.")]
+    quart_app = Quart(__name__)
+    quart_app.config[app_module.CONFIG_CHAT_ATTACHMENT_INDEX] = index
+    monkeypatch.setattr(
+        app_module,
+        "get_attachment_metadata",
+        lambda attachment_id, **scope: {"status": "ready"},
+    )
+    context = {"conversation_id": CONVERSATION_ID, "overrides": {"prompt_template": "Agent role"}}
+
+    async with quart_app.app_context():
+        await app_module._apply_temporary_attachment_retrieval(
+            {
+                "document_attachment_ids": [ATTACHMENT_ID],
+                "messages": [{"role": "user", "content": "ตรวจข้อกำหนด"}],
+                "evidence_matrix": True,
+            },
+            context,
+            {"oid": "owner-1"},
+        )
+
+    overrides = context["overrides"]
+    assert overrides["_requirements_evidence_matrix"] is True
+    assert overrides["_requirements_attachment_id"] == ATTACHMENT_ID
+    assert overrides["_attachment_evidence_scope"] == ATTACHMENT_EVIDENCE_KNOWLEDGE_ONLY
+    assert overrides["_temporary_attachments_only"] is False
+    assert "Requirement, Status, Explanation" in overrides["prompt_template"]
+    assert "Supplier must retain audit logs" in overrides["_knowledge_search_context"]
+    assert overrides["top"] == 10
+    assert overrides["use_agentic_retrieval"] is False
+    index.search.assert_awaited_once_with(
+        owner_id="owner-1",
+        conversation_id=CONVERSATION_ID,
+        query="ตรวจข้อกำหนด",
+        attachment_ids=[ATTACHMENT_ID],
+        limit=20,
+    )
+
+
+@pytest.mark.asyncio
+async def test_evidence_matrix_requires_attachment():
+    with pytest.raises(AttachmentRetrievalError, match="requires a requirements attachment"):
+        await app_module._apply_temporary_attachment_retrieval(
+            {
+                "messages": [{"role": "user", "content": "analyze requirements"}],
+                "evidence_matrix": True,
+            },
+            {"conversation_id": CONVERSATION_ID, "overrides": {}},
+            {"oid": "owner-1"},
+        )
 
 
 @pytest.mark.asyncio

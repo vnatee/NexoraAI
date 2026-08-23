@@ -33,6 +33,9 @@ def get_team_by_user_id(user_id: str):
     teams = list(teams_collection.find({"user_id": user_id,"delete_at": None}))
     return teams
 
+def get_team_by_data_group_id(data_group_id: str):
+    return teams_collection.find_one({"data_group_id": data_group_id, "delete_at": None})
+
 def update_team(team_id: str, name: str = None,data_group_id: list[str] = None,agent_id: list[str] = None,user_id: list[str] = None,waiting_approve: list[object] = None):
     update_data = {
         "update_at": datetime.utcnow()
