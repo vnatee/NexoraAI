@@ -7,14 +7,16 @@ import { TeamManagement } from "../../TeamManagement/TeamManagement";
 import { hasPermission } from "../../../utill/hasPermission";
 import { TeamProfile, User } from "../../../api/models";
 import { AuthStorage } from "../../../utill/authStorage";
-import { STORAGE_KEYS } from "../../../utill/storageKeys";
-import { Storage } from "../../../utill/storage";
 import { AuthenticationSettingsPage } from "./AuthenticationSettingsPage";
 
-export function ManageUserTabs() {
+interface ManageUserTabsProps {
+    selectedTeam: TeamProfile | null;
+    onTeamCreated?: (team: TeamProfile) => void;
+}
+
+export function ManageUserTabs({ selectedTeam, onTeamCreated }: ManageUserTabsProps) {
     const [tab, setTab] = useState(0);
     const [userData, setUserData] = useState<User | null>(null);
-    const [selectTeamData, setSelectTeamData] = useState<TeamProfile | null>(null);
     const [sysPers, setSysPers] = useState<string[] | null>(null);
 
     const getUserData = () => {
@@ -24,14 +26,8 @@ export function ManageUserTabs() {
         setSysPers(sys_permissions);
     };
 
-    const getCurrentTeam = () => {
-        let selectTeam = Storage.get<TeamProfile>(STORAGE_KEYS.SELECT_TEAM) ?? null;
-        setSelectTeamData(selectTeam);
-    };
-
     useEffect(() => {
         getUserData();
-        getCurrentTeam();
     }, []);
 
     const tabs = [];
@@ -39,7 +35,7 @@ export function ManageUserTabs() {
     if (
         hasPermission({
             is_sys_admin: userData?.is_sys_admin ?? false,
-            permissions: selectTeamData?.permissions ?? [],
+            permissions: selectedTeam?.permissions ?? [],
             sys_permissions: sysPers ? sysPers : [],
             requiredPermissions: ["Manage users"]
         })
@@ -65,14 +61,14 @@ export function ManageUserTabs() {
     if (
         hasPermission({
             is_sys_admin: userData?.is_sys_admin ?? false,
-            permissions: selectTeamData?.permissions ?? [],
+            permissions: selectedTeam?.permissions ?? [],
             sys_permissions: sysPers ? sysPers : [],
             requiredPermissions: ["Manage teams"]
         })
     ) {
         tabs.push({
             label: "Team Management",
-            content: <TeamManagement />
+            content: <TeamManagement onTeamCreated={onTeamCreated} />
         });
     }
 

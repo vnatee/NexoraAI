@@ -646,6 +646,57 @@ A production malware scanner remains pending.
 
 See `docs/local-authentication.md`.
 
+### Local MongoDB deployment
+
+- `docker-compose.local-mongodb.yml` runs the metadata/control-plane database
+  on MongoDB 8 by default without changing the existing PyMongo connector.
+  `MONGO_URI`/`MONGO_DB_NAME` select local MongoDB; the legacy
+  username/password/SRV environment path remains available for Azure Cosmos DB
+  Mongo-compatible deployments.
+- MongoDB is published only on host loopback, has a health check, restarts
+  unless stopped, and stores `/data/db` in the `nexora_mongodb_data` named
+  volume. The checked-in Compose file contains no credentials and requires root
+  and application credentials from an ignored environment file.
+- First-volume initialization creates a database-scoped `readWrite`
+  application user. NexoraAI does not connect as the root user. Initialization
+  scripts do not rerun for an existing volume, so changing the environment file
+  alone does not rotate database credentials.
+- `docs/local-mongodb.env.example` and `docs/local-mongodb.md` document startup,
+  host-backend configuration, persistence checks, safe shutdown, credential
+  rotation boundaries, and the fact that Cosmos-to-local migration is not
+  automatic.
+- The first local smoke test exposed a new-Team state gap: Team creation
+  succeeded, but Data access still received a null previous Current Team and
+  disabled **New Data Group**. Team creation now returns the created Team,
+  includes the creator as a member, selects/persists it as Current Team, updates
+  the account menu, and opens Data access immediately for a system
+  administrator. Backend Data Group permission enforcement is unchanged.
+- Switching from Cosmos-compatible metadata to local MongoDB can leave an old
+  Team ID in browser `Active_Teams` storage. Chat and Ask now validate that
+  saved ID against the authenticated user's current Team list before loading
+  Agents, effective access, or Data Groups. A missing Team is replaced with the
+  first currently accessible Team (or cleared when none is available), and the
+  repaired selection is persisted. This prevents Data Group creation from
+  submitting a stale Team ID and returning `Team not found` without requiring a
+  manual browser-storage reset.
+- Quart's implicit 16 MiB request ceiling caused otherwise valid Team uploads
+  to return HTTP 413 while the Portal button remained busy. The application now
+  applies a configurable `MAX_UPLOAD_SIZE_BYTES` hard request limit (100 MiB by
+  default), returns a JSON 413 explanation, exposes the limit to the Portal,
+  blocks oversized Team selections before upload, displays the actual server
+  error, and always clears the upload spinner immediately. Deployment ingress
+  limits must be configured to the same or a larger value.
+- Team and Global Knowledge upload drop zones now support keyboard/click file
+  browsing as well as drag-and-drop. Each has explicit **Browse files** and
+  **Select folder** actions; folder selection preserves browser-provided
+  relative paths, and duplicate file/path selections are ignored. Directory
+  browsing uses the Chromium-supported `webkitdirectory` input capability.
+
+This slice moves application metadata, identities, authorization configuration,
+jobs, and managed integration settings to an optional local database. Azure AI
+Search, Knowledge Blob storage, and the separate optional Cosmos-native Chat
+History feature are not replaced by it.
+
 ## Other next work
 
 ### Near-term document work
@@ -659,13 +710,12 @@ See `docs/local-authentication.md`.
 
 ### Platform roadmap
 
-- **Immediate next slice:** manually smoke-test Local-only and hybrid
-  Local+Entra login against a real MongoDB deployment, including bootstrap,
-  restart persistence, lockout, password reset/session revocation, managed
-  Entra save/reload, self-profile editing/password change, and Team/Data Group
-  ACLs. Then design verified-channel forgotten-password recovery and decide
+- **Immediate next slice:** validate the new local MongoDB Compose service and
+  application persistence smoke test, then introduce provider interfaces and
+  local implementations for Knowledge object storage, vector search/RAG, and
+  embeddings. Design verified-channel forgotten-password recovery and decide
   whether production deployments should move the local bearer from
-  `sessionStorage` to an HttpOnly cookie/BFF flow.
+  `sessionStorage` to an HttpOnly cookie/BFF flow before production hardening.
 - Provider interfaces and local implementations for object storage, vector
   search/RAG, and embeddings. `APP_RUNTIME_MODE=local` is still partial; search
   and storage remain Azure-dependent.
@@ -698,7 +748,9 @@ The guardrail/API/dashboard discussion order is documented in
   configured yet.
 - **Local mode:** local authentication now has a functional first slice, but
   vector search/RAG, Knowledge object storage, and deployment packaging remain
-  Azure-dependent; this is not yet a fully local product.
+  Azure-dependent. A MongoDB-only Compose slice now provides a loopback-bound,
+  persistent local metadata/control-plane database with separate root and
+  database-scoped application users; this is not yet a fully local product.
 - **Tool-capability probes:** detection is a live request and can consume a small
   number of tokens per model. Rate limits or ambiguous provider errors produce
   `unknown` rather than incorrectly disabling tools. Re-test after changing a
@@ -772,10 +824,14 @@ The product owner manually verified the account-menu full-name display,
 self-service profile editing, and Local current-password change flow on
 2026-08-23.
 
+The product owner also confirmed the Local-only and hybrid Local+Entra
+authentication acceptance flow, including the relevant access-control behavior,
+on 2026-08-23.
+
 Latest service-free backend regression on 2026-08-23:
 
 ```text
-647 passed, 1 deselected
+661 passed, 1 deselected
 ```
 
 Command:
@@ -795,6 +851,7 @@ Latest focused effective-access and authentication-filter regression:
 
 ```text
 45 passed
+```
 
 Latest focused local/Entra authentication, password/session, effective-access,
 profile-boundary, and usage validation:
@@ -803,11 +860,13 @@ profile-boundary, and usage validation:
 54 passed
 ```
 
-The current profile slice also passed the memory-safe TypeScript/production
-build. A new full service-free run was started after this slice and showed no
-failures while progressing, but was manually stopped because legacy tests were
-still running after an unusually long wait; do not treat that interrupted run
-as a replacement for the last completed `647 passed, 1 deselected` baseline.
+The current profile, Team-state, upload-limit, and local MongoDB slices also
+passed the memory-safe TypeScript/production build. Focused application config,
+effective-access, local MongoDB connector/Compose contract, and
+local-authentication validation passed:
+
+```text
+54 passed
 ```
 
 An unfiltered `.venv/bin/pytest -q` run reached `617 passed` but the single
@@ -882,6 +941,11 @@ Compose schemas passed:
 ```bash
 docker compose -f docker-compose.ocr.yml config
 docker compose -f docker-compose.ocr.yml --profile paddleocr config
+NEXORA_MONGO_ROOT_USERNAME=test-root \
+NEXORA_MONGO_ROOT_PASSWORD=test-root-password \
+NEXORA_MONGO_APP_USERNAME=test-app \
+NEXORA_MONGO_APP_PASSWORD=test-app-password \
+docker compose -f docker-compose.local-mongodb.yml config
 ```
 
 Known non-blocking warnings:
@@ -895,6 +959,14 @@ Known non-blocking warnings:
 
 ## Manual smoke-test checklist before the next checkpoint
 
+- Follow `docs/local-mongodb.md` with two newly generated passwords. Confirm the
+  Compose service becomes healthy and the database-scoped application user can
+  ping `nexora`. Start the backend with that `MONGO_URI`, create a test Team and
+  Data Group, restart the backend and MongoDB container without deleting the
+  named volume, and confirm the records remain. Then change a Local password
+  and exercise one document-processing restart to verify sessions and job
+  recovery use the local database. Do not run `down --volumes` after creating
+  data that must be retained.
 - Start with `LOCAL_AUTH_ENABLED=true`, a stable
   `APP_DATA_ENCRYPTION_KEY`, and a temporary `LOCAL_AUTH_BOOTSTRAP_TOKEN`.
   Create the first administrator from Login, remove the bootstrap token and

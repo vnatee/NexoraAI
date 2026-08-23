@@ -22,26 +22,38 @@ interface Props {
     sys_permissions: string[] | null;
     selectTeamData: TeamProfile | null;
     onAgentsChanged?: () => void;
+    onTeamChanged?: (team: TeamProfile) => void;
 }
 
-export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin, selectTeamData, sys_permissions, onAgentsChanged }: Props) {
+export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin, selectTeamData, sys_permissions, onAgentsChanged, onTeamChanged }: Props) {
     const [tab, setTab] = useState(0);
+    const [managedTeam, setManagedTeam] = useState<TeamProfile | null>(selectTeamData);
+
+    useEffect(() => {
+        setManagedTeam(selectTeamData);
+    }, [selectTeamData]);
+
+    const handleTeamCreated = (team: TeamProfile) => {
+        setManagedTeam(team);
+        onTeamChanged?.(team);
+        if (is_sys_admin) setTab(1);
+    };
 
     const tabs = [
         {
             label: "Members",
             permission: ["Manage team users"],
-            element: <TeamUserManagementPage team={selectTeamData} />
+            element: <TeamUserManagementPage team={managedTeam} />
         },
         {
             label: "Data access",
             permission: ["Manage team data groups"],
-            element: <DataGroupManagementPage team={selectTeamData} />
+            element: <DataGroupManagementPage team={managedTeam} />
         },
         {
             label: "Roles & permissions",
             permission: ["Manage team permissions"],
-            element: <RBACManagementPage team={selectTeamData} />
+            element: <RBACManagementPage team={managedTeam} />
         },
         {
             label: "Agents",
@@ -51,12 +63,12 @@ export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin
         {
             label: "Integrations",
             permission: ["Manage integrations"],
-            element: <IntegrationManagementPage team={selectTeamData} isSystemAdmin={is_sys_admin} />
+            element: <IntegrationManagementPage team={managedTeam} isSystemAdmin={is_sys_admin} />
         },
         {
             label: "User directory",
             permission: ["Manage users", "Manage teams"],
-            element: <ManageUserTabs />
+            element: <ManageUserTabs selectedTeam={managedTeam} onTeamCreated={handleTeamCreated} />
         },
         {
             label: "LLM Providers",
@@ -83,7 +95,7 @@ export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin
             (!("systemAdminOnly" in t) || !t.systemAdminOnly || is_sys_admin) &&
             hasPermission({
                 is_sys_admin,
-                permissions: selectTeamData?.permissions ?? [],
+                permissions: managedTeam?.permissions ?? [],
                 sys_permissions: sys_permissions ?? [],
                 requiredPermissions: t.permission
             })
@@ -99,7 +111,7 @@ export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin
         <Dialog open={open} onClose={onClose} maxWidth="xl" fullWidth>
             <DialogTitle>
                 <Box>
-                    <Typography variant="h6">Team settings · {teamName}</Typography>
+                    <Typography variant="h6">Team settings · {managedTeam?.name || teamName}</Typography>
                     <Typography variant="body2" color="text.secondary">
                         Manage membership, document access, roles, agents, and integrations for this team.
                     </Typography>

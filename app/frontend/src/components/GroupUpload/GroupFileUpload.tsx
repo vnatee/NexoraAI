@@ -1,8 +1,9 @@
-import React, { useState, useEffect, ChangeEvent } from "react";
+import React, { useState, useEffect, ChangeEvent, useRef } from "react";
 import { Box, TextField, Typography, IconButton, CircularProgress, Snackbar, Alert, Chip, Button as Button2, Tooltip, Skeleton } from "@mui/material";
 import { DataGrid, GridColDef, GridPaginationModel, GridValueFormatter } from "@mui/x-data-grid";
 import DeleteIcon from "@mui/icons-material/Delete";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
+import FolderOpenIcon from "@mui/icons-material/FolderOpen";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import CancelIcon from "@mui/icons-material/Cancel";
 import { deleteTeamUploadedFileApi, listUploadedteamFilesApi, limit_size, uploadTeamFileApi, get_data_group_by_team } from "../../api/api";
@@ -53,6 +54,8 @@ export const GroupFileUpload: React.FC = () => {
 
     const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
     const [uploading, setUploading] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const folderInputRef = useRef<HTMLInputElement>(null);
 
     const [deletingFile, setDeletingFile] = useState<string | null>(null);
     const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
@@ -125,6 +128,7 @@ export const GroupFileUpload: React.FC = () => {
     };
     const rowsWithGroups = generateRowsForGrid(fileTree);
     const [limitSizeConf, setLimitSizeConf] = useState(0);
+    const [maxUploadSizeBytes, setMaxUploadSizeBytes] = useState(0);
     const storedSize = files.reduce((sum, f) => sum + (f.size ?? 0), 0);
     const newSize = selectedFiles.reduce((sum, f) => sum + f.size, 0);
     const totalUsed = storedSize + newSize;
@@ -156,6 +160,7 @@ export const GroupFileUpload: React.FC = () => {
 
             const result = await limit_size(token);
             setLimitSizeConf(result?.size_limit_group || 0);
+            setMaxUploadSizeBytes(result?.max_upload_size_bytes || 0);
         } catch (e) {
             console.error(e);
         }
@@ -328,6 +333,11 @@ export const GroupFileUpload: React.FC = () => {
             return;
         }
         if (selectedFiles.length === 0) return;
+        if (maxUploadSizeBytes > 0 && newSize > maxUploadSizeBytes) {
+            setMessage(`Upload blocked — selected files exceed the ${formatFileSize(maxUploadSizeBytes)} request limit.`);
+            setOpenError(true);
+            return;
+        }
         if (totalUsed > limitSizeConf) {
             setMessage(`Upload blocked — storage limit exceeded. Limit: ${formatFileSize(limitSizeConf)}`);
             setOpenError(true);
@@ -365,10 +375,10 @@ export const GroupFileUpload: React.FC = () => {
             }, 5000); // รอ 5 วิหลัง upload ล่าสุด
         } catch (err) {
             console.error(err);
-            setMessage("Upload failed");
+            setMessage(err instanceof Error ? err.message : "Upload failed");
             setOpenError(true);
         } finally {
-            setTimeout(() => setUploading(false), 500);
+            setUploading(false);
         }
     };
 
@@ -587,10 +597,34 @@ export const GroupFileUpload: React.FC = () => {
             .map(entry => traverseFileTree(entry));
         const filesArrays = await Promise.all(promises);
         const allFiles = filesArrays.flat();
-        setSelectedFiles(prev => [...prev, ...allFiles]);
+        appendSelectedFiles(allFiles);
     };
 
     const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => e.preventDefault();
+
+    const appendSelectedFiles = (filesToAdd: File[]) => {
+        setSelectedFiles(previous => {
+            const existing = new Set(previous.map(file => `${file.name}:${file.size}:${file.lastModified}`));
+            const unique = filesToAdd.filter(file => {
+                const key = `${file.name}:${file.size}:${file.lastModified}`;
+                if (existing.has(key)) return false;
+                existing.add(key);
+                return true;
+            });
+            return [...previous, ...unique];
+        });
+    };
+
+    const handleBrowseSelection = (event: ChangeEvent<HTMLInputElement>, preserveRelativePath = false) => {
+        const files = Array.from(event.target.files ?? []).map(file => {
+            const relativePath = preserveRelativePath && file.webkitRelativePath ? file.webkitRelativePath : file.name;
+            return relativePath === file.name
+                ? file
+                : new File([file], relativePath, { type: file.type, lastModified: file.lastModified });
+        });
+        appendSelectedFiles(files);
+        event.target.value = "";
+    };
 
     const traverseFileTree = (item: any, path = ""): Promise<File[]> => {
         return new Promise(resolve => {
@@ -724,14 +758,29 @@ export const GroupFileUpload: React.FC = () => {
                     {" = "}
                     Total: {formatFileSize(totalUsed)}
                 </Typography>
+                {maxUploadSizeBytes > 0 && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                        Maximum per upload request: {formatFileSize(maxUploadSizeBytes)}
+                    </Typography>
+                )}
             </Box>
 
             {/* Drag & Drop */}
+            <input ref={fileInputRef} type="file" multiple hidden onChange={event => handleBrowseSelection(event)} />
+            <input
+                ref={folderInputRef}
+                {...({ webkitdirectory: "", directory: "" } as React.InputHTMLAttributes<HTMLInputElement>)}
+                type="file"
+                multiple
+                hidden
+                onChange={event => handleBrowseSelection(event, true)}
+            />
             <Box
                 onDrop={e => {
                     if (teamId) handleDrop(e);
                 }}
                 onDragOver={handleDragOver}
+                onClick={() => teamId && fileInputRef.current?.click()}
                 sx={{
                     border: "2px dashed #ccc",
                     padding: 2,
@@ -742,7 +791,31 @@ export const GroupFileUpload: React.FC = () => {
                     opacity: teamId ? 1 : 0.5
                 }}
             >
-                <Typography variant="body1">Drag & drop group files or folders here</Typography>
+                <Typography variant="body1">Drag & drop Team files or folders here, or browse</Typography>
+                <Box display="flex" justifyContent="center" gap={1} mt={1} flexWrap="wrap">
+                    <Button2
+                        variant="outlined"
+                        startIcon={<UploadFileIcon />}
+                        disabled={!teamId}
+                        onClick={event => {
+                            event.stopPropagation();
+                            fileInputRef.current?.click();
+                        }}
+                    >
+                        Browse files
+                    </Button2>
+                    <Button2
+                        variant="outlined"
+                        startIcon={<FolderOpenIcon />}
+                        disabled={!teamId}
+                        onClick={event => {
+                            event.stopPropagation();
+                            folderInputRef.current?.click();
+                        }}
+                    >
+                        Select folder
+                    </Button2>
+                </Box>
             </Box>
 
             {/* Data Group Single Select */}

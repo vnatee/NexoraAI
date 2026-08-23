@@ -128,6 +128,11 @@ A related option is VS Code Dev Containers, which will open the project in your 
 
 ### Local environment
 
+For a local MongoDB-backed control plane, see
+[docs/local-mongodb.md](docs/local-mongodb.md). This keeps the existing
+Cosmos-compatible connector and does not yet replace Azure AI Search or
+Knowledge object storage.
+
 1. Install the required tools:
 
     - [Azure Developer CLI](https://aka.ms/azure-dev/install)

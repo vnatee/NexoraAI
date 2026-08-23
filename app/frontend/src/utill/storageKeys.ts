@@ -8,4 +8,6 @@ export const STORAGE_KEYS = {
     // SIDEBAR: "sidebar_state"
 } as const;
 
+export const ACTIVE_TEAM_CHANGED_EVENT = "nexora:active-team-changed";
+
 export type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];

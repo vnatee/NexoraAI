@@ -2820,6 +2820,7 @@ async def config():
             "showChatHistoryCosmos": current_app.config[CONFIG_CHAT_HISTORY_COSMOS_ENABLED],
             "showAgenticRetrievalOption": current_app.config[CONFIG_AGENTIC_RETRIEVAL_ENABLED],
             "chatDocumentAttachmentsEnabled": current_app.config.get(CONFIG_CHAT_ATTACHMENT_STORE) is not None,
+            "maxUploadSizeBytes": current_app.config["MAX_CONTENT_LENGTH"],
         }
     )
 
@@ -4857,7 +4858,8 @@ async def create_limit_size_conf():
 async def limit_size_conf(auth_claims: dict[str, Any]):
     try:
         limit_confs = get_all_limit_size_configs()
-        data = limit_confs[0]
+        data = dict(limit_confs[0])
+        data["max_upload_size_bytes"] = current_app.config["MAX_CONTENT_LENGTH"]
     except ResourceNotFoundError as error:
         if error.status_code != 404:
             current_app.logger.exception("Error get limit config", error)
@@ -4995,19 +4997,35 @@ async def update_own_profile(auth_claims: dict[str, Any]):
 @authenticated
 async def create_team(auth_claims: dict[str, Any]):
     try:
-        _require_system_permission(auth_claims, "Manage teams")
+        actor = _require_system_permission(auth_claims, "Manage teams")
         body = await request.get_json()
         team_name = body.get("team_name", None)
         if team_name:
+            normalized_team_name = str(team_name).strip()
             agent_config = {"temperature": 0.2, "seed": None,
                             "min_search_score": 0, "max_search_results": 2, "max_tokens": 1024,
                             "llm_profile_id": DEFAULT_LLM_PROFILE_ID}
             result, agent_id = insert_agent("default", None, agent_config)
             result, data_group_id = insert_data_group("default", [])
-            insert_team(team_name, [data_group_id], [agent_id], [], [])
+            team_result = insert_team(
+                normalized_team_name,
+                [data_group_id],
+                [agent_id],
+                [str(actor["_id"])],
+                [],
+            )
         else:
             raise ValueError("Team name is required")
-        return jsonify({"success": f"Create team {team_name} success"}), 200
+        return jsonify(
+            {
+                "success": f"Create team {normalized_team_name} success",
+                "team": {
+                    "_id": str(team_result.inserted_id),
+                    "name": normalized_team_name,
+                    "permissions": [],
+                },
+            }
+        ), 200
     except Exception as error_txt:
         return error_response(error_txt, "/create_team")
 
@@ -6886,8 +6904,19 @@ async def close_clients():
 
 def create_app():
     app = Quart(__name__)
-    # For specific upload size
-    # app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+    try:
+        max_upload_size_bytes = int(os.getenv("MAX_UPLOAD_SIZE_BYTES", str(100 * 1024 * 1024)))
+    except ValueError as error:
+        raise ValueError("MAX_UPLOAD_SIZE_BYTES must be a positive integer") from error
+    if max_upload_size_bytes <= 0:
+        raise ValueError("MAX_UPLOAD_SIZE_BYTES must be a positive integer")
+    app.config["MAX_CONTENT_LENGTH"] = max_upload_size_bytes
+
+    @app.errorhandler(413)
+    async def request_too_large(_error):
+        limit_mb = max_upload_size_bytes / (1024 * 1024)
+        return jsonify({"error": f"Upload request exceeds the {limit_mb:g} MB limit"}), 413
+
     app.register_blueprint(bp)
     app.register_blueprint(chat_history_cosmosdb_bp)
 

@@ -204,6 +204,44 @@ async def test_app_config_default(monkeypatch, minimal_env):
         assert result["showSemanticRankerOption"] is True
         assert result["showVectorOption"] is True
         assert result["chatDocumentAttachmentsEnabled"] is False
+        assert result["maxUploadSizeBytes"] == 100 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_app_config_custom_upload_request_limit(monkeypatch, minimal_env):
+    monkeypatch.setenv("MAX_UPLOAD_SIZE_BYTES", "33554432")
+
+    quart_app = app.create_app()
+    async with quart_app.test_app() as test_app:
+        response = await test_app.test_client().get("/config")
+
+        assert response.status_code == 200
+        assert quart_app.config["MAX_CONTENT_LENGTH"] == 33554432
+        assert (await response.get_json())["maxUploadSizeBytes"] == 33554432
+
+
+def test_app_rejects_invalid_upload_request_limit(monkeypatch, minimal_env):
+    monkeypatch.setenv("MAX_UPLOAD_SIZE_BYTES", "0")
+
+    with pytest.raises(ValueError, match="MAX_UPLOAD_SIZE_BYTES must be a positive integer"):
+        app.create_app()
+
+
+@pytest.mark.asyncio
+async def test_app_returns_json_for_oversized_request(monkeypatch, minimal_env):
+    monkeypatch.setenv("MAX_UPLOAD_SIZE_BYTES", "64")
+    quart_app = app.create_app()
+
+    async def consume_body():
+        await quart.request.get_data()
+        return "ok"
+
+    quart_app.add_url_rule("/test-upload-limit", "test_upload_limit", consume_body, methods=["POST"])
+    async with quart_app.test_app() as test_app:
+        response = await test_app.test_client().post("/test-upload-limit", data=b"x" * 65)
+
+        assert response.status_code == 413
+        assert "Upload request exceeds" in (await response.get_json())["error"]
 
 
 @pytest.mark.asyncio

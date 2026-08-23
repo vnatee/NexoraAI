@@ -33,7 +33,7 @@ import { currentAgentConfig, check_user_login, register, check_waiting_approve, 
 import { GroupDetail, AuthProfile, TeamProfile, User } from "../../api/models";
 import { RegisterDialog } from "./RegisterDialog";
 import { Storage } from "../../utill/storage";
-import { STORAGE_KEYS } from "../../utill/storageKeys";
+import { ACTIVE_TEAM_CHANGED_EVENT, STORAGE_KEYS } from "../../utill/storageKeys";
 import { AuthStorage } from "../../utill/authStorage";
 
 export const LoginButton = () => {
@@ -371,6 +371,22 @@ export const LoginButton = () => {
         // fallback → team แรก
         setActiveTeam(teams[0]);
     }, [loggedIn, username]);
+
+    useEffect(() => {
+        const handleActiveTeamChanged = (event: Event) => {
+            const team = (event as CustomEvent<TeamProfile>).detail;
+            if (!team?._id) return;
+            setTeams(current =>
+                current.some(item => item._id === team._id)
+                    ? current.map(item => (item._id === team._id ? team : item))
+                    : [...current, team]
+            );
+            setActiveTeam(team);
+            setSelectedTeam(team);
+        };
+        window.addEventListener(ACTIVE_TEAM_CHANGED_EVENT, handleActiveTeamChanged);
+        return () => window.removeEventListener(ACTIVE_TEAM_CHANGED_EVENT, handleActiveTeamChanged);
+    }, []);
 
     useEffect(() => {
         if (!isWaitingApprove) return;
