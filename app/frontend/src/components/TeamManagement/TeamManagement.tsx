@@ -23,7 +23,7 @@ import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import GroupIcon from "@mui/icons-material/Group";
 import { TeamViewDialog } from "../TeamViewDialog/TeamViewDialog";
-import { create_team, delete_team, edit_team_name, get_all_users, get_team_users, get_teams, insert_team_users, Team, User, delete_team_user } from "../../api";
+import { create_team, delete_team, edit_team_name, get_all_users, get_team_users, get_teams, insert_team_users, Team, TeamProfile, User, delete_team_user } from "../../api";
 import { useMsal } from "@azure/msal-react";
 import { getToken } from "../../authConfig";
 import { useNotification } from "../../utill/NotificationProvider";
@@ -104,7 +104,11 @@ export const mockDataGroups: Record<string, DataGroup> = Object.fromEntries(
    COMPONENT
 ========================= */
 
-export const TeamManagement: React.FC = () => {
+interface TeamManagementProps {
+    onTeamCreated?: (team: TeamProfile) => void;
+}
+
+export const TeamManagement: React.FC<TeamManagementProps> = ({ onTeamCreated }) => {
     const { instance: msalInstance } = useMsal();
     const [loading, setLoading] = useState(false);
     const [search, setSearch] = useState("");
@@ -345,8 +349,11 @@ export const TeamManagement: React.FC = () => {
                 localStorage.clear();
                 return;
             }
-            await create_team(teamName, token);
+            const response = await create_team(teamName, token);
             await fetchAllTeam();
+            if (response?.team?._id) {
+                onTeamCreated?.(response.team as TeamProfile);
+            }
             setOpenNew(false);
             setOpenSuccess(true);
             showNotification("Team created successfully", "success");

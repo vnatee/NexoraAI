@@ -684,15 +684,22 @@ export function Component(): JSX.Element {
     };
 
     const restoreActiveTeam = async () => {
-        const activeTeams = Storage.get(STORAGE_KEYS.Active_Teams) as Record<string, any> | null;
-        if (!activeTeams) {
-            return;
+        const username = (await getUsername(instance)) ?? "";
+        if (!username) return;
+
+        const activeTeams = (Storage.get(STORAGE_KEYS.Active_Teams) as Record<string, TeamProfile> | null) ?? {};
+        const availableTeams = AuthStorage.get()?.teams ?? [];
+        const savedTeam = activeTeams[username];
+        const nextTeam = availableTeams.find(team => team._id === savedTeam?._id) ?? availableTeams[0] ?? null;
+
+        if (nextTeam) {
+            activeTeams[username] = nextTeam;
+        } else {
+            delete activeTeams[username];
         }
 
-        const name = (await getUsername(instance)) ?? "";
-
-        const selectTeam = activeTeams[name];
-        setSelectTeamData(selectTeam);
+        Storage.set(STORAGE_KEYS.Active_Teams, activeTeams);
+        setSelectTeamData(nextTeam);
     };
 
     const loadFixedPrompts = async () => {

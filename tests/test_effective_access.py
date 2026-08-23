@@ -193,6 +193,51 @@ def test_system_permission_uses_application_permissions_not_token_claims(monkeyp
         )
 
 
+@pytest.mark.asyncio
+async def test_create_team_returns_new_team_and_adds_creator(client, monkeypatch):
+    class InsertResult:
+        inserted_id = "team-new"
+
+    monkeypatch.setattr(
+        app_module,
+        "_require_system_permission",
+        lambda _claims, _permission: _user("creator", is_sys_admin=True),
+    )
+    monkeypatch.setattr(app_module, "insert_agent", lambda *_args: (object(), "agent-new"))
+    monkeypatch.setattr(app_module, "insert_data_group", lambda *_args: (object(), "group-new"))
+
+    captured = {}
+
+    def insert_team(name, data_group_ids, agent_ids, user_ids, waiting):
+        captured.update(
+            {
+                "name": name,
+                "data_group_ids": data_group_ids,
+                "agent_ids": agent_ids,
+                "user_ids": user_ids,
+                "waiting": waiting,
+            }
+        )
+        return InsertResult()
+
+    monkeypatch.setattr(app_module, "insert_team", insert_team)
+
+    response = await client.post("/create_team", json={"team_name": " New Team "})
+
+    assert response.status_code == 200
+    assert await response.get_json() == {
+        "success": "Create team New Team success",
+        "team": {"_id": "team-new", "name": "New Team", "permissions": []},
+    }
+    assert captured == {
+        "name": "New Team",
+        "data_group_ids": ["group-new"],
+        "agent_ids": ["agent-new"],
+        "user_ids": ["creator"],
+        "waiting": [],
+    }
+
+
 def test_delegated_user_manager_can_view_but_not_manage_system_admin(monkeypatch):
     monkeypatch.setattr(
         app_module,

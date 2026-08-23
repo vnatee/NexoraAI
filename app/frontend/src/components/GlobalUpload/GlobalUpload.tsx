@@ -1,4 +1,4 @@
-import React, { useEffect, useState, ChangeEvent, useContext } from "react";
+import React, { useEffect, useState, ChangeEvent, useContext, useRef } from "react";
 import { Button } from "@fluentui/react-components";
 
 import {
@@ -21,6 +21,7 @@ import {
 } from "@mui/material";
 import DeleteIcon from "@mui/icons-material/Delete";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
+import FolderOpenIcon from "@mui/icons-material/FolderOpen";
 import { DataGrid, GridColDef, GridPaginationModel, GridValueFormatter } from "@mui/x-data-grid";
 import { useMsal } from "@azure/msal-react";
 import { useTranslation } from "react-i18next";
@@ -90,6 +91,8 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
     const [deletingFile, setDeletingFile] = useState<string | null>(null);
     const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
     const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const folderInputRef = useRef<HTMLInputElement>(null);
     const [fileTree, setFileTree] = useState<{ files: FileRow[]; folders: Record<string, FileTreeNode> }>({ files: [], folders: {} });
     const [tab, setTab] = useState(0);
     const { userDetails } = useContext(LoginContext);
@@ -367,11 +370,35 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
             .map(entry => traverseFileTree(entry));
         const filesArrays = await Promise.all(promises);
         const allFiles = filesArrays.flat();
-        setSelectedFiles(prev => [...prev, ...allFiles]);
+        appendSelectedFiles(allFiles);
     };
 
     const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => e.preventDefault();
     const handleRemoveSelectedFile = (index: number) => setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+
+    const appendSelectedFiles = (filesToAdd: File[]) => {
+        setSelectedFiles(previous => {
+            const existing = new Set(previous.map(file => `${file.name}:${file.size}:${file.lastModified}`));
+            const unique = filesToAdd.filter(file => {
+                const key = `${file.name}:${file.size}:${file.lastModified}`;
+                if (existing.has(key)) return false;
+                existing.add(key);
+                return true;
+            });
+            return [...previous, ...unique];
+        });
+    };
+
+    const handleBrowseSelection = (event: ChangeEvent<HTMLInputElement>, preserveRelativePath = false) => {
+        const files = Array.from(event.target.files ?? []).map(file => {
+            const relativePath = preserveRelativePath && file.webkitRelativePath ? file.webkitRelativePath : file.name;
+            return relativePath === file.name
+                ? file
+                : new File([file], relativePath, { type: file.type, lastModified: file.lastModified });
+        });
+        appendSelectedFiles(files);
+        event.target.value = "";
+    };
 
     const traverseFileTree = (item: any, path = ""): Promise<File[]> => {
         return new Promise(resolve => {
@@ -751,12 +778,44 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
                                         </Typography>
                                     </Box>
 
+                                    <input ref={fileInputRef} type="file" multiple hidden onChange={event => handleBrowseSelection(event)} />
+                                    <input
+                                        ref={folderInputRef}
+                                        {...({ webkitdirectory: "", directory: "" } as React.InputHTMLAttributes<HTMLInputElement>)}
+                                        type="file"
+                                        multiple
+                                        hidden
+                                        onChange={event => handleBrowseSelection(event, true)}
+                                    />
                                     <Box
                                         onDrop={handleDrop}
                                         onDragOver={handleDragOver}
+                                        onClick={() => fileInputRef.current?.click()}
                                         sx={{ border: "2px dashed #ccc", padding: 2, borderRadius: 2, textAlign: "center", mb: 2, cursor: "pointer" }}
                                     >
-                                        <Typography variant="body1">Drag & drop files or folders here</Typography>
+                                        <Typography variant="body1">Drag & drop Global files or folders here, or browse</Typography>
+                                        <Box display="flex" justifyContent="center" gap={1} mt={1} flexWrap="wrap">
+                                            <Button2
+                                                variant="outlined"
+                                                startIcon={<UploadFileIcon />}
+                                                onClick={event => {
+                                                    event.stopPropagation();
+                                                    fileInputRef.current?.click();
+                                                }}
+                                            >
+                                                Browse files
+                                            </Button2>
+                                            <Button2
+                                                variant="outlined"
+                                                startIcon={<FolderOpenIcon />}
+                                                onClick={event => {
+                                                    event.stopPropagation();
+                                                    folderInputRef.current?.click();
+                                                }}
+                                            >
+                                                Select folder
+                                            </Button2>
+                                        </Box>
                                     </Box>
                                     <Box sx={{ mb: 2 }}>
                                         <DocumentProcessingUploadSelector value={processingProfileId} onChange={setProcessingProfileId} />

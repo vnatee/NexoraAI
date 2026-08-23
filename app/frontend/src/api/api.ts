@@ -274,6 +274,18 @@ export function getTemporaryCitationFilePath(citation: string, conversationId: s
     return `${BACKEND_URI}/chat/attachments/${match[1]}/content?${query}${hash}`;
 }
 
+async function uploadErrorMessage(response: Response): Promise<string> {
+    try {
+        const payload = await response.json();
+        if (typeof payload?.error === "string" && payload.error.trim()) return payload.error;
+        if (typeof payload?.message === "string" && payload.message.trim()) return payload.message;
+    } catch {
+        // Reverse proxies can return an HTML or empty error body.
+    }
+    if (response.status === 413) return "Upload request is larger than the server limit.";
+    return `Uploading files failed (${response.status} ${response.statusText})`;
+}
+
 export async function uploadFileApi(request: FormData, idToken: string): Promise<SimpleAPIResponse> {
     const response = await fetch("/upload", {
         method: "POST",
@@ -281,9 +293,7 @@ export async function uploadFileApi(request: FormData, idToken: string): Promise
         body: request
     });
 
-    if (!response.ok) {
-        throw new Error(`Uploading files failed: ${response.statusText}`);
-    }
+    if (!response.ok) throw new Error(await uploadErrorMessage(response));
 
     const dataResponse: SimpleAPIResponse = await response.json();
     return dataResponse;
@@ -296,9 +306,7 @@ export async function uploadGlobalFileApi(request: FormData, idToken: string): P
         body: request
     });
 
-    if (!response.ok) {
-        throw new Error(`Uploading files failed: ${response.statusText}`);
-    }
+    if (!response.ok) throw new Error(await uploadErrorMessage(response));
 
     const dataResponse: SimpleAPIResponse = await response.json();
     return dataResponse;
@@ -604,9 +612,7 @@ export async function uploadGroupFileApi(request: FormData, idToken: string, gid
         body: request
     });
 
-    if (!response.ok) {
-        throw new Error(`Uploading files failed: ${response.statusText}`);
-    }
+    if (!response.ok) throw new Error(await uploadErrorMessage(response));
 
     return await response.json();
 }
@@ -626,9 +632,7 @@ export async function uploadTeamFileApi(request: FormData, data_groups_id: strin
         body: request
     });
 
-    if (!response.ok) {
-        throw new Error(`Uploading files failed: ${response.statusText}`);
-    }
+    if (!response.ok) throw new Error(await uploadErrorMessage(response));
 
     return await response.json();
 }

@@ -85,7 +85,7 @@ import { AuthStorage } from "../../utill/authStorage";
 import { hasPermission } from "../../utill/hasPermission";
 import { Agent, EffectiveDataGroup, LLMProfile, TeamProfile, User } from "../../api/models";
 import { Storage } from "../../utill/storage";
-import { STORAGE_KEYS } from "../../utill/storageKeys";
+import { ACTIVE_TEAM_CHANGED_EVENT, STORAGE_KEYS } from "../../utill/storageKeys";
 import { useNotification } from "../../utill/NotificationProvider";
 
 const DATA_SCOPES = [
@@ -1148,16 +1148,48 @@ const Chat = () => {
     };
 
     const restoreActiveTeam = async () => {
-        const activeTeams = Storage.get(STORAGE_KEYS.Active_Teams) as Record<string, any> | null;
-        if (!activeTeams) {
-            return;
+        const username = (await getUsername(instance)) ?? "";
+        if (!username) return;
+
+        const activeTeams = (Storage.get(STORAGE_KEYS.Active_Teams) as Record<string, TeamProfile> | null) ?? {};
+        const availableTeams = AuthStorage.get()?.teams ?? [];
+        const savedTeam = activeTeams[username];
+        const nextTeam = availableTeams.find(team => team._id === savedTeam?._id) ?? availableTeams[0] ?? null;
+
+        if (nextTeam) {
+            activeTeams[username] = nextTeam;
+        } else {
+            delete activeTeams[username];
         }
 
-        const name = (await getUsername(instance)) ?? "";
-
-        const selectTeam = activeTeams[name];
-        setSelectTeamData(selectTeam);
+        Storage.set(STORAGE_KEYS.Active_Teams, activeTeams);
+        setSelectTeamData(nextTeam);
     };
+
+    const activateCreatedTeam = useCallback(
+        async (team: TeamProfile) => {
+            const username = (await getUsername(instance)) ?? "";
+            if (!username) return;
+
+            const activeTeams = (Storage.get(STORAGE_KEYS.Active_Teams) as Record<string, TeamProfile> | null) ?? {};
+            activeTeams[username] = team;
+            Storage.set(STORAGE_KEYS.Active_Teams, activeTeams);
+            Storage.remove(STORAGE_KEYS.ACTIVE_AGENT);
+
+            const authProfile = AuthStorage.get();
+            if (authProfile) {
+                const teams = authProfile.teams.some(item => item._id === team._id)
+                    ? authProfile.teams.map(item => (item._id === team._id ? team : item))
+                    : [...authProfile.teams, team];
+                AuthStorage.set({ ...authProfile, teams });
+            }
+
+            setSelectTeamData(team);
+            window.dispatchEvent(new CustomEvent<TeamProfile>(ACTIVE_TEAM_CHANGED_EVENT, { detail: team }));
+            setIsSwitchTeam(true);
+        },
+        [instance, setIsSwitchTeam]
+    );
 
     const loadAgents = useCallback(async () => {
         // ✅ กัน StrictMode
@@ -1909,13 +1941,13 @@ const Chat = () => {
                 // onSubmit={handleSubmitFeedback}
                 />
                 <TeamManagementTabsDialog
-                    key={selectTeamData?._id}
                     open={openTeamAdminManagement}
                     teamName={selectTeamData?.name || "System Admin"}
                     is_sys_admin={userData ? userData?.is_sys_admin! : false}
                     selectTeamData={selectTeamData}
                     sys_permissions={sysPers ? sysPers : []}
                     onAgentsChanged={() => void loadAgents()}
+                    onTeamChanged={team => void activateCreatedTeam(team)}
                     onClose={() => setOpenTeamAdminManagement(false)}
                 // onSubmit={handleSubmitFeedback}
                 />

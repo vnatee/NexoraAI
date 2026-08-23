@@ -161,6 +161,7 @@ export type Config = {
     showChatHistoryCosmos: boolean;
     showAgenticRetrievalOption: boolean;
     chatDocumentAttachmentsEnabled: boolean;
+    maxUploadSizeBytes: number;
 };
 
 export type LLMProfile = {
