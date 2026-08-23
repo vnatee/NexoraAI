@@ -16,7 +16,7 @@ export function UserListPanel({ users, selected, onSelect, fullWidth, onCreate }
     // 🔍 filter user
     const filteredUsers = useMemo(() => {
         const q = search.toLowerCase();
-        return users.filter(u => `${u.first_name} ${u.last_name} ${u.employee_id} ${u.email}`.toLowerCase().includes(q));
+        return users.filter(u => `${u.first_name} ${u.last_name} ${u.employee_id} ${u.email} ${u.ad_email} ${u.local_username || ""}`.toLowerCase().includes(q));
     }, [users, search]);
 
     return (
@@ -63,22 +63,25 @@ export function UserListPanel({ users, selected, onSelect, fullWidth, onCreate }
                         >
                             <Stack direction="row" alignItems="center" justifyContent="space-between" width="100%">
                                 <ListItemText
-                                    primary={`${u.first_name} ${u.last_name}`}
-                                    secondary={u.employee_id}
+                                    primary={`${u.first_name || ""} ${u.last_name || ""}`.trim() || u.email || u.ad_email}
+                                    secondary={u.employee_id || u.email || u.ad_email}
                                     primaryTypographyProps={{ fontWeight: 500 }}
                                 />
 
-                                <Chip
-                                    label={u.active ? "Active" : "Inactive"}
-                                    size="small"
-                                    variant="outlined"
-                                    sx={{
-                                        fontWeight: 500,
-                                        borderColor: u.active ? "success.main" : "grey.400",
-                                        color: u.active ? "success.main" : "text.secondary",
-                                        height: 22
-                                    }}
-                                />
+                                <Stack direction="row" spacing={0.5}>
+                                    {u.is_sys_admin && <Chip label="System admin" size="small" color="primary" variant="outlined" />}
+                                    <Chip
+                                        label={u.active ? "Active" : "Inactive"}
+                                        size="small"
+                                        variant="outlined"
+                                        sx={{
+                                            fontWeight: 500,
+                                            borderColor: u.active ? "success.main" : "grey.400",
+                                            color: u.active ? "success.main" : "text.secondary",
+                                            height: 22
+                                        }}
+                                    />
+                                </Stack>
                             </Stack>
                         </ListItemButton>
                     ))}

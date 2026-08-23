@@ -7,8 +7,9 @@ import { ConfirmDeleteDialog } from "../dialog/ConfirmDeleteDialog";
 import { User } from "../../../api/models";
 import { useMsal } from "@azure/msal-react";
 import { getToken } from "../../../authConfig";
-import { add_users, get_all_users, update_user, delete_user } from "../../../api";
+import { add_users, get_all_users, update_user, delete_user, resetLocalUserPassword } from "../../../api";
 import { useNotification } from "../../../utill/NotificationProvider";
+import { AuthStorage } from "../../../utill/authStorage";
 
 export function UserManagementPage() {
     const { instance: msalInstance } = useMsal();
@@ -20,6 +21,7 @@ export function UserManagementPage() {
     const [deleteUserId, setDeleteUserId] = useState<string | null>(null);
     const { showNotification } = useNotification();
     const [isDelete, setIsDelete] = useState<boolean>(false);
+    const signedInUser = AuthStorage.get()?.user;
 
     const fetchUsers = async () => {
         try {
@@ -132,6 +134,23 @@ export function UserManagementPage() {
                                 setDeleteOpen(true);
                             }}
                             isDelete={isDelete}
+                            canEdit={!selectedUser.is_sys_admin || signedInUser?.is_sys_admin === true}
+                            canDelete={
+                                (!selectedUser.is_sys_admin || signedInUser?.is_sys_admin === true) &&
+                                selectedUser._id !== signedInUser?._id
+                            }
+                            canResetPassword={!selectedUser.is_sys_admin || signedInUser?.is_sys_admin === true}
+                            onResetPassword={async password => {
+                                try {
+                                    const token = await getToken(msalInstance);
+                                    if (!token) throw new Error("Authentication required");
+                                    await resetLocalUserPassword(selectedUser._id, password, token);
+                                    showNotification("Local password reset; existing sessions were signed out", "success");
+                                } catch (error) {
+                                    console.error("Failed to reset local password:", error);
+                                    showNotification("Failed to reset local password", "error");
+                                }
+                            }}
                         />
                     </Paper>
                 </Stack>

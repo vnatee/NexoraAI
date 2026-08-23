@@ -193,6 +193,41 @@ def test_system_permission_uses_application_permissions_not_token_claims(monkeyp
         )
 
 
+def test_delegated_user_manager_can_view_but_not_manage_system_admin(monkeypatch):
+    monkeypatch.setattr(
+        app_module,
+        "_require_system_permission",
+        lambda _claims, _permission: _user("manager"),
+    )
+    monkeypatch.setattr(
+        app_module,
+        "get_user_by_id",
+        lambda _user_id: _user("admin", is_sys_admin=True),
+    )
+
+    with pytest.raises(AccessControlError, match="Only a system administrator"):
+        app_module._require_user_management_target({}, "admin")
+
+
+def test_system_admin_cannot_remove_self_or_last_admin(monkeypatch):
+    actor = _user("admin", is_sys_admin=True)
+    monkeypatch.setattr(
+        app_module,
+        "_require_system_permission",
+        lambda _claims, _permission: actor,
+    )
+    monkeypatch.setattr(app_module, "get_user_by_id", lambda _user_id: actor)
+
+    with pytest.raises(AccessControlError, match="their own account"):
+        app_module._require_user_management_target({}, "admin", destructive=True)
+
+    other = _user("other-admin", is_sys_admin=True)
+    monkeypatch.setattr(app_module, "get_user_by_id", lambda _user_id: other)
+    monkeypatch.setattr(app_module, "get_all_user_by_is_sys_admin", lambda _value: [other])
+    with pytest.raises(AccessControlError, match="last active"):
+        app_module._require_user_management_target({}, "other-admin", destructive=True)
+
+
 def test_team_content_path_uses_effective_application_data_groups(monkeypatch):
     team_id = "9e2fa6ed-769b-4809-84e8-8c1636c08f2b"
     monkeypatch.setattr(

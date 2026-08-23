@@ -4,6 +4,7 @@ import { useMsal } from "@azure/msal-react";
 import { get_all_users, get_teams, get_all_permission, get_user_permissions, create_edit_user_permissions, User, Team, Permission } from "../../../api";
 import { getToken } from "../../../authConfig";
 import { useNotification } from "../../../utill/NotificationProvider";
+import { AuthStorage } from "../../../utill/authStorage";
 
 /* =========================================================
    USER PERMISSION PANEL (FINAL)
@@ -29,6 +30,8 @@ export function UserPermissionPanel() {
 
     const [editing, setEditing] = useState(false);
     const [saving, setSaving] = useState(false);
+    const signedInUser = AuthStorage.get()?.user;
+    const canManageSelected = !selectedUser?.is_sys_admin || signedInUser?.is_sys_admin === true;
 
     const getFullName = (u: User) => `${u.first_name ?? ""} ${u.last_name ?? ""}`.trim();
 
@@ -141,7 +144,9 @@ export function UserPermissionPanel() {
        SEARCH
     ========================= */
 
-    const filteredUsers = users.filter(u => getFullName(u).toLowerCase().includes(searchUser.toLowerCase()));
+    const filteredUsers = users.filter(u =>
+        `${getFullName(u)} ${u.email} ${u.ad_email} ${u.employee_id}`.toLowerCase().includes(searchUser.toLowerCase())
+    );
 
     /* =========================
        RENDER
@@ -184,13 +189,13 @@ export function UserPermissionPanel() {
                                         }}
                                     >
                                         <Box>
-                                            <Typography fontWeight={500}>{getFullName(u)}</Typography>
+                                            <Typography fontWeight={500}>{getFullName(u) || u.email || u.ad_email}</Typography>
                                             <Typography variant="body2" color="text.secondary">
-                                                {u.employee_id}
+                                                {u.employee_id || u.email || u.ad_email}
                                             </Typography>
                                         </Box>
                                         <Chip
-                                            label={u.active ? "Active" : "Inactive"}
+                                            label={u.is_sys_admin ? "System admin" : u.active ? "Active" : "Inactive"}
                                             size="small"
                                             variant="outlined"
                                             sx={{
@@ -242,7 +247,7 @@ export function UserPermissionPanel() {
 
                             {!editing && (
                                 <Box display="flex" justifyContent="flex-end">
-                                    <Button variant="outlined" disabled={saving} onClick={() => setEditing(true)}>
+                                    <Button variant="outlined" disabled={saving || !canManageSelected} onClick={() => setEditing(true)}>
                                         Edit Permissions
                                     </Button>
                                 </Box>
@@ -250,7 +255,7 @@ export function UserPermissionPanel() {
 
                             {/* SYSTEM ADMIN */}
                             <FormControlLabel
-                                control={<Checkbox checked={isSystemAdmin} disabled={!editing} onChange={e => setIsSystemAdmin(e.target.checked)} />}
+                                control={<Checkbox checked={isSystemAdmin} disabled={!editing || selectedUser._id === signedInUser?._id} onChange={e => setIsSystemAdmin(e.target.checked)} />}
                                 label="System Admin"
                             />
 

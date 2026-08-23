@@ -255,6 +255,7 @@ You can find extensive documentation in the [docs](docs/README.md) folder:
   - [Enabling optional features](docs/deploy_features.md)
     - [All features](docs/deploy_features.md)
     - [Login and access control](docs/login_and_acl.md)
+    - [Local and Microsoft Entra authentication](docs/local-authentication.md)
     - [GPT-4 Turbo with Vision](docs/gpt4v.md)
     - [Reasoning](docs/reasoning.md)
     - [Private endpoints](docs/deploy_private.md)

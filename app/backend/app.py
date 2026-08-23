@@ -10,6 +10,7 @@ import os
 import re
 import time
 import random
+import secrets
 import uuid
 
 import requests
@@ -30,6 +31,27 @@ from feedback.getfeedback import get_all_feedback
 from mongo_table_connecters.mongo_connector import get_database
 from mongo_table_connecters.teams import insert_team, get_all_teams, get_team_by_id, get_team_by_data_group_id, update_team, get_team_by_user_id, delete_team_by_id
 from mongo_table_connecters.users import get_user_by_id, get_user_by_ad_email, get_all_user_by_is_sys_admin, get_all_users, insert_user, delete_user_by_id, update_user
+from mongo_table_connecters.local_auth import (
+    LocalAuthError,
+    authenticate_local_user,
+    bootstrap_local_superuser,
+    change_local_password,
+    create_managed_local_user,
+    ensure_local_auth_indexes,
+    enforce_local_login_rate_limit,
+    get_local_identity_for_user,
+    local_identity_exists,
+    list_local_identities_by_user_ids,
+    resolve_local_session,
+    reset_local_password,
+    revoke_local_session,
+)
+from mongo_table_connecters.auth_settings import (
+    delete_auth_settings,
+    get_auth_settings,
+    save_auth_settings,
+    serialize_auth_settings,
+)
 from mongo_table_connecters.agents import insert_agent, get_agent_by_id, update_agent, delete_agent_by_id
 from mongo_table_connecters.llm_providers import (
     get_llm_provider,
@@ -475,34 +497,69 @@ def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> N
 
 
 def _require_system_admin(auth_claims: dict[str, Any]) -> dict[str, Any]:
-    username = (
-        auth_claims.get("preferred_username")
-        or auth_claims.get("email")
-        or auth_claims.get("upn")
-    )
-    user = get_user_by_ad_email(username) if username else None
+    user = _application_user_for_claims(auth_claims)
     if not user or not user.get("active", True) or not user.get("is_sys_admin"):
         abort(403)
     return user
 
 
 def _is_system_admin(auth_claims: dict[str, Any]) -> bool:
-    username = (
-        auth_claims.get("preferred_username")
-        or auth_claims.get("email")
-        or auth_claims.get("upn")
-    )
-    user = get_user_by_ad_email(username) if username else None
+    user = _application_user_for_claims(auth_claims)
     return bool(user and user.get("active", True) and user.get("is_sys_admin"))
 
 
 def _application_user_for_claims(auth_claims: dict[str, Any]) -> dict[str, Any] | None:
+    application_user_id = str(auth_claims.get("application_user_id") or "").strip()
+    if application_user_id:
+        return get_user_by_id(application_user_id)
     username = (
         auth_claims.get("preferred_username")
         or auth_claims.get("email")
         or auth_claims.get("upn")
     )
     return get_user_by_ad_email(str(username)) if username else None
+
+
+def _serialize_user_auth(user: dict[str, Any], identity: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = dict(user)
+    identity = identity if identity is not None else get_local_identity_for_user(str(user.get("_id") or ""))
+    providers = []
+    # Legacy users with an Entra login predate this marker. A user created by
+    # the local administrator flow is local-only unless an identity-linking
+    # flow explicitly records Entra ownership in a future migration.
+    if user.get("ad_email") and user.get("created_by_auth_provider") != "local":
+        providers.append("entra")
+    if identity:
+        providers.append("local")
+        result["local_username"] = identity.get("username")
+    result["auth_providers"] = providers
+    return result
+
+
+def _normalize_self_profile(body: Any) -> dict[str, str]:
+    if not isinstance(body, dict):
+        raise AccessControlError("request must be json", status_code=400)
+
+    def required_text(field: str, maximum: int) -> str:
+        value = str(body.get(field) or "").strip()
+        if not value:
+            raise AccessControlError(f"{field} is required", status_code=400)
+        if len(value) > maximum:
+            raise AccessControlError(f"{field} is too long", status_code=400)
+        return value
+
+    email = required_text("email", 254)
+    if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise AccessControlError("email is invalid", status_code=400)
+    tel = str(body.get("tel") or "").strip()
+    if len(tel) > 50:
+        raise AccessControlError("tel is too long", status_code=400)
+    return {
+        "first_name": required_text("first_name", 100),
+        "last_name": required_text("last_name", 100),
+        "email": email,
+        "tel": tel,
+    }
 
 
 def _require_team_access(
@@ -559,6 +616,28 @@ def _require_system_permission(
     if permission not in permission_names:
         raise AccessControlError(f"{permission} permission is required")
     return user
+
+
+def _require_user_management_target(
+    auth_claims: dict[str, Any], user_id: str, *, destructive: bool = False
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    actor = _require_system_permission(auth_claims, "Manage users")
+    target = get_user_by_id(str(user_id or ""))
+    if not target:
+        raise AccessControlError("User not found", status_code=404)
+    if target.get("is_sys_admin") is True and actor.get("is_sys_admin") is not True:
+        raise AccessControlError("Only a system administrator can manage another system administrator")
+    if destructive and target.get("is_sys_admin") is True:
+        if str(actor.get("_id") or "") == str(target.get("_id") or ""):
+            raise AccessControlError("A system administrator cannot delete or deactivate their own account")
+        active_admins = [
+            item
+            for item in get_all_user_by_is_sys_admin(True)
+            if item.get("active", True) is True
+        ]
+        if len(active_admins) <= 1:
+            raise AccessControlError("The last active system administrator cannot be removed")
+    return actor, target
 
 
 def _normalize_data_group_access(
@@ -2214,6 +2293,206 @@ Always respond in the same language as the user"""
 def auth_setup():
     auth_helper = current_app.config[CONFIG_AUTH_CLIENT]
     return jsonify(auth_helper.get_auth_setup_for_client())
+
+
+def _local_auth_enabled() -> bool:
+    auth_helper = current_app.config[CONFIG_AUTH_CLIENT]
+    return bool(getattr(auth_helper, "local_authentication_enabled", False))
+
+
+@bp.post("/auth/local/bootstrap")
+async def local_auth_bootstrap():
+    if not _local_auth_enabled():
+        return jsonify({"error": "Local authentication is not enabled"}), 404
+    expected_token = os.getenv("LOCAL_AUTH_BOOTSTRAP_TOKEN", "")
+    supplied_token = request.headers.get("X-Bootstrap-Token", "")
+    if not expected_token:
+        return jsonify({"error": "LOCAL_AUTH_BOOTSTRAP_TOKEN is not configured"}), 503
+    if not secrets.compare_digest(supplied_token, expected_token):
+        return jsonify({"error": "Invalid bootstrap token"}), 403
+    try:
+        body = await request.get_json()
+        user = bootstrap_local_superuser(
+            username=(body or {}).get("username"),
+            password=(body or {}).get("password"),
+            email=(body or {}).get("email"),
+            first_name=(body or {}).get("first_name"),
+            last_name=(body or {}).get("last_name"),
+        )
+        return jsonify({"user_id": user["_id"], "username": user["ad_email"]}), 201
+    except LocalAuthError as error:
+        return jsonify({"error": str(error)}), error.status_code
+
+
+@bp.post("/auth/local/login")
+async def local_auth_login():
+    if not _local_auth_enabled():
+        return jsonify({"error": "Local authentication is not enabled"}), 404
+    try:
+        body = await request.get_json()
+        enforce_local_login_rate_limit(request.remote_addr or "unknown")
+        token, user = authenticate_local_user(
+            str((body or {}).get("username") or ""),
+            str((body or {}).get("password") or ""),
+        )
+        return jsonify(
+            {
+                "access_token": token,
+                "token_type": "Bearer",
+                "expires_in": 12 * 60 * 60,
+                "username": user.get("ad_email") or user.get("email"),
+            }
+        )
+    except LocalAuthError as error:
+        return jsonify({"error": str(error)}), error.status_code
+
+
+@bp.post("/auth/local/logout")
+@authenticated
+async def local_auth_logout(auth_claims: dict[str, Any]):
+    if auth_claims.get("auth_provider") != "local":
+        return jsonify({"success": True}), 200
+    try:
+        token = current_app.config[CONFIG_AUTH_CLIENT].get_token_auth_header(request.headers)
+        revoke_local_session(token)
+        return jsonify({"success": True}), 200
+    except Exception:
+        return jsonify({"success": True}), 200
+
+
+@bp.get("/auth/local/me")
+@authenticated
+async def local_auth_me(auth_claims: dict[str, Any]):
+    if auth_claims.get("auth_provider") != "local":
+        return jsonify({"error": "Not a local authentication session"}), 400
+    return jsonify(
+        {
+            "user_id": auth_claims.get("application_user_id"),
+            "username": auth_claims.get("preferred_username"),
+        }
+    )
+
+
+@bp.put("/auth/local/password")
+@authenticated
+async def change_own_local_password(auth_claims: dict[str, Any]):
+    if not _local_auth_enabled():
+        return jsonify({"error": "Local authentication is not enabled"}), 404
+    try:
+        user = _application_user_for_claims(auth_claims)
+        if not user or user.get("active", True) is not True:
+            raise LocalAuthError("The application user is disabled or unavailable", status_code=403)
+        body = await request.get_json()
+        enforce_local_login_rate_limit(request.remote_addr or "unknown")
+        change_local_password(
+            str(user["_id"]),
+            str((body or {}).get("current_password") or ""),
+            str((body or {}).get("new_password") or ""),
+        )
+        return jsonify(
+            {
+                "success": True,
+                "reauthentication_required": auth_claims.get("auth_provider") == "local",
+            }
+        ), 200
+    except LocalAuthError as error:
+        return jsonify({"error": str(error)}), error.status_code
+
+
+@bp.post("/admin/local-users")
+@authenticated
+async def admin_create_local_user(auth_claims: dict[str, Any]):
+    if not _local_auth_enabled():
+        return jsonify({"error": "Local authentication is not enabled"}), 404
+    try:
+        _require_system_permission(auth_claims, "Manage users")
+        body = await request.get_json()
+        user = create_managed_local_user(
+            username=(body or {}).get("username"),
+            password=(body or {}).get("password"),
+            user=body or {},
+        )
+        return jsonify({"user_id": user["_id"]}), 201
+    except LocalAuthError as error:
+        return jsonify({"error": str(error)}), error.status_code
+    except Exception as error:
+        return error_response(error, "/admin/local-users")
+
+
+@bp.put("/admin/local-users/<user_id>/password")
+@authenticated
+async def admin_reset_local_password(auth_claims: dict[str, Any], user_id: str):
+    try:
+        _require_user_management_target(auth_claims, user_id)
+        body = await request.get_json()
+        reset_local_password(user_id, str((body or {}).get("password") or ""))
+        return jsonify({"success": True}), 200
+    except LocalAuthError as error:
+        return jsonify({"error": str(error)}), error.status_code
+
+
+@bp.get("/admin/auth-settings")
+@authenticated
+async def admin_get_auth_settings(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    managed = get_auth_settings()
+    if managed:
+        settings = serialize_auth_settings(managed)
+        settings["source"] = "managed"
+    else:
+        auth_helper = current_app.config[CONFIG_AUTH_CLIENT]
+        settings = {
+            "entra_enabled": auth_helper.entra_authentication_enabled,
+            "tenant_id": auth_helper.tenant_id or "",
+            "server_app_id": auth_helper.server_app_id or "",
+            "client_app_id": auth_helper.client_app_id or "",
+            "has_client_secret": bool(auth_helper.server_app_secret),
+            "source": "environment",
+        }
+    settings["local_enabled"] = _local_auth_enabled()
+    return jsonify(settings)
+
+
+@bp.put("/admin/auth-settings")
+@authenticated
+async def admin_update_auth_settings(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        body = await request.get_json()
+        if (body or {}).get("entra_enabled") is not True and not (
+            _local_auth_enabled() and local_identity_exists()
+        ):
+            return jsonify({"error": "Create a local administrator before disabling Microsoft Entra ID"}), 400
+        settings = save_auth_settings(body or {})
+        runtime_settings = get_auth_settings(decrypt_client_secret=True) or {}
+        current_app.config[CONFIG_AUTH_CLIENT].configure_entra(
+            enabled=runtime_settings.get("entra_enabled") is True,
+            tenant_id=runtime_settings.get("tenant_id"),
+            server_app_id=runtime_settings.get("server_app_id"),
+            server_app_secret=runtime_settings.get("client_secret"),
+            client_app_id=runtime_settings.get("client_app_id"),
+        )
+        return jsonify(serialize_auth_settings(settings))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.delete("/admin/auth-settings")
+@authenticated
+async def admin_reset_auth_settings(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    env_enabled = os.getenv("AZURE_USE_AUTHENTICATION", "").lower() == "true"
+    if not env_enabled and not (_local_auth_enabled() and local_identity_exists()):
+        return jsonify({"error": "Environment authentication is not configured"}), 400
+    delete_auth_settings()
+    current_app.config[CONFIG_AUTH_CLIENT].configure_entra(
+        enabled=env_enabled,
+        tenant_id=os.getenv("AZURE_AUTH_TENANT_ID", os.getenv("AZURE_TENANT_ID")),
+        server_app_id=os.getenv("AZURE_SERVER_APP_ID"),
+        server_app_secret=os.getenv("AZURE_SERVER_APP_SECRET"),
+        client_app_id=os.getenv("AZURE_CLIENT_APP_ID"),
+    )
+    return jsonify({"success": True}), 200
 
 
 @bp.get("/admin/llm-providers")
@@ -4641,8 +4920,7 @@ async def effective_access(auth_claims: dict[str, Any]):
 @authenticated
 async def check_user_login(auth_claims: dict[str, Any]):
     try:
-        user_name = auth_claims["preferred_username"]
-        user = get_user_by_ad_email(user_name)
+        user = _application_user_for_claims(auth_claims)
         sys_pers = []
         if user:
             if user["is_sys_admin"]:
@@ -4676,11 +4954,41 @@ async def check_user_login(auth_claims: dict[str, Any]):
                         team_dict = {"_id": team.get(
                             "_id"), "name": team["name"], "permissions": per_list}
                         result_teams.append(team_dict)
-            return jsonify({"user": user, "teams": result_teams, "sys_permissions": sys_pers}), 200
+            return jsonify({"user": _serialize_user_auth(user), "teams": result_teams, "sys_permissions": sys_pers}), 200
         else:
             return jsonify({"error": "Can't find user"}), 404
     except Exception as error_txt:
         return jsonify({"error": str(error_txt)}), 400
+
+
+@bp.get("/auth/profile")
+@authenticated
+async def get_own_profile(auth_claims: dict[str, Any]):
+    user = _application_user_for_claims(auth_claims)
+    if not user or user.get("active", True) is not True:
+        return jsonify({"error": "The application user is unavailable"}), 404
+    return jsonify({"user": _serialize_user_auth(user)}), 200
+
+
+@bp.put("/auth/profile")
+@authenticated
+async def update_own_profile(auth_claims: dict[str, Any]):
+    try:
+        user = _application_user_for_claims(auth_claims)
+        if not user or user.get("active", True) is not True:
+            raise AccessControlError("The application user is unavailable", status_code=404)
+        profile = _normalize_self_profile(await request.get_json())
+        update_user(
+            str(user["_id"]),
+            email=profile["email"],
+            first_name=profile["first_name"],
+            last_name=profile["last_name"],
+            tel=profile["tel"],
+        )
+        updated = get_user_by_id(str(user["_id"]))
+        return jsonify({"user": _serialize_user_auth(updated or user)}), 200
+    except Exception as error:
+        return error_response(error, "/auth/profile")
 
 
 @bp.post("/create_team")
@@ -4803,9 +5111,9 @@ async def insert_user_function(auth_claims: dict[str, Any]):
 @authenticated
 async def delete_user(auth_claims: dict[str, Any]):
     try:
-        _require_system_permission(auth_claims, "Manage users")
         body = await request.get_json()
         user_id = body.get("user_id", None)
+        _require_user_management_target(auth_claims, str(user_id or ""), destructive=True)
         user_per_list = get_user_permission_by_user_id(user_id)
         if user_per_list:
             for user_per in user_per_list:
@@ -4832,7 +5140,6 @@ async def delete_user(auth_claims: dict[str, Any]):
 @authenticated
 async def update_user_function(auth_claims: dict[str, Any]):
     try:
-        _require_system_permission(auth_claims, "Manage users")
         body = await request.get_json()
         user_id = body.get("user_id", None)
         email = body.get("email", None)
@@ -4842,6 +5149,13 @@ async def update_user_function(auth_claims: dict[str, Any]):
         tel = body.get("tel", None)
         employee_id = body.get("employee_id", None)
         active = body.get("active", None)
+        target = _require_user_management_target(
+            auth_claims,
+            str(user_id or ""),
+            destructive=active is False,
+        )[1]
+        if target.get("is_sys_admin") is True and active is False:
+            raise AccessControlError("System administrator accounts cannot be deactivated from User Management")
         update_user(user_id, email, ad_email, first_name,
                     last_name, employee_id, tel, active)
         return jsonify({"success": f"Update user success"}), 200
@@ -4872,7 +5186,13 @@ async def get_users_by_team_id(auth_claims: dict[str, Any]):
 async def get_all_users_function(auth_claims: dict[str, Any]):
     try:
         _require_system_permission(auth_claims, "Manage users")
-        allusers = get_all_user_by_is_sys_admin(False)
+        allusers = get_all_users()
+        local_identities = list_local_identities_by_user_ids(
+            [str(user.get("_id") or "") for user in allusers]
+        )
+        for user in allusers:
+            identity = local_identities.get(str(user.get("_id") or ""))
+            user.update(_serialize_user_auth(user, identity))
         return jsonify({"result": allusers}), 200
     except Exception as error_txt:
         return error_response(error_txt, "/get_all_users")
@@ -5463,12 +5783,13 @@ async def create_edit_user_permissions(auth_claims: dict[str, Any]):
                 update_user_permission(
                     user_per[0]["_id"], team_id, user_id, permissions_id)
         else:
-            actor = _require_system_permission(auth_claims, "Manage users")
-            target_user = get_user_by_id(str(user_id or ""))
-            if not target_user:
-                raise AccessControlError("User not found", status_code=404)
-            if (bool(is_sys_admin) or target_user.get("is_sys_admin") is True) and actor.get("is_sys_admin") is not True:
-                raise AccessControlError("Only a system administrator can change system-administrator status")
+            _, target_user = _require_user_management_target(
+                auth_claims, str(user_id or "")
+            )
+            if target_user.get("is_sys_admin") is True and not bool(is_sys_admin):
+                _require_user_management_target(
+                    auth_claims, str(user_id or ""), destructive=True
+                )
             permissions_id = _validate_permission_ids(
                 permissions_id, permission_type="system"
             )
@@ -5984,6 +6305,7 @@ async def setup_clients():
     AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID")
     AZURE_USE_AUTHENTICATION = os.getenv(
         "AZURE_USE_AUTHENTICATION", "").lower() == "true"
+    LOCAL_AUTH_ENABLED = os.getenv("LOCAL_AUTH_ENABLED", "").lower() == "true"
     AZURE_ENFORCE_ACCESS_CONTROL = os.getenv(
         "AZURE_ENFORCE_ACCESS_CONTROL", "").lower() == "true"
     AZURE_ENABLE_GLOBAL_DOCUMENT_ACCESS = os.getenv(
@@ -5994,6 +6316,20 @@ async def setup_clients():
     AZURE_SERVER_APP_SECRET = os.getenv("AZURE_SERVER_APP_SECRET")
     AZURE_CLIENT_APP_ID = os.getenv("AZURE_CLIENT_APP_ID")
     AZURE_AUTH_TENANT_ID = os.getenv("AZURE_AUTH_TENANT_ID", AZURE_TENANT_ID)
+    managed_auth = None
+    if LOCAL_AUTH_ENABLED:
+        try:
+            managed_auth = get_auth_settings(decrypt_client_secret=True)
+        except Exception:
+            current_app.logger.exception(
+                "Unable to load managed authentication settings; using environment configuration"
+            )
+    if managed_auth:
+        AZURE_USE_AUTHENTICATION = managed_auth.get("entra_enabled") is True
+        AZURE_SERVER_APP_ID = managed_auth.get("server_app_id") or None
+        AZURE_SERVER_APP_SECRET = managed_auth.get("client_secret") or None
+        AZURE_CLIENT_APP_ID = managed_auth.get("client_app_id") or None
+        AZURE_AUTH_TENANT_ID = managed_auth.get("tenant_id") or AZURE_TENANT_ID
 
     KB_FIELDS_CONTENT = os.getenv("KB_FIELDS_CONTENT", "content")
     KB_FIELDS_SOURCEPAGE = os.getenv("KB_FIELDS_SOURCEPAGE", "sourcepage")
@@ -6167,9 +6503,9 @@ async def setup_clients():
     # Set up authentication helper
     search_index = None
     search_index_stats = {"document_count": 0, "storage_size": 0}
-    if AZURE_USE_AUTHENTICATION:
+    if AZURE_USE_AUTHENTICATION or (LOCAL_AUTH_ENABLED and AZURE_ENFORCE_ACCESS_CONTROL):
         current_app.logger.info(
-            "AZURE_USE_AUTHENTICATION is true, setting up search index client")
+            "Authentication ACLs are enabled, setting up search index client")
         search_index_client = SearchIndexClient(
             endpoint=AZURE_SEARCH_ENDPOINT,
             credential=azure_credential,
@@ -6177,6 +6513,8 @@ async def setup_clients():
         search_index = await search_index_client.get_index(AZURE_SEARCH_INDEX)
         search_index_stats = await search_index_client.get_index_statistics(AZURE_SEARCH_INDEX)
         await search_index_client.close()
+    if LOCAL_AUTH_ENABLED:
+        ensure_local_auth_indexes()
     auth_helper = AuthenticationHelper(
         search_index=search_index,
         use_authentication=AZURE_USE_AUTHENTICATION,
@@ -6187,6 +6525,9 @@ async def setup_clients():
         require_access_control=AZURE_ENFORCE_ACCESS_CONTROL,
         enable_global_documents=AZURE_ENABLE_GLOBAL_DOCUMENT_ACCESS,
         enable_unauthenticated_access=AZURE_ENABLE_UNAUTHENTICATED_ACCESS,
+        local_authentication_enabled=LOCAL_AUTH_ENABLED,
+        local_session_resolver=resolve_local_session,
+        local_bootstrap_required=lambda: not local_identity_exists(),
     )
 
     text_embeddings_service = create_embedding_service(

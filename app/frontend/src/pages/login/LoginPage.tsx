@@ -1,6 +1,15 @@
 import { useState } from "react";
 import { useMsal } from "@azure/msal-react";
-import { getRedirectUri, loginRequest, getToken } from "../../authConfig";
+import {
+    bootstrapLocalAdmin,
+    entraAuthenticationEnabled,
+    getRedirectUri,
+    getToken,
+    localAuthenticationEnabled,
+    localBootstrapRequired,
+    localLogin,
+    loginRequest
+} from "../../authConfig";
 import styles from "./LoginPage.module.css";
 import appLogo from "../../../public/insight_sphere_new.png";
 import { RegisterDialog } from "../../components/LoginButton/RegisterDialog";
@@ -15,9 +24,13 @@ interface LoginPageProps {
 const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
     const { instance } = useMsal();
 
-    // ── Username / Password (skeleton — ยังไม่ submit จริง) ──
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
+    const [localLoading, setLocalLoading] = useState(false);
+    const [bootstrapToken, setBootstrapToken] = useState("");
+    const [email, setEmail] = useState("");
+    const [firstName, setFirstName] = useState("");
+    const [lastName, setLastName] = useState("");
 
     // ── AD Login ──
     const [adLoading, setAdLoading] = useState(false);
@@ -138,6 +151,33 @@ const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
         }
     };
 
+    const handleLocalSubmit = async () => {
+        setLocalLoading(true);
+        setErrorMsg("");
+        setSuccessMsg("");
+        try {
+            if (localBootstrapRequired) {
+                await bootstrapLocalAdmin(
+                    { username, password, email, first_name: firstName, last_name: lastName },
+                    bootstrapToken
+                );
+                setSuccessMsg("Local administrator created. You can now sign in.");
+                window.setTimeout(() => window.location.reload(), 800);
+                return;
+            }
+            await localLogin(username, password);
+            const token = await getToken(instance);
+            if (!token) throw new Error("Local session was not created");
+            const authProfile = await check_user_login(token);
+            AuthStorage.set(authProfile);
+            onLoginSuccess();
+        } catch (error: any) {
+            setErrorMsg(error?.message || "Local sign-in failed.");
+        } finally {
+            setLocalLoading(false);
+        }
+    };
+
     return (
         <div className={styles.loginPageWrapper}>
             <div className={styles.loginCard}>
@@ -152,14 +192,30 @@ const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
                 {errorMsg && <div className={styles.alertBox}>{errorMsg}</div>}
                 {successMsg && <div className={styles.successBox}>{successMsg}</div>}
 
-                {/* ── Username / Password Form (skeleton) ── */}
-                <form
+                {localAuthenticationEnabled && <form
                     className={styles.form}
                     onSubmit={(e) => {
                         e.preventDefault();
-                        // ยังไม่ทำ logic submit จริง
+                        void handleLocalSubmit();
                     }}
                 >
+                    {localBootstrapRequired && (
+                        <>
+                            <p className={styles.setupHint}>Create the first local system administrator.</p>
+                            <div className={styles.inputGroup}>
+                                <label className={styles.inputLabel} htmlFor="bootstrap-token">Bootstrap token</label>
+                                <input id="bootstrap-token" className={styles.input} type="password" value={bootstrapToken} onChange={e => setBootstrapToken(e.target.value)} autoComplete="off" />
+                            </div>
+                            <div className={styles.inputGroup}>
+                                <label className={styles.inputLabel} htmlFor="local-email">Email</label>
+                                <input id="local-email" className={styles.input} type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" />
+                            </div>
+                            <div className={styles.nameRow}>
+                                <input className={styles.input} placeholder="First name" value={firstName} onChange={e => setFirstName(e.target.value)} />
+                                <input className={styles.input} placeholder="Last name" value={lastName} onChange={e => setLastName(e.target.value)} />
+                            </div>
+                        </>
+                    )}
                     <div className={styles.inputGroup}>
                         <label className={styles.inputLabel} htmlFor="login-username">
                             Username
@@ -190,21 +246,20 @@ const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
                         />
                     </div>
 
-                    <button type="submit" className={styles.loginBtn} disabled>
-                        Sign In
-                        <span className={styles.comingSoonBadge}>Coming Soon</span>
+                    <button type="submit" className={styles.loginBtn} disabled={localLoading || !username || password.length < 12 || (localBootstrapRequired && !bootstrapToken)}>
+                        {localLoading ? "Working…" : localBootstrapRequired ? "Create administrator" : "Sign In"}
                     </button>
-                </form>
+                </form>}
 
                 {/* ── Divider ── */}
-                <div className={styles.divider}>
+                {localAuthenticationEnabled && entraAuthenticationEnabled && <div className={styles.divider}>
                     <span className={styles.dividerLine} />
                     <span className={styles.dividerText}>or</span>
                     <span className={styles.dividerLine} />
-                </div>
+                </div>}
 
                 {/* ── AD Login Button ── */}
-                <button
+                {entraAuthenticationEnabled && <button
                     className={`${styles.adLoginBtn} ${adLoading ? styles.adLoginBtnLoading : ""}`}
                     onClick={handleAdLogin}
                     disabled={adLoading}
@@ -227,7 +282,7 @@ const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
                             Sign in with Azure AD
                         </>
                     )}
-                </button>
+                </button>}
 
                 {/* ── Footer ── */}
                 <p className={styles.footer}>

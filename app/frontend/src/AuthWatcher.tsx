@@ -1,9 +1,10 @@
 import { useEffect } from "react";
 import { useMsal } from "@azure/msal-react";
-import { getToken } from "./authConfig";
+import { getToken, isUsingLocalLogin, localLogout, validateLocalSession } from "./authConfig";
 import { useContext } from "react";
 import { LoginContext } from "./loginContext";
 import { UserProfileWithActiveGroup } from "./api/models";
+import { AuthStorage } from "./utill/authStorage";
 
 const defaultUser: UserProfileWithActiveGroup = {
     _id: "",
@@ -28,8 +29,16 @@ export const AuthWatcher = () => {
         let interval: any;
 
         const checkToken = async () => {
+            if (isUsingLocalLogin()) {
+                if (!(await validateLocalSession())) {
+                    setLoggedIn(false);
+                    setUserDetails(defaultUser);
+                    AuthStorage.clear();
+                }
+                return;
+            }
             const accounts = msalInstance.getAllAccounts();
-            if (accounts.length === 0) {
+            if (accounts.length === 0 && !isUsingLocalLogin()) {
                 // 👈 ไม่มี session อยู่แล้ว → ไม่ต้อง reload
                 return;
             }
@@ -39,6 +48,7 @@ export const AuthWatcher = () => {
                 console.warn("⏰ Token expired → auto logout");
                 setLoggedIn(false);
                 setUserDetails(defaultUser);
+                await localLogout();
                 localStorage.clear();
             }
         };

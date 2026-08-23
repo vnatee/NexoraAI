@@ -11,7 +11,7 @@ from core.effective_access import resolve_effective_access
 from error import error_response
 from mongo_table_connecters.data_group import get_data_group_by_id
 from mongo_table_connecters.teams import get_team_by_id
-from mongo_table_connecters.users import get_user_by_ad_email
+from mongo_table_connecters.users import get_user_by_ad_email, get_user_by_id
 
 
 def _content_access_claims(path: str, auth_claims: dict[str, Any]) -> dict[str, Any]:
@@ -26,12 +26,11 @@ def _content_access_claims(path: str, auth_claims: dict[str, Any]) -> dict[str, 
     if not team:
         return auth_claims
 
-    username = (
-        auth_claims.get("preferred_username")
-        or auth_claims.get("email")
-        or auth_claims.get("upn")
+    application_user_id = str(auth_claims.get("application_user_id") or "").strip()
+    username = auth_claims.get("preferred_username") or auth_claims.get("email") or auth_claims.get("upn")
+    user = get_user_by_id(application_user_id) if application_user_id else (
+        get_user_by_ad_email(str(username)) if username else None
     )
-    user = get_user_by_ad_email(str(username)) if username else None
     data_groups = [
         get_data_group_by_id(str(group_id))
         for group_id in (team.get("data_group_id") or [])

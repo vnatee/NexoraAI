@@ -9,6 +9,7 @@ import { TeamProfile, User } from "../../../api/models";
 import { AuthStorage } from "../../../utill/authStorage";
 import { STORAGE_KEYS } from "../../../utill/storageKeys";
 import { Storage } from "../../../utill/storage";
+import { AuthenticationSettingsPage } from "./AuthenticationSettingsPage";
 
 export function ManageUserTabs() {
     const [tab, setTab] = useState(0);
@@ -51,6 +52,13 @@ export function ManageUserTabs() {
         tabs.push({
             label: "User Permission",
             content: <UserPermissionPanel />
+        });
+    }
+
+    if (userData?.is_sys_admin) {
+        tabs.push({
+            label: "Authentication",
+            content: <AuthenticationSettingsPage />
         });
     }
 

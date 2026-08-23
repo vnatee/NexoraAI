@@ -3,7 +3,7 @@
 import base64
 import json
 import logging
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import aiohttp
 import jwt
@@ -45,8 +45,15 @@ class AuthenticationHelper:
         require_access_control: bool = False,
         enable_global_documents: bool = False,
         enable_unauthenticated_access: bool = False,
+        local_authentication_enabled: bool = False,
+        local_session_resolver: Callable[[str], dict[str, Any]] | None = None,
+        local_bootstrap_required: Callable[[], bool] | None = None,
     ):
-        self.use_authentication = use_authentication
+        self.entra_authentication_enabled = use_authentication
+        self.local_authentication_enabled = local_authentication_enabled
+        self.use_authentication = use_authentication or local_authentication_enabled
+        self.local_session_resolver = local_session_resolver
+        self.local_bootstrap_required = local_bootstrap_required
         self.server_app_id = server_app_id
         self.server_app_secret = server_app_secret
         self.client_app_id = client_app_id
@@ -68,8 +75,15 @@ class AuthenticationHelper:
             self.require_access_control = require_access_control
             self.enable_global_documents = enable_global_documents
             self.enable_unauthenticated_access = enable_unauthenticated_access
-            self.confidential_client = ConfidentialClientApplication(
-                server_app_id, authority=self.authority, client_credential=server_app_secret, token_cache=TokenCache()
+            self.confidential_client = (
+                ConfidentialClientApplication(
+                    server_app_id,
+                    authority=self.authority,
+                    client_credential=server_app_secret,
+                    token_cache=TokenCache(),
+                )
+                if self.entra_authentication_enabled
+                else None
             )
         else:
             self.has_auth_fields = False
@@ -79,14 +93,23 @@ class AuthenticationHelper:
 
     def get_auth_setup_for_client(self) -> dict[str, Any]:
         # returns MSAL.js settings used by the client app
+        client_id = self.client_app_id if self.entra_authentication_enabled else "00000000-0000-0000-0000-000000000000"
+        authority = self.authority if self.entra_authentication_enabled else "https://login.microsoftonline.com/common"
         return {
             "useLogin": self.use_authentication,  # Whether or not login elements are enabled on the UI
             "requireAccessControl": self.require_access_control,  # Whether or not access control is required to access documents with access control lists
             "enableUnauthenticatedAccess": self.enable_unauthenticated_access,  # Whether or not the user can access the app without login
+            "localAuthenticationEnabled": self.local_authentication_enabled,
+            "entraAuthenticationEnabled": self.entra_authentication_enabled,
+            "localBootstrapRequired": bool(
+                self.local_authentication_enabled
+                and self.local_bootstrap_required
+                and self.local_bootstrap_required()
+            ),
             "msalConfig": {
                 "auth": {
-                    "clientId": self.client_app_id,  # Client app id used for login
-                    "authority": self.authority,  # Directory to use for login https://learn.microsoft.com/entra/identity-platform/msal-client-application-configuration#authority
+                    "clientId": client_id,  # Client app id used for login
+                    "authority": authority,  # Directory to use for login https://learn.microsoft.com/entra/identity-platform/msal-client-application-configuration#authority
                     "redirectUri": "/redirect",  # Points to window.location.origin. You must register this URI on Azure Portal/App Registration.
                     "postLogoutRedirectUri": "/",  # Indicates the page to navigate after logout.
                     "navigateToLoginRequestUrl": False,  # If "true", will navigate back to the original request location before processing the auth code response.
@@ -112,6 +135,39 @@ class AuthenticationHelper:
                 "scopes": [f"api://{self.server_app_id}/access_as_user"],
             },
         }
+
+    def configure_entra(
+        self,
+        *,
+        enabled: bool,
+        tenant_id: str | None,
+        server_app_id: str | None,
+        server_app_secret: str | None,
+        client_app_id: str | None,
+    ) -> None:
+        self.entra_authentication_enabled = enabled
+        self.use_authentication = enabled or self.local_authentication_enabled
+        self.tenant_id = tenant_id
+        self.server_app_id = server_app_id
+        self.server_app_secret = server_app_secret
+        self.client_app_id = client_app_id
+        self.authority = f"https://login.microsoftonline.com/{tenant_id}"
+        self.valid_issuers = [
+            f"https://sts.windows.net/{tenant_id}/",
+            f"https://login.microsoftonline.com/{tenant_id}/v2.0",
+        ]
+        self.valid_audiences = [f"api://{server_app_id}", str(server_app_id)]
+        self.key_url = f"{self.authority}/discovery/v2.0/keys"
+        self.confidential_client = (
+            ConfidentialClientApplication(
+                server_app_id,
+                authority=self.authority,
+                client_credential=server_app_secret,
+                token_cache=TokenCache(),
+            )
+            if enabled
+            else None
+        )
 
     @staticmethod
     def get_token_auth_header(headers: dict) -> str:
@@ -232,6 +288,15 @@ class AuthenticationHelper:
             # The scope is set to the Microsoft Graph API, which may need to be called for more authorization information
             # https://learn.microsoft.com/entra/identity-platform/v2-oauth2-on-behalf-of-flow
             auth_token = AuthenticationHelper.get_token_auth_header(headers)
+            if auth_token.startswith("nx_local_"):
+                if not self.local_authentication_enabled or not self.local_session_resolver:
+                    raise AuthError(error="Local authentication is not enabled", status_code=401)
+                try:
+                    return self.local_session_resolver(auth_token)
+                except Exception as error:
+                    raise AuthError(error=str(error), status_code=getattr(error, "status_code", 401)) from error
+            if not self.entra_authentication_enabled or self.confidential_client is None:
+                raise AuthError(error="Microsoft Entra authentication is not enabled", status_code=401)
             # Validate the token before use
             await self.validate_access_token(auth_token)
 
@@ -263,12 +328,16 @@ class AuthenticationHelper:
             return auth_claims
         except AuthError as e:
             logging.exception("Exception getting authorization information - " + json.dumps(e.error))
-            if self.require_access_control and not self.enable_unauthenticated_access:
+            if self.local_authentication_enabled or (
+                self.require_access_control and not self.enable_unauthenticated_access
+            ):
                 raise
             return {}
         except Exception:
             logging.exception("Exception getting authorization information")
-            if self.require_access_control and not self.enable_unauthenticated_access:
+            if self.local_authentication_enabled or (
+                self.require_access_control and not self.enable_unauthenticated_access
+            ):
                 raise
             return {}
 
