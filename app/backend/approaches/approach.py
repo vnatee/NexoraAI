@@ -16,7 +16,6 @@ from azure.search.documents.agent.models import (
     KnowledgeAgentRetrievalResponse,
     KnowledgeAgentSearchActivityRecord,
 )
-from azure.search.documents.aio import SearchClient
 from azure.search.documents.models import (
     QueryCaptionResult,
     QueryType,
@@ -34,8 +33,9 @@ from openai.types.chat import (
 )
 
 from approaches.promptmanager import PromptManager
-from core.authentication import AuthenticationHelper
 from core.attachment_retrieval import source_display_filename
+from core.authentication import AuthenticationHelper
+from core.knowledge_search import KnowledgeSearchClient
 from core.llm_vendors import apply_llm_vendor_chat_policy
 from prepdocslib.embeddings import OpenAIEmbeddings
 
@@ -144,7 +144,7 @@ class Approach(ABC):
 
     def __init__(
         self,
-        search_client: SearchClient,
+        search_client: KnowledgeSearchClient,
         openai_client: AsyncOpenAI,
         auth_helper: AuthenticationHelper,
         query_language: Optional[str],

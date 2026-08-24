@@ -12,18 +12,20 @@ const HISTORY_COUNT_PER_LOAD = 20;
 
 export const HistoryPanel = ({
     provider,
+    ownerId,
     isOpen,
     notify,
     onClose,
     onChatSelected
 }: {
     provider: HistoryProviderOptions;
+    ownerId?: string;
     isOpen: boolean;
     notify: boolean;
     onClose: () => void;
     onChatSelected: (answers: Answers) => void;
 }) => {
-    const historyManager = useHistoryManager(provider);
+    const historyManager = useHistoryManager(provider, ownerId);
     const [history, setHistory] = useState<HistoryMetaData[]>([]);
     const [isLoading, setIsLoading] = useState(false);
     const [hasMoreHistory, setHasMoreHistory] = useState(false);
@@ -37,7 +39,7 @@ export const HistoryPanel = ({
             historyManager.resetContinuationToken();
             setHasMoreHistory(true);
         }
-    }, [isOpen, notify]);
+    }, [isOpen, notify, historyManager]);
 
     const loadMoreHistory = async () => {
         setIsLoading(() => true);

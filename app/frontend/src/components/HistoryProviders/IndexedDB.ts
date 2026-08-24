@@ -6,13 +6,15 @@ export class IndexedDBProvider implements IHistoryProvider {
 
     private dbName: string;
     private storeName: string;
+    private ownerId: string;
     private dbPromise: Promise<IDBPDatabase> | null = null;
     private cursorKey: IDBValidKey | undefined;
     private isCusorEnd: boolean = false;
 
-    constructor(dbName: string, storeName: string) {
+    constructor(dbName: string, storeName: string, ownerId: string) {
         this.dbName = dbName;
         this.storeName = storeName;
+        this.ownerId = ownerId;
         this.cursorKey = undefined;
         this.isCusorEnd = false;
     }
@@ -57,9 +59,11 @@ export class IndexedDBProvider implements IHistoryProvider {
             return [];
         }
 
-        const loadedItems: { id: string; title: string; timestamp: number; answers: Answers }[] = [];
-        for (let i = 0; i < count && cursor; i++) {
-            loadedItems.push(cursor.value);
+        const loadedItems: { id: string; title: string; timestamp: number; answers: Answers; ownerId: string }[] = [];
+        while (loadedItems.length < count && cursor) {
+            if (cursor.value?.ownerId === this.ownerId) {
+                loadedItems.push(cursor.value);
+            }
             cursor = await cursor.continue();
         }
 
@@ -85,11 +89,14 @@ export class IndexedDBProvider implements IHistoryProvider {
         const current = await tx.objectStore(this.storeName).get(id);
         if (current) {
             const title = answers.length ? answers[answers.length - 1][0] : current.title;
-            await tx.objectStore(this.storeName).put({ ...current, id, title, timestamp, answers });
+            if (current.ownerId !== this.ownerId) {
+                throw new Error("Chat history item belongs to another user");
+            }
+            await tx.objectStore(this.storeName).put({ ...current, id, title, timestamp, answers, ownerId: this.ownerId });
         } else {
             // const title = answers[0][0].length > 50 ? answers[0][0].substring(0, 50) + "..." : answers[0][0];
             const title = answers.length ? answers[answers.length - 1][0] : "Untitled";
-            await tx.objectStore(this.storeName).add({ id, title, timestamp, answers });
+            await tx.objectStore(this.storeName).add({ id, title, timestamp, answers, ownerId: this.ownerId });
         }
         await tx.done;
         return;
@@ -99,12 +106,18 @@ export class IndexedDBProvider implements IHistoryProvider {
         const db = await this.init();
         const tx = db.transaction(this.storeName, "readonly");
         const item = await tx.objectStore(this.storeName).get(id);
-        return item ? item.answers : null;
+        return item?.ownerId === this.ownerId ? item.answers : null;
     }
 
     async deleteItem(id: string): Promise<void> {
         const db = await this.init();
-        await db.delete(this.storeName, id);
+        const tx = db.transaction(this.storeName, "readwrite");
+        const store = tx.objectStore(this.storeName);
+        const item = await store.get(id);
+        if (item?.ownerId === this.ownerId) {
+            await store.delete(id);
+        }
+        await tx.done;
         return;
     }
 
@@ -113,7 +126,7 @@ export class IndexedDBProvider implements IHistoryProvider {
         const tx = db.transaction(this.storeName, "readonly");
         const store = tx.objectStore(this.storeName);
 
-        const items = await store.getAll();
+        const items = (await store.getAll()).filter(item => item?.ownerId === this.ownerId);
         await tx.done;
         return items;
     }

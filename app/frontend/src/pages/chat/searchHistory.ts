@@ -1,7 +1,7 @@
 import { IndexedDBProvider } from "../../components/HistoryProviders/IndexedDB";
 
-export async function searchHistory(keyword: string) {
-    const provider = new IndexedDBProvider("chat-database", "chat-history");
+export async function searchHistory(keyword: string, ownerId: string) {
+    const provider = new IndexedDBProvider("chat-database", "chat-history", ownerId);
     const all = await provider.getAllItems();
 
     if (!all) return [];

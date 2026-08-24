@@ -200,6 +200,7 @@ async def test_app_config_default(monkeypatch, minimal_env):
         assert response.status_code == 200
         result = await response.get_json()
         assert result["knowledgeStorageProvider"] == "azure"
+        assert result["knowledgeSearchProvider"] == "azure"
         assert result["agentRuntimeMode"] == "per_agent"
         assert result["showGPT4VOptions"] is False
         assert result["showSemanticRankerOption"] is True
@@ -222,6 +223,28 @@ async def test_app_uses_minio_knowledge_storage_provider(monkeypatch, minimal_en
         assert (await response.get_json())["knowledgeStorageProvider"] == "minio"
         assert quart_app.config[app.CONFIG_KNOWLEDGE_STORE] is knowledge_store
         knowledge_store.ensure_ready.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_app_uses_qdrant_and_disables_azure_search_only_features(monkeypatch, minimal_env):
+    search_client = mock.AsyncMock()
+    monkeypatch.setenv("KNOWLEDGE_SEARCH_PROVIDER", "qdrant")
+    monkeypatch.setenv("QDRANT_URL", "http://qdrant:6333")
+    monkeypatch.setenv("QDRANT_COLLECTION", "knowledge")
+    monkeypatch.setenv("USE_AGENTIC_RETRIEVAL", "true")
+    monkeypatch.setattr(app, "QdrantKnowledgeSearchClient", lambda **_kwargs: search_client)
+
+    quart_app = app.create_app()
+    async with quart_app.test_app() as test_app:
+        response = await test_app.test_client().get("/config")
+        result = await response.get_json()
+
+        assert result["knowledgeSearchProvider"] == "qdrant"
+        assert result["showSemanticRankerOption"] is False
+        assert result["showQueryRewritingOption"] is False
+        assert result["showAgenticRetrievalOption"] is False
+        assert quart_app.config[app.CONFIG_SEARCH_CLIENT] is search_client
+        search_client.ensure_ready.assert_awaited_once()
 
 
 @pytest.mark.asyncio

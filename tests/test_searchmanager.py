@@ -28,6 +28,20 @@ from .mocks import (
 )
 
 
+class MockQdrantSearchClient:
+    def __init__(self):
+        self.ensure_ready_calls = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def ensure_ready(self):
+        self.ensure_ready_calls += 1
+
+
 @pytest.fixture
 def search_info():
     return SearchInfo(
@@ -129,6 +143,25 @@ async def test_create_index_does_exist(monkeypatch, search_info):
         "processingProfile",
         "processingConfidence",
     }
+
+
+@pytest.mark.asyncio
+async def test_create_qdrant_collection_uses_embedding_dimensions():
+    client = MockQdrantSearchClient()
+    search_info = SearchInfo(
+        endpoint="",
+        credential=AzureKeyCredential("unused"),
+        index_name="knowledge",
+        provider="qdrant",
+        qdrant_url="http://qdrant:6333",
+        qdrant_vector_size=MOCK_EMBEDDING_DIMENSIONS,
+    )
+    search_info.create_search_client = lambda: client
+    embeddings = SimpleNamespace(open_ai_dimensions=MOCK_EMBEDDING_DIMENSIONS)
+
+    await SearchManager(search_info, embeddings=embeddings, field_name_embedding="embedding").create_index()
+
+    assert client.ensure_ready_calls == 1
 
 
 @pytest.mark.asyncio

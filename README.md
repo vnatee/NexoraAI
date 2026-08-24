@@ -132,8 +132,9 @@ For a local MongoDB-backed control plane, see
 [docs/local-mongodb.md](docs/local-mongodb.md). For local Personal, Team,
 Global, and web-ingested Knowledge source files, see
 [docs/local-knowledge-storage.md](docs/local-knowledge-storage.md). Azure and
-local providers can be selected independently; Azure AI Search remains the
-retrieval backend until the search-provider migration is complete.
+local providers can be selected independently. For local Knowledge indexing
+and retrieval with Qdrant, see
+[docs/local-vector-search.md](docs/local-vector-search.md).
 
 1. Install the required tools:
 
@@ -270,6 +271,7 @@ You can find extensive documentation in the [docs](docs/README.md) folder:
   - [Sharing deployment environments](docs/sharing_environments.md)
 - [Local development](docs/localdev.md)
 - [Local Knowledge object storage](docs/local-knowledge-storage.md)
+- [Local Knowledge vector search](docs/local-vector-search.md)
 - [Local MongoDB](docs/local-mongodb.md)
 - [Customizing the app](docs/customization.md)
 - [HTTP Protocol](docs/http_protocol.md)

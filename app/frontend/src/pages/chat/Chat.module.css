@@ -2,12 +2,17 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-    margin-top: 1rem;
+    min-height: 0;
+    background:
+        radial-gradient(circle at 50% 16%, rgba(37, 99, 235, 0.045), transparent 30rem),
+        #f7f8fa;
 }
 
 .chatRoot {
     flex: 1;
     display: flex;
+    min-height: 0;
+    transition: margin-left 0.2s ease;
 }
 
 .chatContainer {
@@ -16,24 +21,40 @@
     flex-direction: column;
     align-items: center;
     width: 100%;
-    max-height: calc(100vh - 10rem);
+    height: calc(100vh - 64px);
+    min-height: 0;
+    overflow: hidden;
+}
+
+.chatContextBar {
+    width: min(100%, 68rem);
+    padding: 1rem 1.5rem 0;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    z-index: 10;
 }
 
 .chatEmptyState {
-    flex-grow: 1;
+    flex: 1;
     display: flex;
     flex-direction: column;
     justify-content: center;
     align-items: center;
-    max-height: 64rem;
-    padding-top: 1rem;
+    width: 100%;
+    min-height: 0;
+    padding: 1.5rem 1.5rem 4rem;
 }
 
 .chatEmptyStateTitle {
-    font-size: 2.75rem;
-    font-weight: 600;
-    margin-top: 0;
-    margin-bottom: 1.875rem;
+    max-width: 46rem;
+    font-size: clamp(2rem, 4vw, 3.25rem);
+    line-height: 1.08;
+    letter-spacing: -0.035em;
+    text-align: center;
+    font-weight: 650;
+    margin: 1rem 0 1.5rem;
+    color: #172033;
 }
 
 .chatEmptyStateSubtitle {
@@ -42,15 +63,14 @@
 }
 
 .chatMessageStream {
-    flex-grow: 1;
-    max-height: 64rem;
-    width: 100%;
+    flex: 1;
+    width: min(100%, 68rem);
+    min-height: 0;
     overflow-y: auto;
-    padding: 0 2rem;
+    padding: 1.5rem 1.5rem 2rem;
     display: flex;
     flex-direction: column;
-    resize: horizontal;
-    min-width: 50vw;
+    scrollbar-gutter: stable;
 }
 
 .chatMessageGpt {
@@ -65,13 +85,11 @@
 }
 
 .chatInput {
-    position: sticky;
-    bottom: 0;
-    flex: 0 0 6.25rem;
-    padding: 1rem;
+    flex: 0 0 auto;
+    padding: 0.75rem 1.5rem 1.25rem;
     width: 100%;
-    max-width: 64.25rem;
-    /* background: #f2f2f2!important; */
+    max-width: 68rem;
+    background: linear-gradient(180deg, rgba(247, 248, 250, 0), #f7f8fa 24%);
 }
 
 .chatAnalysisPanel {
@@ -94,7 +112,7 @@
 
 .commandsSplitContainer {
     position: fixed;
-    top: 80px; /* ยึดตาม header สูง 80px เสมอ */
+    top: 64px;
     right: 16px;
     z-index: 1200;
     display: flex;
@@ -102,14 +120,14 @@
     margin-top: 8px; /* 👈 ขยับลงมาอีกหน่อย */
 }
 
-/* tablet (header ~72px) */
+/* tablet */
 @media (min-width: 769px) and (max-width: 991px) {
     .commandsSplitContainer {
         right: 20px;
     }
 }
 
-/* desktop (header + sidebar ~80px) */
+/* desktop */
 @media (min-width: 992px) {
     .commandsSplitContainer {
         right: 24px;
@@ -127,20 +145,8 @@
 }
 
 @media (min-width: 992px) {
-    .container {
-        margin-top: 1.25rem;
-    }
-
-    .chatEmptyState {
-        padding-top: 3.75rem;
-    }
-
-    .chatEmptyStateTitle {
-        font-size: 4rem;
-    }
-
     .chatInput {
-        padding: 0.75rem 1.5rem 1.5rem;
+        padding-bottom: 1.5rem;
     }
 
     .commandsSplitContainer {
@@ -231,7 +237,7 @@
 
 .sparkleLogo {
     position: relative;
-    font-size: 90px;
+    font-size: 64px;
     font-weight: bold;
     background: linear-gradient(120deg, #ffcc33, #ff6a00, #ff00a6, #a960ff);
     background-size: 300% 300%;
@@ -251,8 +257,8 @@
     position: absolute;
     top: 50%;
     left: 50%;
-    width: 160px;
-    height: 160px;
+    width: 120px;
+    height: 120px;
     transform: translate(-50%, -50%);
     border-radius: 50%;
     background: radial-gradient(circle, rgba(255, 200, 100, 0.25) 0%, transparent 70%);
@@ -266,8 +272,8 @@
     position: absolute;
     top: 50%;
     left: 50%;
-    width: 220px;
-    height: 220px;
+    width: 170px;
+    height: 170px;
     transform: translate(-50%, -50%);
     border-radius: 50%;
     background: conic-gradient(from 0deg, rgba(255, 220, 180, 0.06), rgba(255, 160, 255, 0.07), rgba(180, 120, 255, 0.08), rgba(255, 220, 180, 0.06));
@@ -383,11 +389,11 @@
 /* mobile / tablet */
 .sidebar {
     position: fixed;
-    top: 80px;
+    top: 64px;
     left: 0;
-    height: calc(100% - 80px);
-    background: #2a2a2a; /* 👈 เทาเข้ม อ่อนกว่าดำ */
-    border-right: 1px solid #444; /* เส้นแบ่งเบาๆ */
+    height: calc(100% - 64px);
+    background: #20242a;
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
     /* overflow-y: auto; */
     transition: width 0.3s ease;
     z-index: 1000;
@@ -434,8 +440,9 @@
     display: flex;
     align-items: center;
     padding: 8px;
-    background-color: #2a2a2a; /* ให้กลืนกับ sidebar */
-    border-bottom: 1px solid #444; /* เส้นคั่น */
+    min-height: 48px;
+    background-color: #20242a;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     /* justify-content: center !important; */
 }
 
@@ -527,7 +534,7 @@
 
 .newChatContainer {
     padding: 8px;
-    border-bottom: 1px solid #ddd;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
 /* ปรับสีปุ่ม/ข้อความข้างใน */
@@ -539,7 +546,8 @@
     color: #f0f0f0 !important; /* ขาวอ่อน */
     font-weight: 500 !important;
     font-size: 14px !important;
-    padding-left: 12px !important;
+    border-radius: 8px !important;
+    padding: 9px 12px !important;
 }
 
 .newChatTextButton:hover {
@@ -566,4 +574,26 @@
     font-size: 12px;
     opacity: 0.6;
     border-top: 1px solid #444; /* ให้เข้ากับ sidebar สีเข้ม */
+}
+
+@media (max-width: 767px) {
+    .chatContextBar,
+    .chatMessageStream,
+    .chatInput {
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+    }
+
+    .chatEmptyState {
+        justify-content: flex-start;
+        padding-top: 12vh;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sparkleLogo,
+    .sparkleLogo::before,
+    .sparkleLogo span {
+        animation: none;
+    }
 }

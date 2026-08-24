@@ -3,13 +3,21 @@
 }
 
 .questionInputContainer {
-    border-radius: 0.5rem;
+    border: 1px solid rgba(100, 116, 139, 0.2);
+    border-radius: 1rem;
     box-shadow:
-        0px 0.5rem 1rem rgba(0, 0, 0, 0.14),
-        0px 0px 0.125rem rgba(0, 0, 0, 0.12);
+        0 0.75rem 2rem rgba(15, 23, 42, 0.09),
+        0 1px 3px rgba(15, 23, 42, 0.08);
     width: 100%;
-    padding: 0.8rem;
-    /* background: white; */
+    padding: 0.85rem 1rem;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.questionInputContainer:focus-within {
+    border-color: rgba(37, 99, 235, 0.55);
+    box-shadow:
+        0 0 0 3px rgba(37, 99, 235, 0.1),
+        0 0.75rem 2rem rgba(15, 23, 42, 0.09);
 }
 
 .hiddenFileInput {
@@ -130,6 +138,6 @@
 
 @media (min-width: 992px) {
     .questionInputContainer {
-        height: 5.625rem;
+        min-height: 5.625rem;
     }
 }

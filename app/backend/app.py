@@ -313,6 +313,7 @@ from config import (
     CONFIG_EXTERNAL_API_ENPOINT
 )
 from core.authentication import AuthenticationHelper
+from core.knowledge_search import QdrantKnowledgeSearchClient
 from core.model_providers import create_embedding_service, create_llm_client
 from core.llm_vendors import apply_llm_vendor_chat_policy, get_llm_vendor, infer_llm_vendor
 from core.model_profiles import (
@@ -2806,6 +2807,7 @@ async def config():
         {
             "runtimeMode": runtime_settings.mode.value,
             "knowledgeStorageProvider": os.getenv("KNOWLEDGE_STORAGE_PROVIDER", "azure").strip().lower(),
+            "knowledgeSearchProvider": os.getenv("KNOWLEDGE_SEARCH_PROVIDER", "azure").strip().lower(),
             "agentRuntimeMode": (
                 os.getenv("AGENT_RUNTIME_MODE", "per_agent").strip().lower()
                 if os.getenv("AGENT_RUNTIME_MODE", "per_agent").strip().lower() in {"legacy", "langgraph"}
@@ -6251,9 +6253,17 @@ async def setup_clients():
     AZURE_GROUP_STORAGE_CONTAINER = os.environ["AZURE_GROUP_STORAGE_CONTAINER"]
     AZURE_USERSTORAGE_ACCOUNT = os.environ.get("AZURE_USERSTORAGE_ACCOUNT")
     AZURE_USERSTORAGE_CONTAINER = os.environ.get("AZURE_USERSTORAGE_CONTAINER")
-    AZURE_SEARCH_SERVICE = os.environ["AZURE_SEARCH_SERVICE"]
+    KNOWLEDGE_SEARCH_PROVIDER = os.getenv("KNOWLEDGE_SEARCH_PROVIDER", "azure").strip().lower()
+    if KNOWLEDGE_SEARCH_PROVIDER not in {"azure", "qdrant"}:
+        raise ValueError("KNOWLEDGE_SEARCH_PROVIDER must be azure or qdrant")
+    AZURE_SEARCH_SERVICE = os.environ.get("AZURE_SEARCH_SERVICE", "")
+    if KNOWLEDGE_SEARCH_PROVIDER == "azure" and not AZURE_SEARCH_SERVICE:
+        raise ValueError("AZURE_SEARCH_SERVICE is required when KNOWLEDGE_SEARCH_PROVIDER=azure")
     AZURE_SEARCH_ENDPOINT = f"https://{AZURE_SEARCH_SERVICE}.search.windows.net"
-    AZURE_SEARCH_INDEX = os.environ["AZURE_SEARCH_INDEX"]
+    AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX", "gptkbindex")
+    QDRANT_URL = os.getenv("QDRANT_URL", "http://127.0.0.1:6333")
+    QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", AZURE_SEARCH_INDEX)
+    QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") or None
     AZURE_SEARCH_AGENT = os.getenv("AZURE_SEARCH_AGENT", "")
     # Model provider settings support both the legacy OPENAI_* variables and
     # the new provider-specific LLM_*/EMBEDDING_* variables.
@@ -6339,6 +6349,11 @@ async def setup_clients():
         "USE_CHAT_HISTORY_COSMOS", "").lower() == "true"
     USE_AGENTIC_RETRIEVAL = os.getenv(
         "USE_AGENTIC_RETRIEVAL", "").lower() == "true"
+    if KNOWLEDGE_SEARCH_PROVIDER == "qdrant" and os.getenv("USE_VECTORS", "").lower() == "false":
+        raise ValueError("Qdrant Knowledge search requires USE_VECTORS=true")
+    if KNOWLEDGE_SEARCH_PROVIDER == "qdrant" and USE_AGENTIC_RETRIEVAL:
+        current_app.logger.warning("Agentic retrieval is Azure AI Search-only; disabling it for Qdrant")
+        USE_AGENTIC_RETRIEVAL = False
 
     # WEBSITE_HOSTNAME is always set by App Service, RUNNING_IN_PRODUCTION is set in main.bicep
     RUNNING_ON_AZURE = os.getenv("WEBSITE_HOSTNAME") is not None or os.getenv(
@@ -6385,15 +6400,26 @@ async def setup_clients():
     # Set the Azure credential in the app config for use in other parts of the app
     current_app.config[CONFIG_CREDENTIAL] = azure_credential
 
-    # Set up clients for AI Search and Storage
-    search_client = SearchClient(
-        endpoint=AZURE_SEARCH_ENDPOINT,
-        index_name=AZURE_SEARCH_INDEX,
-        credential=azure_credential,
-    )
-    agent_client = KnowledgeAgentRetrievalClient(
-        endpoint=AZURE_SEARCH_ENDPOINT, agent_name=AZURE_SEARCH_AGENT, credential=azure_credential
-    )
+    # Set up the selectable Knowledge search client. Azure remains the default.
+    if KNOWLEDGE_SEARCH_PROVIDER == "qdrant":
+        search_client = QdrantKnowledgeSearchClient(
+            endpoint=QDRANT_URL,
+            collection_name=QDRANT_COLLECTION,
+            vector_size=OPENAI_EMB_DIMENSIONS,
+            vector_field=AZURE_SEARCH_FIELD_NAME_EMBEDDING,
+            api_key=QDRANT_API_KEY,
+        )
+        await search_client.ensure_ready()
+        agent_client = None
+    else:
+        search_client = SearchClient(
+            endpoint=AZURE_SEARCH_ENDPOINT,
+            index_name=AZURE_SEARCH_INDEX,
+            credential=azure_credential,
+        )
+        agent_client = KnowledgeAgentRetrievalClient(
+            endpoint=AZURE_SEARCH_ENDPOINT, agent_name=AZURE_SEARCH_AGENT, credential=azure_credential
+        )
 
     knowledge_storage_provider = os.getenv("KNOWLEDGE_STORAGE_PROVIDER", "azure").strip().lower()
     if knowledge_storage_provider not in {"azure", "minio"}:
@@ -6509,7 +6535,10 @@ async def setup_clients():
     # Set up authentication helper
     search_index = None
     search_index_stats = {"document_count": 0, "storage_size": 0}
-    if AZURE_USE_AUTHENTICATION or (LOCAL_AUTH_ENABLED and AZURE_ENFORCE_ACCESS_CONTROL):
+    if (
+        KNOWLEDGE_SEARCH_PROVIDER == "azure"
+        and (AZURE_USE_AUTHENTICATION or (LOCAL_AUTH_ENABLED and AZURE_ENFORCE_ACCESS_CONTROL))
+    ):
         current_app.logger.info(
             "Authentication ACLs are enabled, setting up search index client")
         search_index_client = SearchIndexClient(
@@ -6534,6 +6563,7 @@ async def setup_clients():
         local_authentication_enabled=LOCAL_AUTH_ENABLED,
         local_session_resolver=resolve_local_session,
         local_bootstrap_required=lambda: not local_identity_exists(),
+        search_has_auth_fields=True if KNOWLEDGE_SEARCH_PROVIDER == "qdrant" else None,
     )
 
     text_embeddings_service = create_embedding_service(
@@ -6552,7 +6582,14 @@ async def setup_clients():
         if file_processors is None:
             raise RuntimeError("Document processors were not initialized")
         search_info = await setup_search_info(
-            search_service=AZURE_SEARCH_SERVICE, index_name=AZURE_SEARCH_INDEX, azure_credential=azure_credential
+            search_service=AZURE_SEARCH_SERVICE,
+            index_name=QDRANT_COLLECTION if KNOWLEDGE_SEARCH_PROVIDER == "qdrant" else AZURE_SEARCH_INDEX,
+            azure_credential=azure_credential,
+            provider=KNOWLEDGE_SEARCH_PROVIDER,
+            qdrant_url=QDRANT_URL,
+            qdrant_api_key=QDRANT_API_KEY,
+            qdrant_vector_size=OPENAI_EMB_DIMENSIONS,
+            qdrant_vector_field=AZURE_SEARCH_FIELD_NAME_EMBEDDING,
         )
         ingester = UploadUserFileStrategy(
             search_info=search_info,
@@ -6618,17 +6655,23 @@ async def setup_clients():
     current_app.config[CONFIG_AUTH_CLIENT] = auth_helper
 
     current_app.config[CONFIG_GPT4V_DEPLOYED] = bool(USE_GPT4V)
-    current_app.config[CONFIG_KNOWLEDGE_VISION_ENABLED] = knowledge_storage_provider == "azure" and _has_configured_knowledge_vision(
-        bool(USE_GPT4V), AZURE_VISION_ENDPOINT
+    current_app.config[CONFIG_KNOWLEDGE_VISION_ENABLED] = (
+        knowledge_storage_provider == "azure"
+        and KNOWLEDGE_SEARCH_PROVIDER == "azure"
+        and _has_configured_knowledge_vision(bool(USE_GPT4V), AZURE_VISION_ENDPOINT)
     )
     if USE_GPT4V and not current_app.config[CONFIG_KNOWLEDGE_VISION_ENABLED]:
         current_app.logger.warning(
             "USE_GPT4V is enabled without a valid AZURE_VISION_ENDPOINT; "
             "Azure Knowledge image-vector retrieval is disabled"
         )
-    current_app.config[CONFIG_SEMANTIC_RANKER_DEPLOYED] = AZURE_SEARCH_SEMANTIC_RANKER != "disabled"
+    current_app.config[CONFIG_SEMANTIC_RANKER_DEPLOYED] = (
+        KNOWLEDGE_SEARCH_PROVIDER == "azure" and AZURE_SEARCH_SEMANTIC_RANKER != "disabled"
+    )
     current_app.config[CONFIG_QUERY_REWRITING_ENABLED] = (
-        AZURE_SEARCH_QUERY_REWRITING == "true" and AZURE_SEARCH_SEMANTIC_RANKER != "disabled"
+        KNOWLEDGE_SEARCH_PROVIDER == "azure"
+        and AZURE_SEARCH_QUERY_REWRITING == "true"
+        and AZURE_SEARCH_SEMANTIC_RANKER != "disabled"
     )
     current_app.config[CONFIG_DEFAULT_REASONING_EFFORT] = OPENAI_REASONING_EFFORT
     current_app.config[CONFIG_REASONING_EFFORT_ENABLED] = OPENAI_CHATGPT_MODEL in Approach.GPT_REASONING_MODELS

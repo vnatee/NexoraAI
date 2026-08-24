@@ -142,6 +142,7 @@ export type EvidenceMatrixOptions = {
 export type Config = {
     runtimeMode?: "azure" | "local";
     knowledgeStorageProvider?: "azure" | "minio";
+    knowledgeSearchProvider?: "azure" | "qdrant";
     agentRuntimeMode?: "legacy" | "langgraph" | "per_agent";
     llmProvider?: string;
     embeddingProvider?: string;

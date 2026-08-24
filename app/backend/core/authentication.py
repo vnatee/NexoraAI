@@ -7,7 +7,6 @@ from typing import Any, Callable, Optional
 
 import aiohttp
 import jwt
-from azure.search.documents.aio import SearchClient
 from azure.search.documents.indexes.models import SearchIndex
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -19,6 +18,8 @@ from tenacity import (
     stop_after_attempt,
     wait_random_exponential,
 )
+
+from core.knowledge_search import KnowledgeSearchClient
 
 
 # AuthError is raised when the authentication token sent by the client UI cannot be parsed or there is an authentication error accessing the graph API
@@ -48,6 +49,7 @@ class AuthenticationHelper:
         local_authentication_enabled: bool = False,
         local_session_resolver: Callable[[str], dict[str, Any]] | None = None,
         local_bootstrap_required: Callable[[], bool] | None = None,
+        search_has_auth_fields: bool | None = None,
     ):
         self.entra_authentication_enabled = use_authentication
         self.local_authentication_enabled = local_authentication_enabled
@@ -71,7 +73,11 @@ class AuthenticationHelper:
 
         if self.use_authentication:
             field_names = [field.name for field in search_index.fields] if search_index else []
-            self.has_auth_fields = "oids" in field_names and "groups" in field_names
+            self.has_auth_fields = (
+                search_has_auth_fields
+                if search_has_auth_fields is not None
+                else "oids" in field_names and "groups" in field_names
+            )
             self.require_access_control = require_access_control
             self.enable_global_documents = enable_global_documents
             self.enable_unauthenticated_access = enable_unauthenticated_access
@@ -341,7 +347,9 @@ class AuthenticationHelper:
                 raise
             return {}
 
-    async def check_path_auth(self, path: str, auth_claims: dict[str, Any], search_client: SearchClient) -> bool:
+    async def check_path_auth(
+        self, path: str, auth_claims: dict[str, Any], search_client: KnowledgeSearchClient
+    ) -> bool:
         # Start with the standard security filter for all queries
         security_filter = self.build_security_filters(overrides={}, auth_claims=auth_claims)
         # If there was no security filter or no path, then the path is allowed

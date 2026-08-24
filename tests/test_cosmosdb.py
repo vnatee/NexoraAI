@@ -270,6 +270,8 @@ async def test_chathistory_query_error_runtime(auth_public_documents_client, mon
 async def test_chathistory_getitem(auth_public_documents_client, monkeypatch, snapshot):
 
     def mock_query_items(container_proxy, query, **kwargs):
+        assert "c.entra_oid = @entra_oid" in query
+        assert {item["name"]: item["value"] for item in kwargs["parameters"]}["@entra_oid"] == "OID_X"
         return MockCosmosDBResultsIterator(for_message_pairs_query)
 
     monkeypatch.setattr(ContainerProxy, "query_items", mock_query_items)
@@ -332,6 +334,8 @@ async def test_chathistory_getitem_error_runtime(auth_public_documents_client, m
 async def test_chathistory_deleteitem(auth_public_documents_client, monkeypatch):
 
     def mock_query_items(container_proxy, query, **kwargs):
+        assert "c.entra_oid = @entra_oid" in query
+        assert {item["name"]: item["value"] for item in kwargs["parameters"]}["@entra_oid"] == "OID_X"
         return MockCosmosDBResultsIterator(for_deletion_query)
 
     monkeypatch.setattr(ContainerProxy, "query_items", mock_query_items)
