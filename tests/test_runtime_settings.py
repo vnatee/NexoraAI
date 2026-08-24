@@ -66,6 +66,27 @@ def test_runtime_settings_support_independent_local_providers():
     assert settings.embedding.dimensions == 1024
 
 
+def test_runtime_settings_support_ollama_bge_m3_embeddings():
+    settings = RuntimeSettings.from_env(
+        {
+            "APP_RUNTIME_MODE": "local",
+            "LLM_PROVIDER": "azure_openai",
+            "LLM_MODEL": "gpt-4.1-mini",
+            "EMBEDDING_PROVIDER": "openai_compatible",
+            "EMBEDDING_BASE_URL": "http://127.0.0.1:11434/v1",
+            "EMBEDDING_MODEL": "bge-m3",
+            "EMBEDDING_DIMENSIONS": "1024",
+            "EMBEDDING_API_KEY": "ollama",
+        }
+    )
+
+    assert settings.embedding.provider == ModelProvider.OPENAI_COMPATIBLE
+    assert settings.embedding.model == "bge-m3"
+    assert settings.embedding.base_url == "http://127.0.0.1:11434/v1"
+    assert settings.embedding.dimensions == 1024
+    assert settings.embedding.api_key == "ollama"
+
+
 @pytest.mark.parametrize(
     ("env", "message"),
     [

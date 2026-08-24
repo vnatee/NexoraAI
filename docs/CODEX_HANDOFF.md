@@ -794,6 +794,28 @@ described below.
   vector search, exact count, and deletion. The temporary container, network,
   and volume were removed afterward.
 
+### Local text embeddings
+
+- `docker-compose.local-embedding.yml` provides a loopback-bound persistent
+  Ollama service plus a one-shot model installer. The recommended baseline is
+  `bge-m3`, which produces fixed 1024-dimensional vectors and supports mixed
+  Thai/English Knowledge content.
+- `docs/local-embedding.env.example` selects the existing
+  `openai_compatible` embedding provider and a distinct
+  `nexora-knowledge-bge-m3` Qdrant collection. Azure OpenAI and OpenAI remain
+  supported and remain independent from the Agent's chat-completion provider.
+- `docs/local-embeddings.md` covers startup, model installation, host versus
+  Compose URLs, re-indexing, ACL validation, persistence, and operational
+  constraints. Vectors are never migrated or mixed automatically.
+- A real CPU Ollama container passed its health check, downloaded BGE-M3 into a
+  persistent volume, and returned a 1024-dimensional vector for Thai synthetic
+  text through `/v1/embeddings`. The product owner subsequently confirmed that
+  Portal ingestion and retrieval with the local embedding configuration works
+  end to end, including the requested cross-user/Team ACL, service restart, and
+  document-deletion checks. Azure search/embedding fallback remains available
+  by configuration and must continue to be covered when that deployment mode
+  changes.
+
 ## Other next work
 
 ### Near-term document work
@@ -807,17 +829,12 @@ described below.
 
 ### Platform roadmap
 
-- **Immediate next slice:** manually smoke-test the application with Qdrant
-  across Personal, Team, Global, citation, restart, deletion, and ACL
-  boundaries. Then complete local embedding configuration/packaging so the
-  Knowledge path no longer needs Azure OpenAI. Design verified-channel
+- **Immediate next slice:** checkpoint the accepted Ollama/BGE-M3 work, then
+  package the complete local application stack with health, persistence,
+  secret injection, and backup/restore guidance. Design verified-channel
   forgotten-password recovery and decide
   whether production deployments should move the local bearer from
   `sessionStorage` to an HttpOnly cookie/BFF flow before production hardening.
-- Add a local embedding configuration to complete the Knowledge ingestion and
-  retrieval path after the vector backend is selectable. `APP_RUNTIME_MODE=local`
-  remains partial until search/RAG and complete deployment packaging no longer
-  require Azure.
 - Docker Compose for the complete application, persistent volumes, health/readiness,
   secret injection, backup/restore, and then Helm/Kubernetes.
 - AI guardrails.
@@ -926,17 +943,23 @@ The product owner also confirmed the Local-only and hybrid Local+Entra
 authentication acceptance flow, including the relevant access-control behavior,
 on 2026-08-23.
 
-Latest service-free backend regression on 2026-08-24 after the Qdrant slice:
+Latest service-free backend regression on 2026-08-24 after the local embedding
+packaging slice:
 
 ```text
-679 passed, 1 deselected
+680 passed, 1 deselected
 ```
 
 Command:
 
 ```bash
-.venv/bin/pytest -q -m 'not data_integration'
+.venv/bin/pytest -q -m 'not azure and not external and not data_integration'
 ```
+
+The broader service-free run reached `680 passed` but one data-integration test
+failed because it iterates every local `data/*.pdf` file and one current PDF is
+image-only or otherwise yields no text through `pypdf`. This is unrelated to
+the embedding configuration and the local data file was not modified.
 
 The focused Knowledge storage provider, startup configuration, content,
 ingestion-job, and legacy upload regression passed:
@@ -1075,6 +1098,7 @@ MINIO_ACCESS_KEY=test-access \
 MINIO_SECRET_KEY=test-secret \
 docker compose -f docker-compose.local-storage.yml config
 docker compose --env-file docs/local-vector.env.example -f docker-compose.local-vector.yml config
+docker compose --env-file docs/local-embedding.env.example -f docker-compose.local-embedding.yml config
 ```
 
 Known non-blocking warnings:
@@ -1100,6 +1124,12 @@ Known non-blocking warnings:
   documents; verify retrieval, citations, restart persistence, deletion, and a
   denied cross-Team/Data Group query. Switching back to `azure` must retain the
   existing Azure AI Search behavior.
+- Follow `docs/local-embeddings.md`, start Ollama, install BGE-M3, then load the
+  local vector settings followed by the local embedding settings. Re-index into
+  `nexora-knowledge-bge-m3`; confirm `/v1/embeddings` returns 1024 dimensions
+  and repeat the Personal/Team/Global, citation, restart, deletion, and denied
+  cross-Team/Data Group checks. Do not reuse a collection created by another
+  embedding model.
 
 - Follow `docs/local-mongodb.md` with two newly generated passwords. Confirm the
   Compose service becomes healthy and the database-scoped application user can

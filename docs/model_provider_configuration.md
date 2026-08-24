@@ -47,12 +47,14 @@ LLM_BASE_URL=http://ollama:11434/v1
 LLM_MODEL=qwen-chat
 
 EMBEDDING_PROVIDER=openai_compatible
-EMBEDDING_BASE_URL=http://embedding:8001/v1
-EMBEDDING_MODEL=qwen-embedding
+EMBEDDING_BASE_URL=http://ollama:11434/v1
+EMBEDDING_MODEL=bge-m3
 EMBEDDING_DIMENSIONS=1024
 ```
 
 An API key is optional for OpenAI-compatible providers. When omitted, the client sends the placeholder `no-key-required` because the OpenAI SDK requires a non-empty value.
+For the supported local Ollama deployment and re-index procedure, see
+[Local text embeddings](local-embeddings.md).
 
 ## Mixed provider example
 

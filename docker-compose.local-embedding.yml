@@ -1,0 +1,32 @@
+services:
+  ollama:
+    image: ${NEXORA_OLLAMA_IMAGE:-ollama/ollama:0.11.4}
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+    ports:
+      - "127.0.0.1:${NEXORA_OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - nexora_ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  ollama-model:
+    image: ${NEXORA_OLLAMA_IMAGE:-ollama/ollama:0.11.4}
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ollama pull \"${EMBEDDING_MODEL:-bge-m3}\""]
+
+volumes:
+  nexora_ollama_data:
