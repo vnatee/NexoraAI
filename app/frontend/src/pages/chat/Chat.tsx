@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useContext, useCallback } from "react";
+import { useRef, useState, useEffect, useContext, useCallback, useLayoutEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Helmet } from "react-helmet-async";
 import { Panel, DefaultButton, IconButton } from "@fluentui/react";
@@ -73,6 +73,7 @@ import { Skeleton, Box } from "@mui/material";
 import { UserManagement } from "../../components/UserManagment/UserManagement";
 import { Dashboard } from "../../components/DashBoard/Dashboard";
 import { HistoryList } from "../../components/HistoryPanel/HistoryList";
+import { AgentSelectionSummary } from "../../components/AgentSelectionSummary";
 import ChatIcon from "@mui/icons-material/Chat";
 import SearchIcon from "@mui/icons-material/Search";
 import FeedIcon from "@mui/icons-material/Feed";
@@ -207,7 +208,6 @@ const Chat = () => {
     const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
     const [agentAnchorEl, setAgentAnchorEl] = useState<null | HTMLElement>(null);
     const agentMenuOpen = Boolean(agentAnchorEl);
-    const agentSelectorLeft = isHistoryCollapsed ? 88 : 276;
 
     const [selectedScopes, setSelectedScopes] = useState<DataScope[]>(["global"]);
     const [draftScopes, setDraftScopes] = useState<DataScope[]>(["global"]);
@@ -436,6 +436,10 @@ const Chat = () => {
         return llmProfiles.find(profile => profile.id === profileId)?.model ?? profileId;
     };
 
+    const selectedDataGroupNames = selectedDataGroupIds
+        .map(groupId => dataGroups.find(group => group._id === groupId)?.name)
+        .filter((name): name is string => Boolean(name));
+
     const handleAsyncRequest = async (question: string, answers: [string, ChatAppResponse][], responseBody: ReadableStream<any>) => {
         let answer: string = "";
         let askResponse: ChatAppResponse = {} as ChatAppResponse;
@@ -484,7 +488,26 @@ const Chat = () => {
         if (showChatHistoryBrowser) return HistoryProviderOptions.IndexedDB;
         return HistoryProviderOptions.None;
     })();
-    const historyManager = useHistoryManager(historyProvider);
+    const historyOwnerId = userDetails?._id;
+    const historyManager = useHistoryManager(historyProvider, historyOwnerId);
+    const previousHistoryOwnerId = useRef<string | undefined>(historyOwnerId);
+
+    useLayoutEffect(() => {
+        if (previousHistoryOwnerId.current === historyOwnerId) return;
+        previousHistoryOwnerId.current = historyOwnerId;
+        setAnswers([]);
+        setStreamedAnswers([]);
+        setTurnAttachments({});
+        setTurnDocumentAttachments({});
+        setActiveCitation(undefined);
+        setActiveAnalysisPanelTab(undefined);
+        setCurrentSessionId(null);
+        setKeyword("");
+        setResults([]);
+        setSelectedAgent(null);
+        conversationIdRef.current = crypto.randomUUID();
+        lastQuestionRef.current = "";
+    }, [historyOwnerId]);
 
     const handleSetFeedback = async (index: number, sentiment: "like" | "dislike") => {
         const base = isStreaming ? streamedAnswers : answers;
@@ -1450,47 +1473,19 @@ const Chat = () => {
             </Dialog>
             <div className={styles.chatRoot} style={{ marginLeft: isHistoryCollapsed ? "72px" : "260px" }}>
                 <div className={styles.chatContainer}>
-                    <Box
-                        sx={{
-                            position: "absolute",
-                            top: 88,
-                            left: agentSelectorLeft,
-                            zIndex: 10,
-                            transition: "left 0.2s ease"
-                        }}
-                    >
+                    <div className={styles.chatContextBar}>
                         {isPageLoading ? (
-                            <Skeleton variant="rectangular" width={180} height={36} sx={{ borderRadius: 2 }} />
+                            <Skeleton variant="rectangular" width={280} height={56} sx={{ borderRadius: 2.5 }} />
                         ) : (
-                            <Button
-                                variant="outlined"
-                                size="small"
-                                onClick={e => setAgentAnchorEl(e.currentTarget)}
-                                sx={{
-                                    textTransform: "none",
-                                    borderRadius: 2,
-                                    px: 1.5
-                                }}
-                            >
-                                <Box component="span" sx={{ display: "flex", alignItems: "baseline", gap: 0.75, minWidth: 0 }}>
-                                    <Box component="span" sx={{ whiteSpace: "nowrap" }}>
-                                        🤖 {selectedAgent?.agent_name ?? "Select Agent"}
-                                    </Box>
-                                    {selectedAgent && (
-                                        <Typography
-                                            component="span"
-                                            variant="caption"
-                                            color="text.secondary"
-                                            noWrap
-                                            sx={{ fontSize: "0.68rem", maxWidth: 150 }}
-                                        >
-                                            · {getAgentModelName(selectedAgent)}
-                                        </Typography>
-                                    )}
-                                </Box>
-                            </Button>
+                            <AgentSelectionSummary
+                                agentName={selectedAgent?.agent_name}
+                                modelName={getAgentModelName(selectedAgent)}
+                                selectedScopes={selectedScopes}
+                                selectedDataGroups={selectedDataGroupNames}
+                                onClick={setAgentAnchorEl}
+                            />
                         )}
-                    </Box>
+                    </div>
 
                     {!lastQuestionRef.current ? (
                         <div className={styles.chatEmptyState}>
@@ -1769,7 +1764,9 @@ const Chat = () => {
                                             {/* Scroll ได้เฉพาะ History */}
                                             <div className={styles.historyContent}>
                                                 <HistoryList
+                                                    key={historyOwnerId ?? "history-owner-unavailable"}
                                                     provider={historyProvider}
+                                                    ownerId={historyOwnerId}
                                                     notify={!isStreaming && !isLoading}
                                                     onChatSelected={answers => {
                                                         if (answers.length === 0) return;

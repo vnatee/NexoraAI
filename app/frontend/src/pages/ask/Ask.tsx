@@ -46,6 +46,7 @@ import { Storage } from "../../utill/storage";
 import { STORAGE_KEYS } from "../../utill/storageKeys";
 import { useNotification } from "../../utill/NotificationProvider";
 import { AuthStorage } from "../../utill/authStorage";
+import { AgentSelectionSummary } from "../../components/AgentSelectionSummary";
 
 const DATA_SCOPES = [
     { key: "global", label: "Global" },
@@ -139,7 +140,6 @@ export function Component(): JSX.Element {
     const menuRef = useRef<HTMLDivElement>(null);
     const uploadDialogRef = useRef<HTMLDivElement>(null);
     const [activeWebUrl, setActiveWebUrl] = useState<string | undefined>(undefined);
-    const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(false);
     const [isAgentsLoading, setIsAgentsLoading] = useState(false);
     const [isGroupsLoading, setIsGroupsLoading] = useState(false);
     const isPageLoading = isUserLoading || isAgentsLoading || isGroupsLoading;
@@ -147,7 +147,6 @@ export function Component(): JSX.Element {
     const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
     const agentMenuOpen = Boolean(agentAnchorEl);
     const hasSelectedAgent = Boolean(selectedAgent);
-    const agentSelectorLeft = isHistoryCollapsed ? 88 : 276;
     const [agents, setAgents] = useState<Agent[]>([]);
     const [selectedScopes, setSelectedScopes] = useState<DataScope[]>(["global"]);
     const [draftScopes, setDraftScopes] = useState<DataScope[]>(["global"]);
@@ -175,6 +174,10 @@ export function Component(): JSX.Element {
     const documentsAvailable = documentAttachmentsEnabled && chatDocumentAttachmentsEnabled;
     const showAttachmentButton = imageInputEnabled || documentAttachmentsEnabled;
     const selectedLlmProfileLabel = selectedLlmProfile?.label ?? (selectedLlmProfileId === "system" ? "System default" : selectedLlmProfileId);
+    const selectedAgentModelName = selectedLlmProfile?.model ?? selectedLlmProfileId;
+    const selectedDataGroupNames = selectedDataGroupIds
+        .map(groupId => dataGroups.find(group => group._id === groupId)?.name)
+        .filter((name): name is string => Boolean(name));
     const visionDisabledReason = !imageInputEnabled
         ? "Image input is disabled in Agent Management."
         : !selectedLlmProfile && selectedLlmProfileId !== "system"
@@ -923,40 +926,17 @@ export function Component(): JSX.Element {
             <div className={styles.askTopSection}>
                 <div className={styles.commandsContainer}>
                     <div className={styles.loginMenuContainer} style={{ position: "relative" }}>
-                        <Box
-                            sx={{
-                                position: "absolute",
-                                // top: 88,
-                                // left: agentSelectorLeft,
-                                zIndex: 10,
-                                transition: "left 0.2s ease"
-                            }}
-                        >
+                        <Box sx={{ zIndex: 10 }}>
                             {isPageLoading ? (
-                                <Skeleton variant="rectangular" width={180} height={36} sx={{ borderRadius: 2 }} />
+                                <Skeleton variant="rectangular" width={280} height={56} sx={{ borderRadius: 2.5 }} />
                             ) : (
-                                <Button
-                                    variant="outlined"
-                                    size="small"
-                                    onClick={e => setAgentAnchorEl(e.currentTarget)}
-                                    sx={{
-                                        textTransform: "none",
-                                        borderRadius: 2,
-                                        px: 1.5,
-
-                                        // 🔥 ทำให้อยู่บรรทัดเดียวเสมอ
-                                        whiteSpace: "nowrap",
-                                        display: "inline-flex",
-                                        alignItems: "center",
-                                        gap: 1,
-
-                                        // กัน layout เพี้ยนจาก emoji + rem
-                                        lineHeight: 1,
-                                        minHeight: 36
-                                    }}
-                                >
-                                    🤖 {selectedAgent?.agent_name ?? "Select Agent"}
-                                </Button>
+                                <AgentSelectionSummary
+                                    agentName={selectedAgent?.agent_name}
+                                    modelName={selectedAgentModelName}
+                                    selectedScopes={selectedScopes}
+                                    selectedDataGroups={selectedDataGroupNames}
+                                    onClick={setAgentAnchorEl}
+                                />
                             )}
                         </Box>
                     </div>

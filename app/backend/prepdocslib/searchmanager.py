@@ -115,6 +115,16 @@ class SearchManager:
     async def create_index(self):
         logger.info("Checking whether search index %s exists...", self.search_info.index_name)
 
+        if self.search_info.provider == "qdrant":
+            if self.embeddings is None or self.embedding_dimensions is None:
+                raise ValueError("Qdrant Knowledge search requires an embedding provider")
+            async with self.search_info.create_search_client() as search_client:
+                ensure_ready = getattr(search_client, "ensure_ready", None)
+                if ensure_ready is None:
+                    raise RuntimeError("Qdrant Knowledge search client cannot initialize its collection")
+                await ensure_ready()
+            return
+
         async with self.search_info.create_search_index_client() as search_index_client:
 
             embedding_field = None

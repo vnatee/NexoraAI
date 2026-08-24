@@ -29,10 +29,13 @@ logs, credentials, attachments, or repetitive conversational text.
   and LangGraph Chat/Ask with bounded, untrusted excerpts and file/page source
   names. The shared composer now uploads supported documents on Send, shows
   processing state, and sends only ready attachment IDs.
-- The current uncommitted slice adds a provider-neutral Knowledge object-store
-  boundary and an optional MinIO implementation. Preserve it together with the
-  Azure adapter, Compose/configuration files, tests, and documentation listed
-  under **Local Knowledge object storage** below.
+- Checkpoint `33a6b40 feat: add selectable knowledge object storage` adds the
+  provider-neutral Knowledge object-store boundary and optional MinIO adapter.
+  The product owner manually confirmed normal application behavior with MinIO.
+- The current uncommitted slice adds provider-neutral Knowledge search client
+  usage and an optional Qdrant implementation. Preserve the Azure default,
+  Qdrant adapter, Compose/configuration files, tests, and documentation listed
+  under **Local Knowledge vector search** below.
 
 ## Product background and fixed decisions
 
@@ -356,6 +359,40 @@ formulas and balanced commands such as `\\sqrt{...}` or `\\frac{...}{...}`
 embedded in prose. Fenced code blocks are excluded so programming examples keep
 their literal backslashes. Raw HTML still passes through the existing DOMPurify
 step before Markdown/KaTeX rendering.
+
+### Chat history owner isolation
+
+- Browser/IndexedDB Chat history records now carry the stable application User
+  ID. List, open, search, update, and delete operations require an exact owner
+  match. Legacy browser records without owner metadata remain in IndexedDB but
+  are hidden from every account because ownership cannot be inferred safely.
+- Changing the signed-in application User remounts the history list and clears
+  the active conversation, attachments, search results, selected Agent, and
+  citation state before browser paint, preventing the previous User's state
+  from flashing or being submitted under the new session.
+- Cosmos Chat History already uses the authenticated `oid` and hierarchical
+  partition key. Individual read/delete queries now also include an explicit
+  `entra_oid` predicate as defense in depth.
+- TypeScript validation and the memory-safe production build passed. The 25
+  focused Cosmos Chat History tests passed, including owner-predicate checks.
+
+### Agent and data-scope selector summary
+
+- The Agent selector shared by Chat and Ask now presents the selected Agent and
+  model on its first row and the active Global/Personal scopes and named Data
+  Groups as compact chips on its second row. Scope chips and Data Group chips
+  use distinct styles, long selections collapse to `+N`, and the full selection
+  remains available through the tooltip and accessible label.
+- The summary is presentation-only and continues to use the existing selection
+  dialog, persisted scope choices, Data Group authorization, and backend ACL
+  enforcement. TypeScript validation and the memory-safe production build
+  passed after this change.
+- The surrounding Chat/Ask shell was also tightened into a 64-pixel application
+  header, bounded conversation canvas, in-flow context bar, smaller responsive
+  empty state, and bottom composer with clearer focus treatment. The Chat
+  sidebar now aligns with the shorter header. This is a presentation-only
+  change; request, history, attachment, Agent, and authorization behavior is
+  unchanged. Reduced-motion preferences disable the decorative animations.
 
 ### Private document attachments and temporary retrieval — current working tree
 
@@ -730,6 +767,33 @@ described below.
   independent and remain available when their selected model/provider supports
   them.
 
+### Local Knowledge vector search
+
+- `core/knowledge_search.py` defines the small client contract shared by
+  retrieval, citation authorization, ingestion, and deletion. Azure AI Search
+  remains the default; `KNOWLEDGE_SEARCH_PROVIDER=qdrant` selects the local
+  adapter.
+- The Qdrant adapter creates a persistent collection with the configured
+  embedding dimension, adds keyword payload indexes for source and ACL fields,
+  upserts stable point IDs, and preserves existing citation/processing/ACL
+  payload names.
+- Existing application-generated OData filters are translated into Qdrant
+  filters for category, source path, Personal `oids`, Team/Data Group `groups`,
+  and Global empty ACLs. Unknown expressions fail closed instead of issuing an
+  unfiltered query.
+- Qdrant uses vector retrieval and provides a bounded lexical fallback when a
+  text-only query is requested. Azure-only semantic ranker, query rewriting,
+  agentic retrieval, and Knowledge image vectors are disabled in Qdrant mode.
+  Agent message vision and OCR routing remain independent.
+- `docker-compose.local-vector.yml`, `docs/local-vector.env.example`, and
+  `docs/local-vector-search.md` document a loopback-bound persistent Qdrant
+  service and the opt-in configuration. No Azure-to-Qdrant migration is
+  automatic; content must be re-indexed into the selected collection.
+- A disposable real Qdrant container smoke passed collection creation, payload
+  index creation, deterministic upsert, Personal/Team/Global ACL-filtered
+  vector search, exact count, and deletion. The temporary container, network,
+  and volume were removed afterward.
+
 ## Other next work
 
 ### Near-term document work
@@ -743,11 +807,11 @@ described below.
 
 ### Platform roadmap
 
-- **Immediate next slice:** manually smoke-test MinIO across Personal, Team,
-  Global, citation, restart, and ACL boundaries, then introduce a
-  provider-neutral vector search/RAG contract with Azure AI Search retained as
-  the default and a local vector backend as the new implementation. Design
-  verified-channel forgotten-password recovery and decide
+- **Immediate next slice:** manually smoke-test the application with Qdrant
+  across Personal, Team, Global, citation, restart, deletion, and ACL
+  boundaries. Then complete local embedding configuration/packaging so the
+  Knowledge path no longer needs Azure OpenAI. Design verified-channel
+  forgotten-password recovery and decide
   whether production deployments should move the local bearer from
   `sessionStorage` to an HttpOnly cookie/BFF flow before production hardening.
 - Add a local embedding configuration to complete the Knowledge ingestion and
@@ -862,10 +926,10 @@ The product owner also confirmed the Local-only and hybrid Local+Entra
 authentication acceptance flow, including the relevant access-control behavior,
 on 2026-08-23.
 
-Latest service-free backend regression on 2026-08-24:
+Latest service-free backend regression on 2026-08-24 after the Qdrant slice:
 
 ```text
-670 passed, 1 deselected
+679 passed, 1 deselected
 ```
 
 Command:
@@ -888,6 +952,18 @@ container, network, and volume were removed afterward. Full browser-level
 Personal/Team/Global ACL and citation smoke testing remains pending. The
 product owner additionally confirmed on 2026-08-24 that the application starts
 with MinIO enabled and the exercised Knowledge workflow operates normally.
+
+The focused Qdrant/search/configuration/ACL/ingestion regression passed:
+
+```text
+93 passed
+```
+
+Ruff passed for the changed Python files. Targeted mypy remains blocked by the
+existing optional Docling import stubs and by the repository's Python 3.9 mypy
+target parsing Python 3.10 syntax in the installed AnyIO dependency. Frontend
+typecheck and the memory-safe production build passed after the Qdrant config
+surface was added.
 
 Latest focused evidence-matrix, attachment retrieval, Agent RAG, and document
 validation regression:
@@ -998,6 +1074,7 @@ docker compose -f docker-compose.local-mongodb.yml config
 MINIO_ACCESS_KEY=test-access \
 MINIO_SECRET_KEY=test-secret \
 docker compose -f docker-compose.local-storage.yml config
+docker compose --env-file docs/local-vector.env.example -f docker-compose.local-vector.yml config
 ```
 
 Known non-blocking warnings:
@@ -1018,6 +1095,11 @@ Known non-blocking warnings:
   the named volume; then verify persistence and that an unauthorized user
   cannot retrieve a Team source. Azure mode must still pass the corresponding
   upload/citation smoke test. No Azure-to-MinIO copy is automatic.
+- Follow `docs/local-vector-search.md`, start Qdrant, and run the backend with
+  `KNOWLEDGE_SEARCH_PROVIDER=qdrant`. Re-index unique Personal, Team, and Global
+  documents; verify retrieval, citations, restart persistence, deletion, and a
+  denied cross-Team/Data Group query. Switching back to `azure` must retain the
+  existing Azure AI Search behavior.
 
 - Follow `docs/local-mongodb.md` with two newly generated passwords. Confirm the
   Compose service becomes healthy and the database-scoped application user can

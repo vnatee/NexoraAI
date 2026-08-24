@@ -56,6 +56,11 @@ async def setup_search_info(
     azure_openai_searchagent_deployment: Union[str, None] = None,
     azure_openai_searchagent_model: Union[str, None] = None,
     search_key: Union[str, None] = None,
+    provider: str = "azure",
+    qdrant_url: Union[str, None] = None,
+    qdrant_api_key: Union[str, None] = None,
+    qdrant_vector_size: Union[int, None] = None,
+    qdrant_vector_field: str = "embedding",
 ) -> SearchInfo:
     search_creds: Union[AsyncTokenCredential, AzureKeyCredential] = (
         azure_credential if search_key is None else AzureKeyCredential(search_key)
@@ -73,6 +78,11 @@ async def setup_search_info(
         azure_openai_endpoint=azure_openai_endpoint,
         azure_openai_searchagent_model=azure_openai_searchagent_model,
         azure_openai_searchagent_deployment=azure_openai_searchagent_deployment,
+        provider=provider,
+        qdrant_url=qdrant_url,
+        qdrant_api_key=qdrant_api_key,
+        qdrant_vector_size=qdrant_vector_size,
+        qdrant_vector_field=qdrant_vector_field,
     )
 
 
