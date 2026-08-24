@@ -12,6 +12,7 @@ azure-storage-blob
 azure-storage-file-datalake
 uvicorn
 aiohttp
+minio>=7.2,<8
 azure-monitor-opentelemetry
 opentelemetry-instrumentation-asgi
 opentelemetry-instrumentation-httpx

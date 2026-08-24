@@ -1,6 +1,6 @@
 # Codex handoff — NexoraAI
 
-Last updated: 2026-08-23 UTC
+Last updated: 2026-08-24 UTC
 
 This document replaces a raw chat transcript as the engineering handoff. It
 captures the decisions and evidence needed to continue without storing copied
@@ -29,6 +29,10 @@ logs, credentials, attachments, or repetitive conversational text.
   and LangGraph Chat/Ask with bounded, untrusted excerpts and file/page source
   names. The shared composer now uploads supported documents on Send, shows
   processing state, and sends only ready attachment IDs.
+- The current uncommitted slice adds a provider-neutral Knowledge object-store
+  boundary and an optional MinIO implementation. Preserve it together with the
+  Azure adapter, Compose/configuration files, tests, and documentation listed
+  under **Local Knowledge object storage** below.
 
 ## Product background and fixed decisions
 
@@ -694,8 +698,37 @@ See `docs/local-authentication.md`.
 
 This slice moves application metadata, identities, authorization configuration,
 jobs, and managed integration settings to an optional local database. Azure AI
-Search, Knowledge Blob storage, and the separate optional Cosmos-native Chat
-History feature are not replaced by it.
+Search and the separate optional Cosmos-native Chat History feature are not
+replaced by it. Knowledge object storage is now independently selectable as
+described below.
+
+### Local Knowledge object storage
+
+- `core/knowledge_store.py` defines the provider-neutral object contract used
+  by Personal, Team, Global, and web-ingested Knowledge source files. Existing
+  upload, listing, ingestion-job, deletion, Data Group tag, and authenticated
+  citation routes now use this boundary instead of Azure clients directly.
+- `KNOWLEDGE_STORAGE_PROVIDER=azure|minio` selects the deployment-wide
+  provider. `azure` remains the default and keeps the existing Blob/Data Lake
+  clients and ACL behavior. `minio` stores all scopes in one private bucket
+  under isolated prefixes while the application remains the authorization
+  boundary.
+- `docker-compose.local-storage.yml` provides a loopback-bound, persistent
+  MinIO service. `docs/local-storage.env.example` contains placeholders only;
+  `docs/local-knowledge-storage.md` documents generated credentials, startup,
+  persistence, security, verification, and migration boundaries.
+- MinIO operations run through worker threads so its synchronous SDK does not
+  block Quart's event loop. Object tags preserve processing status and Team
+  Data Group associations. Missing objects map to the same controlled
+  not-found behavior as Azure.
+- This slice does not migrate existing Azure objects automatically. One backend
+  uses one Knowledge object provider at a time, while separate deployments may
+  independently choose Azure or MinIO. Azure AI Search remains the Knowledge
+  index/retrieval backend for both choices in this slice.
+- Azure Knowledge image-vector retrieval remains Azure-only and is disabled
+  when MinIO is selected. Agent message image input and OCR routing are
+  independent and remain available when their selected model/provider supports
+  them.
 
 ## Other next work
 
@@ -710,15 +743,17 @@ History feature are not replaced by it.
 
 ### Platform roadmap
 
-- **Immediate next slice:** validate the new local MongoDB Compose service and
-  application persistence smoke test, then introduce provider interfaces and
-  local implementations for Knowledge object storage, vector search/RAG, and
-  embeddings. Design verified-channel forgotten-password recovery and decide
+- **Immediate next slice:** manually smoke-test MinIO across Personal, Team,
+  Global, citation, restart, and ACL boundaries, then introduce a
+  provider-neutral vector search/RAG contract with Azure AI Search retained as
+  the default and a local vector backend as the new implementation. Design
+  verified-channel forgotten-password recovery and decide
   whether production deployments should move the local bearer from
   `sessionStorage` to an HttpOnly cookie/BFF flow before production hardening.
-- Provider interfaces and local implementations for object storage, vector
-  search/RAG, and embeddings. `APP_RUNTIME_MODE=local` is still partial; search
-  and storage remain Azure-dependent.
+- Add a local embedding configuration to complete the Knowledge ingestion and
+  retrieval path after the vector backend is selectable. `APP_RUNTIME_MODE=local`
+  remains partial until search/RAG and complete deployment packaging no longer
+  require Azure.
 - Docker Compose for the complete application, persistent volumes, health/readiness,
   secret injection, backup/restore, and then Helm/Kubernetes.
 - AI guardrails.
@@ -746,11 +781,10 @@ The guardrail/API/dashboard discussion order is documented in
   Graceful shutdown returns owned jobs to the queue immediately; a hard kill
   waits for lease expiry. No automatic ingestion-job retention/TTL policy is
   configured yet.
-- **Local mode:** local authentication now has a functional first slice, but
-  vector search/RAG, Knowledge object storage, and deployment packaging remain
-  Azure-dependent. A MongoDB-only Compose slice now provides a loopback-bound,
-  persistent local metadata/control-plane database with separate root and
-  database-scoped application users; this is not yet a fully local product.
+- **Local mode:** local authentication, MongoDB metadata, and MinIO Knowledge
+  object storage now have provider-backed first slices, but vector search/RAG
+  and complete deployment packaging remain Azure-dependent. This is not yet a
+  fully local product.
 - **Tool-capability probes:** detection is a live request and can consume a small
   number of tokens per model. Rate limits or ambiguous provider errors produce
   `unknown` rather than incorrectly disabling tools. Re-test after changing a
@@ -828,10 +862,10 @@ The product owner also confirmed the Local-only and hybrid Local+Entra
 authentication acceptance flow, including the relevant access-control behavior,
 on 2026-08-23.
 
-Latest service-free backend regression on 2026-08-23:
+Latest service-free backend regression on 2026-08-24:
 
 ```text
-661 passed, 1 deselected
+670 passed, 1 deselected
 ```
 
 Command:
@@ -839,6 +873,21 @@ Command:
 ```bash
 .venv/bin/pytest -q -m 'not data_integration'
 ```
+
+The focused Knowledge storage provider, startup configuration, content,
+ingestion-job, and legacy upload regression passed:
+
+```text
+55 passed
+```
+
+The MinIO Compose schema passed with placeholder credentials. A disposable
+MinIO container also passed bucket creation, Team-scope upload/read/list,
+processing-tag read/update, and delete through the real SDK; its temporary
+container, network, and volume were removed afterward. Full browser-level
+Personal/Team/Global ACL and citation smoke testing remains pending. The
+product owner additionally confirmed on 2026-08-24 that the application starts
+with MinIO enabled and the exercised Knowledge workflow operates normally.
 
 Latest focused evidence-matrix, attachment retrieval, Agent RAG, and document
 validation regression:
@@ -946,6 +995,9 @@ NEXORA_MONGO_ROOT_PASSWORD=test-root-password \
 NEXORA_MONGO_APP_USERNAME=test-app \
 NEXORA_MONGO_APP_PASSWORD=test-app-password \
 docker compose -f docker-compose.local-mongodb.yml config
+MINIO_ACCESS_KEY=test-access \
+MINIO_SECRET_KEY=test-secret \
+docker compose -f docker-compose.local-storage.yml config
 ```
 
 Known non-blocking warnings:
@@ -958,6 +1010,14 @@ Known non-blocking warnings:
 - PyMongo can emit a Cosmos DB feature-compatibility warning.
 
 ## Manual smoke-test checklist before the next checkpoint
+
+- Follow `docs/local-knowledge-storage.md`, start MinIO with newly generated
+  credentials, and run the backend with `KNOWLEDGE_STORAGE_PROVIDER=minio`.
+  Confirm `/config` reports `minio`; upload, index, list, cite, and delete one
+  Personal, Team, and Global document; restart both services without deleting
+  the named volume; then verify persistence and that an unauthorized user
+  cannot retrieve a Team source. Azure mode must still pass the corresponding
+  upload/citation smoke test. No Azure-to-MinIO copy is automatic.
 
 - Follow `docs/local-mongodb.md` with two newly generated passwords. Confirm the
   Compose service becomes healthy and the database-scoped application user can
@@ -1059,7 +1119,8 @@ Known non-blocking warnings:
 ```text
 Read AGENTS.md and docs/CODEX_HANDOFF.md completely. Preserve the working tree
 and do not discard unrelated changes. Continue milestone 2 by adding a
-production malware-scanner adapter and explicit deployment policy for private
-Chat document uploads, preserving owner/conversation ACLs, TTL, idempotency,
-and fail-closed behavior.
+provider-neutral vector search/RAG contract with Azure AI Search as the default
+adapter and a local vector backend suitable for Docker Compose. Preserve all
+Personal/Team/Global/Data Group ACL filters, citation authorization, metadata,
+and the existing Azure behavior. Do not migrate existing data automatically.
 ```
