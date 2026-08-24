@@ -199,12 +199,29 @@ async def test_app_config_default(monkeypatch, minimal_env):
         response = await client.get("/config")
         assert response.status_code == 200
         result = await response.get_json()
+        assert result["knowledgeStorageProvider"] == "azure"
         assert result["agentRuntimeMode"] == "per_agent"
         assert result["showGPT4VOptions"] is False
         assert result["showSemanticRankerOption"] is True
         assert result["showVectorOption"] is True
         assert result["chatDocumentAttachmentsEnabled"] is False
         assert result["maxUploadSizeBytes"] == 100 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_app_uses_minio_knowledge_storage_provider(monkeypatch, minimal_env):
+    knowledge_store = mock.AsyncMock()
+    monkeypatch.setenv("KNOWLEDGE_STORAGE_PROVIDER", "minio")
+    monkeypatch.setattr(app, "create_minio_knowledge_store", lambda environ: knowledge_store)
+
+    quart_app = app.create_app()
+    async with quart_app.test_app() as test_app:
+        response = await test_app.test_client().get("/config")
+
+        assert response.status_code == 200
+        assert (await response.get_json())["knowledgeStorageProvider"] == "minio"
+        assert quart_app.config[app.CONFIG_KNOWLEDGE_STORE] is knowledge_store
+        knowledge_store.ensure_ready.assert_awaited_once()
 
 
 @pytest.mark.asyncio

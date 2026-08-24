@@ -30,6 +30,10 @@ asgiref==3.8.1
     # via opentelemetry-instrumentation-asgi
 attrs==24.2.0
     # via aiohttp
+argon2-cffi==25.1.0
+    # via minio
+argon2-cffi-bindings==26.1.0
+    # via argon2-cffi
 azure-ai-documentintelligence==1.0.2
     # via -r requirements.in
 azure-cognitiveservices-speech==1.40.0
@@ -191,6 +195,8 @@ microsoft-kiota-serialization-multipart==1.9.3
     # via msgraph-sdk
 microsoft-kiota-serialization-text==1.9.3
     # via msgraph-sdk
+minio==7.2.20
+    # via -r requirements.in
 msal==1.30.0
     # via
     #   -r requirements.in
@@ -338,6 +344,8 @@ psutil==5.9.8
     # via azure-monitor-opentelemetry-exporter
 pycparser==2.22
     # via cffi
+pycryptodome==3.23.0
+    # via minio
 pydantic==2.13.4
     # via
     #   openai

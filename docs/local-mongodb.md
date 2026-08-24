@@ -5,8 +5,10 @@ URI. The local deployment therefore uses the same collections and authorization
 code as Cosmos DB's Mongo-compatible endpoint; it does not introduce a second
 database implementation.
 
-This slice runs MongoDB only. The backend continues to run with `app/start.sh`,
-and Azure Search and Knowledge object storage remain unchanged.
+This Compose file runs MongoDB only. The backend continues to run with
+`app/start.sh`. Knowledge object storage can independently use Azure or MinIO;
+see [local-knowledge-storage.md](local-knowledge-storage.md). Azure AI Search
+remains the retrieval backend until the search-provider migration is complete.
 
 ## Configure
 

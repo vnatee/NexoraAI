@@ -137,6 +137,12 @@ from mongo_table_connecters.document_processing import (
     save_routing_rule as save_document_routing_rule,
     serialize_provider as serialize_document_provider,
 )
+from core.knowledge_store import (
+    AzureKnowledgeObjectStore,
+    KnowledgeObjectNotFound,
+    KnowledgeObjectStore,
+    create_minio_knowledge_store,
+)
 from mongo_table_connecters.ingestion_jobs import (
     claim_ingestion_job,
     create_ingestion_job,
@@ -176,7 +182,7 @@ from azure.cognitiveservices.speech import (
     SpeechSynthesisResult,
     SpeechSynthesizer,
 )
-from azure.core.exceptions import ResourceNotFoundError, ServiceResponseError, ResourceExistsError
+from azure.core.exceptions import ResourceNotFoundError
 from azure.identity.aio import (
     AzureDeveloperCliCredential,
     ManagedIdentityCredential,
@@ -186,10 +192,8 @@ from azure.monitor.opentelemetry import configure_azure_monitor
 from azure.search.documents.agent.aio import KnowledgeAgentRetrievalClient
 from azure.search.documents.aio import SearchClient
 from azure.search.documents.indexes.aio import SearchIndexClient
-from azure.storage.blob.aio import ContainerClient, BlobClient
-from azure.storage.blob.aio import StorageStreamDownloader as BlobDownloader
+from azure.storage.blob.aio import ContainerClient
 from azure.storage.filedatalake.aio import FileSystemClient
-from azure.storage.filedatalake.aio import StorageStreamDownloader as DatalakeDownloader
 from openai import AsyncOpenAI
 from opentelemetry.instrumentation.aiohttp_client import AioHttpClientInstrumentor
 from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
@@ -280,6 +284,7 @@ from config import (
     CONFIG_CREDENTIAL,
     CONFIG_DEFAULT_REASONING_EFFORT,
     CONFIG_GPT4V_DEPLOYED,
+    CONFIG_KNOWLEDGE_STORE,
     CONFIG_KNOWLEDGE_VISION_ENABLED,
     CONFIG_INGESTER,
     CONFIG_INGESTION_RECOVERY_TASK,
@@ -1144,6 +1149,23 @@ async def assets(path):
     return await send_from_directory(Path(__file__).resolve().parent / "static" / "assets", path)
 
 
+def _knowledge_store() -> KnowledgeObjectStore:
+    store = current_app.config.get(CONFIG_KNOWLEDGE_STORE)
+    azure_clients = {
+        "global": current_app.config.get(CONFIG_BLOB_CONTAINER_CLIENT),
+        "team": current_app.config.get(CONFIG_GROUP_BLOB_CONTAINER_CLIENT),
+        "personal": current_app.config.get(CONFIG_USER_BLOB_CONTAINER_CLIENT),
+        "web_global": current_app.config.get(CONFIG_WEB_BLOB_CONTAINER_CLIENT),
+        "web_team": current_app.config.get(CONFIG_WEB_GROUP_BLOB_CONTAINER_CLIENT),
+    }
+    if store is None or (
+        isinstance(store, AzureKnowledgeObjectStore) and not store.matches_clients(azure_clients)
+    ):
+        store = AzureKnowledgeObjectStore(azure_clients)
+        current_app.config[CONFIG_KNOWLEDGE_STORE] = store
+    return store
+
+
 @bp.route("/content/<path>")
 @authenticated_path
 async def content_file(path: str, auth_claims: dict[str, Any]):
@@ -1162,40 +1184,27 @@ async def content_file(path: str, auth_claims: dict[str, Any]):
         path_parts = path.rsplit("#page=", 1)
         path = path_parts[0]
     current_app.logger.info("Opening file %s", path)
-    blob_container_client: ContainerClient = current_app.config[CONFIG_BLOB_CONTAINER_CLIENT]
-    blob: Union[BlobDownloader, DatalakeDownloader]
+    store = _knowledge_store()
     try:
-        blob = await blob_container_client.get_blob_client(path).download_blob()
-    except ResourceNotFoundError:
+        stored = await store.read("global", path)
+    except KnowledgeObjectNotFound:
         current_app.logger.info(
-            "Path not found in general Blob container: %s", path)
+            "Path not found in global Knowledge storage: %s", path)
         if current_app.config[CONFIG_USER_UPLOAD_ENABLED]:
             try:
                 user_oid = auth_claims["oid"]
-                user_blob_container_client = current_app.config[CONFIG_USER_BLOB_CONTAINER_CLIENT]
-                user_directory_client: FileSystemClient = user_blob_container_client.get_directory_client(
-                    user_oid)
-                file_client = user_directory_client.get_file_client(path)
-                blob = await file_client.download_file()
-            except ResourceNotFoundError:
+                stored = await store.read("personal", f"{user_oid}/{path}")
+            except KnowledgeObjectNotFound:
                 try:
-                    blob_container_client: ContainerClient = current_app.config[
-                        CONFIG_GROUP_BLOB_CONTAINER_CLIENT]
-                    blob: Union[BlobDownloader, DatalakeDownloader]
-                    blob = await blob_container_client.get_blob_client(path).download_blob()
-                except ResourceNotFoundError:
+                    stored = await store.read("team", path)
+                except KnowledgeObjectNotFound:
                     current_app.logger.exception(
-                        "Path not found in DataLake: %s", path)
+                        "Path not found in Knowledge storage: %s", path)
                     abort(404)
         else:
             abort(404)
-    if not blob.properties or not blob.properties.has_key("content_settings"):
-        abort(404)
-    mime_type = blob.properties["content_settings"]["content_type"]
-    if mime_type == "application/octet-stream":
-        mime_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
-    blob_file = io.BytesIO()
-    await blob.readinto(blob_file)
+    mime_type = stored.content_type
+    blob_file = io.BytesIO(stored.data)
     blob_file.seek(0)
     return await send_file(blob_file, mimetype=mime_type, as_attachment=False, attachment_filename=path)
 
@@ -2796,6 +2805,7 @@ async def config():
     return jsonify(
         {
             "runtimeMode": runtime_settings.mode.value,
+            "knowledgeStorageProvider": os.getenv("KNOWLEDGE_STORAGE_PROVIDER", "azure").strip().lower(),
             "agentRuntimeMode": (
                 os.getenv("AGENT_RUNTIME_MODE", "per_agent").strip().lower()
                 if os.getenv("AGENT_RUNTIME_MODE", "per_agent").strip().lower() in {"legacy", "langgraph"}
@@ -3830,16 +3840,14 @@ async def _recover_chat_attachment_extractions(interval_seconds: float = 30) -> 
 async def _set_job_blob_status(job: dict[str, Any], status: str) -> None:
     if job.get("scope") == "personal":
         return
-    config_key = CONFIG_GROUP_BLOB_CONTAINER_CLIENT if job.get("scope") == "team" else CONFIG_BLOB_CONTAINER_CLIENT
-    container: ContainerClient = current_app.config[config_key]
-    blob = container.get_blob_client(str(job["storage_path"]))
+    scope = "team" if job.get("scope") == "team" else "global"
     tags = {"status": status}
-    if job.get("scope") == "team":
+    if scope == "team":
         tags["data_groups"] = "/".join(job.get("data_group_ids") or [])
     try:
-        await blob.set_blob_tags(tags=tags)
+        await _knowledge_store().set_tags(scope, str(job["storage_path"]), tags)
     except Exception:
-        current_app.logger.warning("Unable to update blob status for ingestion job %s", job.get("_id"), exc_info=True)
+        current_app.logger.warning("Unable to update object status for ingestion job %s", job.get("_id"), exc_info=True)
 
 
 async def _run_attachment_cleanup(
@@ -3890,35 +3898,28 @@ async def _run_ingestion_job(job_id: str) -> None:
     try:
         await _set_job_blob_status(job, "InProgress")
         scope = str(job["scope"])
+        stored = await _knowledge_store().read(scope, str(job["storage_path"]))
         if scope == "personal":
-            file_system: FileSystemClient = current_app.config[CONFIG_USER_BLOB_CONTAINER_CLIENT]
-            storage_client = file_system.get_file_client(str(job["storage_path"]))
-            downloader = await storage_client.download_file()
             acls = {"oids": [str(job["owner_id"])]}
             folder = ""
         else:
-            config_key = CONFIG_GROUP_BLOB_CONTAINER_CLIENT if scope == "team" else CONFIG_BLOB_CONTAINER_CLIENT
-            container: ContainerClient = current_app.config[config_key]
-            storage_client = container.get_blob_client(str(job["storage_path"]))
-            downloader = await storage_client.download_blob()
             acls = {"oids": [], "groups": list(job.get("data_group_ids") or [])}
             folder = os.path.dirname(str(job["storage_path"]))
             folder = folder + os.sep if folder else ""
 
-        data = await downloader.readall()
-        stream = BytesIO(data)
+        stream = BytesIO(stored.data)
         stream.name = str(job["filename"])
         ingester: UploadUserFileStrategy = current_app.config[CONFIG_INGESTER]
         async with INGEST_SEM:
             if scope == "personal":
                 is_docintel, count = await ingester.add_file(
-                    File(content=stream, acls=acls, url=storage_client.url),
+                    File(content=stream, acls=acls, url=stored.url),
                     routing_context=job.get("routing_context") or {},
                     status_callback=update_stage,
                 )
             else:
                 is_docintel, count = await ingester.add_global_file(
-                    File(content=stream, acls=acls, url=storage_client.url),
+                    File(content=stream, acls=acls, url=stored.url),
                     folder,
                     routing_context=job.get("routing_context") or {},
                     status_callback=update_stage,
@@ -4014,18 +4015,15 @@ async def upload(auth_claims: dict[str, Any]):
         route = _resolve_upload_route(file.filename, routing_context)
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
-    user_file_system: FileSystemClient = current_app.config[CONFIG_USER_BLOB_CONTAINER_CLIENT]
-    user_directory = user_file_system.get_directory_client(user_oid)
-    try:
-        await user_directory.get_directory_properties()
-    except ResourceNotFoundError:
-        current_app.logger.info("Creating directory for user %s", user_oid)
-        await user_directory.create_directory()
-    await user_directory.set_access_control(owner=user_oid)
-    file_client = user_directory.get_file_client(file.filename)
     file_io = io.BufferedReader(file)
     size = _file_size(file_io)
-    await file_client.upload_data(file_io, overwrite=True, metadata={"UploadedBy": user_oid})
+    await _knowledge_store().put(
+        "personal",
+        f"{user_oid}/{file.filename}",
+        file_io,
+        size=size,
+        metadata={"UploadedBy": user_oid},
+    )
     job = create_ingestion_job(
         owner_id=user_oid,
         owner_name=user_name,
@@ -4046,12 +4044,7 @@ async def delete_uploaded(auth_claims: dict[str, Any]):
     request_json = await request.get_json()
     filename = request_json.get("filename")
     user_oid = auth_claims["oid"]
-    user_blob_container_client: FileSystemClient = current_app.config[
-        CONFIG_USER_BLOB_CONTAINER_CLIENT]
-    user_directory_client = user_blob_container_client.get_directory_client(
-        user_oid)
-    file_client = user_directory_client.get_file_client(filename)
-    await file_client.delete_file()
+    await _knowledge_store().delete("personal", f"{user_oid}/{filename}")
     ingester = current_app.config[CONFIG_INGESTER]
     await ingester.remove_file(filename, user_oid)
     return jsonify({"message": f"File {filename} deleted successfully"}), 200
@@ -4071,18 +4064,15 @@ async def global_upload(auth_claims: dict[str, Any]):
     if explicit_profile_id:
         _require_system_admin(auth_claims)
     # file = request_files.getlist("file")[0]
-    container_client: ContainerClient = current_app.config[CONFIG_BLOB_CONTAINER_CLIENT]
-
     existing_files: dict[str, int] = {}
-    async for blob in container_client.list_blobs():
-        filename = str(blob.name).split("/")[-1]
-        existing_files[filename] = blob.size
+    for stored_object in await _knowledge_store().list("global"):
+        filename = stored_object.key.split("/")[-1]
+        existing_files[filename] = stored_object.size
 
     jobs = []
     for file in request_files.getlist("file"):
         new_filename = (file.filename).split("/")[-1]
         blob_path = f"{file.filename}"
-        blob_client: BlobClient = container_client.get_blob_client(blob_path)
         file_io = io.BufferedReader(file)
         size = _file_size(file_io)
         routing_context = {
@@ -4095,7 +4085,9 @@ async def global_upload(auth_claims: dict[str, Any]):
             route = _resolve_upload_route(file.filename, routing_context)
         except ValueError as error:
             return jsonify({"error": str(error)}), 400
-        await blob_client.upload_blob(file_io, overwrite=True, metadata={"UploadedBy": user_oid})
+        await _knowledge_store().put(
+            "global", blob_path, file_io, size=size, metadata={"UploadedBy": user_oid}
+        )
         job = create_ingestion_job(
             owner_id=user_oid,
             owner_name=user_name,
@@ -4108,10 +4100,10 @@ async def global_upload(auth_claims: dict[str, Any]):
         )
         if new_filename in existing_files and size == existing_files[new_filename]:
             update_ingestion_job_status(str(job["_id"]), "indexed", result_message="Duplicate file already exists")
-            await blob_client.set_blob_tags(tags={"status": "Duplicate"})
+            await _knowledge_store().set_tags("global", blob_path, {"status": "Duplicate"})
             job = get_ingestion_job(str(job["_id"])) or job
         else:
-            await blob_client.set_blob_tags(tags={"status": "Pending"})
+            await _knowledge_store().set_tags("global", blob_path, {"status": "Pending"})
             _schedule_ingestion_job(str(job["_id"]))
         jobs.append(serialize_ingestion_job(job))
     return jsonify({"message": "Upload accepted for processing", "jobs": jobs}), 202
@@ -4141,13 +4133,10 @@ async def teams_upload(auth_claims: dict[str, Any]):
     if explicit_profile_id:
         _require_system_admin(auth_claims)
     # file = request_files.getlist("file")[0]
-    container_client: ContainerClient = current_app.config[CONFIG_GROUP_BLOB_CONTAINER_CLIENT]
-
     jobs = []
     for file in request_files.getlist("file"):
 
         blob_path = f"{str(team_id)}/{file.filename}"
-        blob_client: BlobClient = container_client.get_blob_client(blob_path)
         file_io = io.BufferedReader(file)
         size = _file_size(file_io)
         routing_context = {
@@ -4160,8 +4149,14 @@ async def teams_upload(auth_claims: dict[str, Any]):
             route = _resolve_upload_route(file.filename, routing_context)
         except ValueError as error:
             return jsonify({"error": str(error)}), 400
-        await blob_client.upload_blob(file_io, overwrite=True, metadata={"UploadedBy": user_oid})
-        await blob_client.set_blob_tags(tags={"status": "Pending", "data_groups": data_groups_tag})
+        await _knowledge_store().put(
+            "team",
+            blob_path,
+            file_io,
+            size=size,
+            metadata={"UploadedBy": str(user_oid)},
+            tags={"status": "Pending", "data_groups": data_groups_tag},
+        )
         job = create_ingestion_job(
             owner_id=str(user_oid),
             owner_name=user_name,
@@ -4185,10 +4180,8 @@ async def global_delete_uploaded(auth_claims: dict[str, Any]):
     request_json = await request.get_json()
     filename = request_json.get("filename")
     print(filename)
-    container_client: ContainerClient = current_app.config[CONFIG_BLOB_CONTAINER_CLIENT]
     blob_path = f"{filename}"
-    blob_client = container_client.get_blob_client(blob_path)
-    await blob_client.delete_blob()
+    await _knowledge_store().delete("global", blob_path)
     ingester = current_app.config[CONFIG_INGESTER]
     await ingester.remove_global_file(filename)
     return jsonify({"message": f"File {filename} deleted successfully"}), 200
@@ -4201,12 +4194,10 @@ async def team_delete_uploaded(auth_claims: dict[str, Any]):
     filename = request_json.get("filename")
     tid = request_json.get("team_id")
     print(filename)
-    container_client: ContainerClient = current_app.config[CONFIG_GROUP_BLOB_CONTAINER_CLIENT]
     blob_path = f"{tid}/{filename}"
-    blob_client = container_client.get_blob_client(blob_path)
-    tag_resp = await blob_client.get_blob_tags()
+    tag_resp = await _knowledge_store().get_tags("team", blob_path)
     data_groups_id_list = str(tag_resp['data_groups']).split("/")
-    await blob_client.delete_blob()
+    await _knowledge_store().delete("team", blob_path)
     ingester = current_app.config[CONFIG_INGESTER]
     for data_group_id in data_groups_id_list:
         await ingester.remove_groups_file(blob_path, str(data_group_id))
@@ -4217,17 +4208,9 @@ async def team_delete_uploaded(auth_claims: dict[str, Any]):
 @authenticated
 async def list_uploaded(auth_claims: dict[str, Any]):
     user_oid = auth_claims["oid"]
-    user_blob_container_client: FileSystemClient = current_app.config[
-        CONFIG_USER_BLOB_CONTAINER_CLIENT]
     files = []
-    try:
-        all_paths = user_blob_container_client.get_paths(path=user_oid)
-        async for path in all_paths:
-            files.append([path.name.split("/", 1)[1],
-                         int(path.content_length)])
-    except ResourceNotFoundError as error:
-        if error.status_code != 404:
-            current_app.logger.exception("Error listing uploaded files", error)
+    for stored_object in await _knowledge_store().list("personal", prefix=f"{user_oid}/"):
+        files.append([stored_object.key.split("/", 1)[1], stored_object.size])
     storage_paths = [f"{user_oid}/{item[0]}" for item in files]
     try:
         indexed_times = await asyncio.to_thread(
@@ -4247,25 +4230,22 @@ async def list_uploaded(auth_claims: dict[str, Any]):
 @authenticated
 async def list_team_uploaded(auth_claims: dict[str, Any]):
     request_json = await request.get_json()
-    user_blob_container_client: FileSystemClient = current_app.config[
-        CONFIG_GROUP_BLOB_CONTAINER_CLIENT]
     files = []
     tid = request_json.get("team_id")
-    try:
-        async for blob in user_blob_container_client.list_blobs():
-            blob_client = user_blob_container_client.get_blob_client(blob.name)
-            tag_resp = await blob_client.get_blob_tags()
-            if str(blob.name).startswith(str(tid)):
-                data_groups_id_list = str(tag_resp['data_groups']).split("/")
-                data_groups_list = []
-                for data_group_id in data_groups_id_list:
-                    data_group = get_data_group_by_id(data_group_id)
-                    data_groups_list.append(data_group["name"])
-                files.append([str(blob.name).replace(
-                    f"{tid}/", ""), tag_resp['status'], blob['last_modified'].isoformat() if 'last_modified' in blob else None, int(blob.size), data_groups_list])
-    except ResourceNotFoundError as error:
-        if error.status_code != 404:
-            current_app.logger.exception("Error listing uploaded files", error)
+    for stored_object in await _knowledge_store().list("team", prefix=f"{tid}/"):
+        data_groups_id_list = str(stored_object.tags.get("data_groups", "")).split("/")
+        data_groups_list = []
+        for data_group_id in filter(None, data_groups_id_list):
+            data_group = get_data_group_by_id(data_group_id)
+            if data_group:
+                data_groups_list.append(data_group["name"])
+        files.append([
+            stored_object.key.removeprefix(f"{tid}/"),
+            stored_object.tags.get("status", ""),
+            stored_object.last_modified.isoformat() if stored_object.last_modified else None,
+            stored_object.size,
+            data_groups_list,
+        ])
     storage_paths = [f"{tid}/{item[0]}" for item in files]
     try:
         indexed_times = await asyncio.to_thread(
@@ -4284,18 +4264,14 @@ async def list_team_uploaded(auth_claims: dict[str, Any]):
 @bp.get("/list_global_uploaded")
 @authenticated
 async def list_global_uploaded(auth_claims: dict[str, Any]):
-    user_blob_container_client: FileSystemClient = current_app.config[
-        CONFIG_BLOB_CONTAINER_CLIENT]
     files = []
-    try:
-        async for blob in user_blob_container_client.list_blobs():
-            blob_client = user_blob_container_client.get_blob_client(blob.name)
-            tag_resp = await blob_client.get_blob_tags()
-            files.append([blob.name, tag_resp['status'], blob['last_modified'].isoformat(
-            ) if 'last_modified' in blob else None, int(blob.size)])
-    except ResourceNotFoundError as error:
-        if error.status_code != 404:
-            current_app.logger.exception("Error listing uploaded files", error)
+    for stored_object in await _knowledge_store().list("global"):
+        files.append([
+            stored_object.key,
+            stored_object.tags.get("status", ""),
+            stored_object.last_modified.isoformat() if stored_object.last_modified else None,
+            stored_object.size,
+        ])
     try:
         indexed_times = await asyncio.to_thread(
             latest_indexed_times,
@@ -4313,39 +4289,39 @@ FILES_CONCURRENT = 48
 
 
 async def upload_path(data: str, blob_name: str, metadata: dict, gid=None, data_groups_id=None):
+    scope = "web_team" if gid else "web_global"
     if gid:
-        user_blob_container_client = current_app.config[CONFIG_WEB_GROUP_BLOB_CONTAINER_CLIENT]
         blob_name = f"{gid}/{blob_name}"
-    else:
-        user_blob_container_client = current_app.config[CONFIG_WEB_BLOB_CONTAINER_CLIENT]
-    async for blob in user_blob_container_client.list_blobs():
-        if str(blob.name).split("||")[-1] == blob_name.split("||")[-1]:
+    for stored_object in await _knowledge_store().list(scope):
+        if stored_object.key.split("||")[-1] == blob_name.split("||")[-1]:
             return True
     ingester: UploadUserFileStrategy = current_app.config[CONFIG_INGESTER]
-    blob = user_blob_container_client.get_blob_client(blob_name)
     # ใช้ to_thread เปิดไฟล์ เพื่อไม่บล็อค event loop
     delay = 1.0
     for attempt in range(6):
         try:
-            await blob.upload_blob(
-                data.encode("utf-8"), overwrite=True, metadata=metadata,
-                max_concurrency=PER_FILE_CONC,
+            encoded = data.encode("utf-8")
+            object_url = await _knowledge_store().put(
+                scope,
+                blob_name,
+                encoded,
+                size=len(encoded),
+                metadata=metadata,
+                tags={"data_groups": "/".join(data_groups_id or [])} if gid else None,
+                content_type="text/plain; charset=utf-8",
             )
             buf = NamedBytesIO(data.encode("utf-8"), blob_name)
             folder = os.path.dirname(str(blob_name).replace(
                 str(blob_name).split("/")[-1], ""))
             folder = folder + os.sep if folder else ""
             if gid:
-                await blob.set_blob_tags(tags={"data_groups": "/".join(data_groups_id)})
                 buf.seek(0)
-                await ingester.add_global_file(File(content=buf, acls={"groups": data_groups_id, "oids": []}, url=blob.url), folder)
+                await ingester.add_global_file(File(content=buf, acls={"groups": data_groups_id, "oids": []}, url=object_url), folder)
             else:
                 buf.seek(0)
-                await ingester.add_global_file(File(content=buf, acls={"oids": []}, url=blob.url), folder)
+                await ingester.add_global_file(File(content=buf, acls={"oids": []}, url=object_url), folder)
             return True
-        except ResourceExistsError:
-            return True  # ถ้าไม่ overwrite ก็ข้ามได้
-        except (ServiceResponseError, TimeoutError, OSError) as e:
+        except Exception:
             if attempt == 5:
                 return False
             await asyncio.sleep(delay + random.random() * 0.2)
@@ -4417,68 +4393,54 @@ async def scrape_website(auth_claims: dict[str, Any]):
 async def list_web_contents(auth_claims: dict[str, Any]):
     request_json = await request.get_json()
     team_id = request.args.get("team_id")
-    if team_id:
-        user_blob_container_client: FileSystemClient = current_app.config[
-            CONFIG_WEB_GROUP_BLOB_CONTAINER_CLIENT]
-    else:
-        user_blob_container_client: FileSystemClient = current_app.config[
-            CONFIG_WEB_BLOB_CONTAINER_CLIENT]
+    scope = "web_team" if team_id else "web_global"
     files = []
-    try:
-        async for blob in user_blob_container_client.list_blobs():
-            if team_id:
-                if str(blob.name).startswith(str(team_id)):
-                    blob_client = user_blob_container_client.get_blob_client(
-                        blob.name)
-                    tag_resp = await blob_client.get_blob_tags()
-                    groups_id_list = str(tag_resp["data_groups"]).split("/")
-                    group_list = []
-                    for group_id in groups_id_list:
-                        data_group = get_data_group_by_id(group_id)
-                        group_list.append(data_group["name"])
-                    files.append([str(blob.name).replace(
-                        f"{team_id}/", "").split("/")[0].replace("_", "/"), group_list])
-                    seen = set()
-                    result = []
-                    for key, names in files:
-                        item = (key, tuple(names))
-                        if item not in seen:
-                            seen.add(item)
-                            result.append([key, names])
-                    files = result
-            else:
-                files.append(str(blob.name))
-                files = list(
-                    {p.split("/")[0].replace("_", "/") for p in files})
-    except ResourceNotFoundError as error:
-        if error.status_code != 404:
-            current_app.logger.exception("Error listing web contents", error)
+    for stored_object in await _knowledge_store().list(scope, prefix=f"{team_id}/" if team_id else ""):
+        if team_id:
+            groups_id_list = str(stored_object.tags.get("data_groups", "")).split("/")
+            group_list = []
+            for group_id in filter(None, groups_id_list):
+                data_group = get_data_group_by_id(group_id)
+                if data_group:
+                    group_list.append(data_group["name"])
+            files.append([
+                stored_object.key.removeprefix(f"{team_id}/").split("/")[0].replace("_", "/"),
+                group_list,
+            ])
+            seen = set()
+            result = []
+            for key, names in files:
+                item = (key, tuple(names))
+                if item not in seen:
+                    seen.add(item)
+                    result.append([key, names])
+            files = result
+        else:
+            files.append(stored_object.key)
+            files = list({p.split("/")[0].replace("_", "/") for p in files})
     return jsonify(files), 200
 
 
 async def delete_path(data: str, gid=None):
-    if gid:
-        container_client: ContainerClient = current_app.config[CONFIG_WEB_GROUP_BLOB_CONTAINER_CLIENT]
-    else:
-        container_client: ContainerClient = current_app.config[CONFIG_WEB_BLOB_CONTAINER_CLIENT]
+    scope = "web_team" if gid else "web_global"
     ingester = current_app.config[CONFIG_INGESTER]
-    blob_client = container_client.get_blob_client(data)
     # ใช้ to_thread เปิดไฟล์ เพื่อไม่บล็อค event loop
     delay = 1.0
     for attempt in range(6):
         try:
             if gid:
-                tag_resp = await blob_client.get_blob_tags()
+                tag_resp = await _knowledge_store().get_tags(scope, data)
                 data_groups = tag_resp["data_groups"].split("/")
-                await blob_client.delete_blob()
+                await _knowledge_store().delete(scope, data)
                 for data_group in data_groups:
                     await ingester.remove_groups_file(data, data_group)
             else:
+                await _knowledge_store().delete(scope, data)
                 await ingester.remove_global_file(data)
             return True
-        except ResourceExistsError:
-            return True  # ถ้าไม่ overwrite ก็ข้ามได้
-        except (ServiceResponseError, TimeoutError, OSError) as e:
+        except KnowledgeObjectNotFound:
+            return True
+        except Exception:
             if attempt == 5:
                 return False
             await asyncio.sleep(delay + random.random() * 0.2)
@@ -4514,18 +4476,12 @@ async def delete_web_content(auth_claims: dict[str, Any]):
     in_url = request_json.get("url")
     team_id = request_json.get("team_id")
     url = str(in_url).replace("/", "_")
-    if team_id:
-        container_client: ContainerClient = current_app.config[CONFIG_WEB_GROUP_BLOB_CONTAINER_CLIENT]
-    else:
-        container_client: ContainerClient = current_app.config[CONFIG_WEB_BLOB_CONTAINER_CLIENT]
+    scope = "web_team" if team_id else "web_global"
     try:
         files = []
-        async for blob in container_client.list_blobs():
-            if url == str(blob.name).split("/")[1 if team_id else 0]:
-                files.append(blob.name)
-                # blob_client = container_client.get_blob_client(blob.name)
-                # await blob_client.delete_blob()
-                # await ingester.remove_global_file(blob.name)
+        for stored_object in await _knowledge_store().list(scope, prefix=f"{team_id}/" if team_id else ""):
+            if url == stored_object.key.split("/")[1 if team_id else 0]:
+                files.append(stored_object.key)
         if team_id:
             await delete_many(files, team_id)
         else:
@@ -5420,24 +5376,22 @@ async def insert_team_users(auth_claims: dict[str, Any]):
 
 
 async def delete_data_group_function(team_id, data_group_id):
-    user_blob_container_client: FileSystemClient = current_app.config[
-        CONFIG_GROUP_BLOB_CONTAINER_CLIENT]
     ingester = current_app.config[CONFIG_INGESTER]
-    async for blob in user_blob_container_client.list_blobs():
-        blob_client = user_blob_container_client.get_blob_client(blob.name)
-        tag_resp = await blob_client.get_blob_tags()
-        if str(blob.name).startswith(str(team_id)):
-            status = str(tag_resp['status'])
-            data_group_tags = str(tag_resp['data_groups'])
+    store = _knowledge_store()
+    for stored_object in await store.list("team", prefix=f"{team_id}/"):
+        tag_resp = stored_object.tags
+        if stored_object.key.startswith(str(team_id)):
+            status = str(tag_resp.get('status', ''))
+            data_group_tags = str(tag_resp.get('data_groups', ''))
             data_groups_id_list = data_group_tags.split("/")
             if data_group_id in data_groups_id_list:
                 if len(data_groups_id_list) == 1:
-                    await ingester.remove_groups_file(str(blob.name), str(data_group_id))
-                    await blob_client.delete_blob()
+                    await ingester.remove_groups_file(stored_object.key, str(data_group_id))
+                    await store.delete("team", stored_object.key)
                 else:
                     data_groups_id_list.remove(data_group_id)
-                    await ingester.remove_groups_file(str(blob.name), str(data_group_id))
-                    await blob_client.set_blob_tags(tags={"status": status, "data_groups": "/".join(data_groups_id_list)})
+                    await ingester.remove_groups_file(stored_object.key, str(data_group_id))
+                    await store.set_tags("team", stored_object.key, {"status": status, "data_groups": "/".join(data_groups_id_list)})
 
 
 @bp.post("/delete_team")
@@ -6441,18 +6395,52 @@ async def setup_clients():
         endpoint=AZURE_SEARCH_ENDPOINT, agent_name=AZURE_SEARCH_AGENT, credential=azure_credential
     )
 
-    blob_container_client = ContainerClient(
-        f"https://{AZURE_STORAGE_ACCOUNT}.blob.core.windows.net", AZURE_STORAGE_CONTAINER, credential=azure_credential
-    )
-    web_blob_container_client = ContainerClient(
-        f"https://{AZURE_STORAGE_ACCOUNT}.blob.core.windows.net", AZURE_WEB_STORAGE_CONTAINER, credential=azure_credential
-    )
-    web_group_blob_container_client = ContainerClient(
-        f"https://{AZURE_STORAGE_ACCOUNT}.blob.core.windows.net", AZURE_WEB_GROUP_STORAGE_CONTAINER, credential=azure_credential
-    )
-    group_blob_container_client = ContainerClient(
-        f"https://{AZURE_STORAGE_ACCOUNT}.blob.core.windows.net", AZURE_GROUP_STORAGE_CONTAINER, credential=azure_credential
-    )
+    knowledge_storage_provider = os.getenv("KNOWLEDGE_STORAGE_PROVIDER", "azure").strip().lower()
+    if knowledge_storage_provider not in {"azure", "minio"}:
+        raise ValueError("KNOWLEDGE_STORAGE_PROVIDER must be azure or minio")
+
+    blob_container_client = None
+    web_blob_container_client = None
+    web_group_blob_container_client = None
+    group_blob_container_client = None
+    user_blob_container_client = None
+    if knowledge_storage_provider == "azure":
+        blob_container_client = ContainerClient(
+            f"https://{AZURE_STORAGE_ACCOUNT}.blob.core.windows.net", AZURE_STORAGE_CONTAINER, credential=azure_credential
+        )
+        web_blob_container_client = ContainerClient(
+            f"https://{AZURE_STORAGE_ACCOUNT}.blob.core.windows.net", AZURE_WEB_STORAGE_CONTAINER, credential=azure_credential
+        )
+        web_group_blob_container_client = ContainerClient(
+            f"https://{AZURE_STORAGE_ACCOUNT}.blob.core.windows.net", AZURE_WEB_GROUP_STORAGE_CONTAINER, credential=azure_credential
+        )
+        group_blob_container_client = ContainerClient(
+            f"https://{AZURE_STORAGE_ACCOUNT}.blob.core.windows.net", AZURE_GROUP_STORAGE_CONTAINER, credential=azure_credential
+        )
+        if USE_USER_UPLOAD:
+            if not AZURE_USERSTORAGE_ACCOUNT or not AZURE_USERSTORAGE_CONTAINER:
+                raise ValueError(
+                    "AZURE_USERSTORAGE_ACCOUNT and AZURE_USERSTORAGE_CONTAINER must be set when "
+                    "USE_USER_UPLOAD is true and KNOWLEDGE_STORAGE_PROVIDER=azure"
+                )
+            user_blob_container_client = FileSystemClient(
+                f"https://{AZURE_USERSTORAGE_ACCOUNT}.dfs.core.windows.net",
+                AZURE_USERSTORAGE_CONTAINER,
+                credential=azure_credential,
+            )
+        knowledge_store: KnowledgeObjectStore = AzureKnowledgeObjectStore(
+            {
+                "global": blob_container_client,
+                "team": group_blob_container_client,
+                "personal": user_blob_container_client,
+                "web_global": web_blob_container_client,
+                "web_team": web_group_blob_container_client,
+            }
+        )
+    else:
+        knowledge_store = create_minio_knowledge_store(os.environ)
+    await knowledge_store.ensure_ready()
+    current_app.config[CONFIG_KNOWLEDGE_STORE] = knowledge_store
 
     attachment_backend = os.getenv("CHAT_ATTACHMENT_STORE", "disabled").strip().lower()
     attachment_container_client = None
@@ -6558,15 +6546,6 @@ async def setup_clients():
     if USE_USER_UPLOAD:
         current_app.logger.info(
             "USE_USER_UPLOAD is true, setting up user upload feature")
-        if not AZURE_USERSTORAGE_ACCOUNT or not AZURE_USERSTORAGE_CONTAINER:
-            raise ValueError(
-                "AZURE_USERSTORAGE_ACCOUNT and AZURE_USERSTORAGE_CONTAINER must be set when USE_USER_UPLOAD is true"
-            )
-        user_blob_container_client = FileSystemClient(
-            f"https://{AZURE_USERSTORAGE_ACCOUNT}.dfs.core.windows.net",
-            AZURE_USERSTORAGE_CONTAINER,
-            credential=azure_credential,
-        )
         current_app.config[CONFIG_USER_BLOB_CONTAINER_CLIENT] = user_blob_container_client
 
         # Set up ingester
@@ -6635,10 +6614,11 @@ async def setup_clients():
     current_app.config[CONFIG_WEB_BLOB_CONTAINER_CLIENT] = web_blob_container_client
     current_app.config[CONFIG_WEB_GROUP_BLOB_CONTAINER_CLIENT] = web_group_blob_container_client
     current_app.config[CONFIG_GROUP_BLOB_CONTAINER_CLIENT] = group_blob_container_client
+    current_app.config[CONFIG_KNOWLEDGE_STORE] = knowledge_store
     current_app.config[CONFIG_AUTH_CLIENT] = auth_helper
 
     current_app.config[CONFIG_GPT4V_DEPLOYED] = bool(USE_GPT4V)
-    current_app.config[CONFIG_KNOWLEDGE_VISION_ENABLED] = _has_configured_knowledge_vision(
+    current_app.config[CONFIG_KNOWLEDGE_VISION_ENABLED] = knowledge_storage_provider == "azure" and _has_configured_knowledge_vision(
         bool(USE_GPT4V), AZURE_VISION_ENDPOINT
     )
     if USE_GPT4V and not current_app.config[CONFIG_KNOWLEDGE_VISION_ENABLED]:
@@ -6894,12 +6874,8 @@ async def close_clients():
     if attachment_container := current_app.config.get(CONFIG_CHAT_ATTACHMENT_CONTAINER_CLIENT):
         await attachment_container.close()
     await current_app.config[CONFIG_SEARCH_CLIENT].close()
-    await current_app.config[CONFIG_BLOB_CONTAINER_CLIENT].close()
-    await current_app.config[CONFIG_WEB_BLOB_CONTAINER_CLIENT].close()
-    await current_app.config[CONFIG_WEB_GROUP_BLOB_CONTAINER_CLIENT].close()
-    await current_app.config[CONFIG_GROUP_BLOB_CONTAINER_CLIENT].close()
-    if current_app.config.get(CONFIG_USER_BLOB_CONTAINER_CLIENT):
-        await current_app.config[CONFIG_USER_BLOB_CONTAINER_CLIENT].close()
+    if knowledge_store := current_app.config.get(CONFIG_KNOWLEDGE_STORE):
+        await knowledge_store.close()
 
 
 def create_app():

@@ -129,9 +129,11 @@ A related option is VS Code Dev Containers, which will open the project in your 
 ### Local environment
 
 For a local MongoDB-backed control plane, see
-[docs/local-mongodb.md](docs/local-mongodb.md). This keeps the existing
-Cosmos-compatible connector and does not yet replace Azure AI Search or
-Knowledge object storage.
+[docs/local-mongodb.md](docs/local-mongodb.md). For local Personal, Team,
+Global, and web-ingested Knowledge source files, see
+[docs/local-knowledge-storage.md](docs/local-knowledge-storage.md). Azure and
+local providers can be selected independently; Azure AI Search remains the
+retrieval backend until the search-provider migration is complete.
 
 1. Install the required tools:
 
@@ -267,6 +269,8 @@ You can find extensive documentation in the [docs](docs/README.md) folder:
     - [Agentic retrieval](docs/agentic_retrieval.md)
   - [Sharing deployment environments](docs/sharing_environments.md)
 - [Local development](docs/localdev.md)
+- [Local Knowledge object storage](docs/local-knowledge-storage.md)
+- [Local MongoDB](docs/local-mongodb.md)
 - [Customizing the app](docs/customization.md)
 - [HTTP Protocol](docs/http_protocol.md)
 - [Data ingestion](docs/data_ingestion.md)
