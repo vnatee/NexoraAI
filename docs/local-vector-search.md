@@ -41,6 +41,10 @@ collection is first created. If the dimensions later change, startup fails
 instead of silently mixing incompatible vectors; use a new collection name or
 perform an explicit re-index.
 
+For a fully local multilingual configuration, use the Ollama/BGE-M3 service in
+[local-embeddings.md](local-embeddings.md). It uses 1024-dimensional vectors and
+therefore a separate `nexora-knowledge-bge-m3` collection.
+
 ## Runtime behavior
 
 - Existing Personal, Team, Global, and Data Group ACL payloads are stored on
