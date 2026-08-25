@@ -1,0 +1,41 @@
+FROM node:20-bookworm-slim AS frontend-build
+
+WORKDIR /source/app/frontend
+COPY app/frontend/package.json app/frontend/package-lock.json ./
+RUN npm ci
+COPY app/frontend/ ./
+RUN npm run build:memory-safe
+
+FROM python:3.11-slim-bookworm AS python-build
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+ENV VIRTUAL_ENV=/opt/venv
+RUN python -m venv "$VIRTUAL_ENV"
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+WORKDIR /build
+COPY app/backend/requirements.txt ./requirements.txt
+RUN python -m pip install --no-cache-dir -r requirements.txt
+
+FROM python:3.11-slim-bookworm AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /app
+COPY --from=python-build /opt/venv /opt/venv
+COPY app/backend/ ./
+COPY --from=frontend-build /source/app/backend/static ./static
+
+RUN addgroup --system nexora \
+    && adduser --system --ingroup nexora --home /app nexora \
+    && mkdir -p /data/chat-attachments \
+    && chown -R nexora:nexora /app /data/chat-attachments
+
+USER nexora
+EXPOSE 8000
+
+CMD ["python", "-m", "hypercorn", "--bind", "0.0.0.0:8000", "main:app"]

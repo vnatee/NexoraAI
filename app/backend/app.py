@@ -6246,11 +6246,31 @@ async def insert_first_mail_template(name, subject, body):
 @bp.before_app_serving
 async def setup_clients():
     # Replace these with your own values, either in environment variables or directly here
-    AZURE_STORAGE_ACCOUNT = os.environ["AZURE_STORAGE_ACCOUNT"]
-    AZURE_STORAGE_CONTAINER = os.environ["AZURE_STORAGE_CONTAINER"]
-    AZURE_WEB_STORAGE_CONTAINER = os.environ["AZURE_WEB_STORAGE_CONTAINER"]
-    AZURE_WEB_GROUP_STORAGE_CONTAINER = os.environ["AZURE_WEB_GROUP_STORAGE_CONTAINER"]
-    AZURE_GROUP_STORAGE_CONTAINER = os.environ["AZURE_GROUP_STORAGE_CONTAINER"]
+    knowledge_storage_provider = os.getenv("KNOWLEDGE_STORAGE_PROVIDER", "azure").strip().lower()
+    if knowledge_storage_provider not in {"azure", "minio"}:
+        raise ValueError("KNOWLEDGE_STORAGE_PROVIDER must be azure or minio")
+    azure_storage_settings = {
+        name: os.getenv(name, "").strip()
+        for name in (
+            "AZURE_STORAGE_ACCOUNT",
+            "AZURE_STORAGE_CONTAINER",
+            "AZURE_WEB_STORAGE_CONTAINER",
+            "AZURE_WEB_GROUP_STORAGE_CONTAINER",
+            "AZURE_GROUP_STORAGE_CONTAINER",
+        )
+    }
+    if knowledge_storage_provider == "azure":
+        missing_storage_settings = [name for name, value in azure_storage_settings.items() if not value]
+        if missing_storage_settings:
+            raise ValueError(
+                "The following settings are required when KNOWLEDGE_STORAGE_PROVIDER=azure: "
+                + ", ".join(missing_storage_settings)
+            )
+    AZURE_STORAGE_ACCOUNT = azure_storage_settings["AZURE_STORAGE_ACCOUNT"]
+    AZURE_STORAGE_CONTAINER = azure_storage_settings["AZURE_STORAGE_CONTAINER"]
+    AZURE_WEB_STORAGE_CONTAINER = azure_storage_settings["AZURE_WEB_STORAGE_CONTAINER"]
+    AZURE_WEB_GROUP_STORAGE_CONTAINER = azure_storage_settings["AZURE_WEB_GROUP_STORAGE_CONTAINER"]
+    AZURE_GROUP_STORAGE_CONTAINER = azure_storage_settings["AZURE_GROUP_STORAGE_CONTAINER"]
     AZURE_USERSTORAGE_ACCOUNT = os.environ.get("AZURE_USERSTORAGE_ACCOUNT")
     AZURE_USERSTORAGE_CONTAINER = os.environ.get("AZURE_USERSTORAGE_CONTAINER")
     KNOWLEDGE_SEARCH_PROVIDER = os.getenv("KNOWLEDGE_SEARCH_PROVIDER", "azure").strip().lower()
@@ -6420,10 +6440,6 @@ async def setup_clients():
         agent_client = KnowledgeAgentRetrievalClient(
             endpoint=AZURE_SEARCH_ENDPOINT, agent_name=AZURE_SEARCH_AGENT, credential=azure_credential
         )
-
-    knowledge_storage_provider = os.getenv("KNOWLEDGE_STORAGE_PROVIDER", "azure").strip().lower()
-    if knowledge_storage_provider not in {"azure", "minio"}:
-        raise ValueError("KNOWLEDGE_STORAGE_PROVIDER must be azure or minio")
 
     blob_container_client = None
     web_blob_container_client = None

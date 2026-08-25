@@ -9,7 +9,7 @@ logs, credentials, attachments, or repetitive conversational text.
 ## Repository state
 
 - Workspace: `/workspaces/NexoraAI`
-- Branch: `feature/document-extraction-recovery`
+- Branch: `feature/local-runtime-stack`
 - Base checkpoint: `09eef3e feat: add private chat document workflows`.
 - Implementation checkpoint: `eff68fb feat: recover interrupted document
   processing`. It adds private Chat document extraction recovery and managed OCR
@@ -32,10 +32,12 @@ logs, credentials, attachments, or repetitive conversational text.
 - Checkpoint `33a6b40 feat: add selectable knowledge object storage` adds the
   provider-neutral Knowledge object-store boundary and optional MinIO adapter.
   The product owner manually confirmed normal application behavior with MinIO.
-- The current uncommitted slice adds provider-neutral Knowledge search client
-  usage and an optional Qdrant implementation. Preserve the Azure default,
-  Qdrant adapter, Compose/configuration files, tests, and documentation listed
-  under **Local Knowledge vector search** below.
+- Checkpoints `4b53e75 feat: add local vector search and refine chat workspace`
+  and `57b6e72 feat: add local BGE-M3 embedding stack` contain the accepted
+  Qdrant and Ollama/BGE-M3 slices. The current uncommitted slice packages the
+  application, MongoDB, MinIO, Qdrant, Ollama, local authentication, and local
+  attachments as one portable Compose runtime while preserving Azure provider
+  selection.
 
 ## Product background and fixed decisions
 
@@ -816,6 +818,33 @@ described below.
   by configuration and must continue to be covered when that deployment mode
   changes.
 
+### Portable local runtime
+
+- `Dockerfile.local` is a multi-stage image: Node 20 builds the frontend with
+  the memory-safe production command, a disposable Python builder compiles any
+  ARM64-only source dependencies, and the final Python 3.11 image runs
+  Hypercorn as an unprivileged `nexora` user. Build tools and frontend source
+  dependencies are not retained in the runtime image.
+- `docker-compose.local-runtime.yml` combines the application, MongoDB, MinIO,
+  Qdrant, and Ollama. It installs BGE-M3 and the configured local chat model
+  through a one-shot service, waits for healthy dependencies, uses named
+  volumes, keeps stateful APIs on the private Compose network, and binds the
+  application and MinIO console to loopback by default.
+- Docling is available through the optional `ocr` profile and must be selected
+  by a managed document-processing profile at `http://docling:5001`.
+- `docs/local-runtime.env.example` contains placeholders only;
+  `docs/local-runtime.md` documents secret generation, first-admin bootstrap,
+  safe stop/restart, persistence, smoke testing, and Azure VM constraints.
+- MinIO startup no longer requires placeholder Azure Blob variables. Azure
+  storage remains the default and now reports all missing Azure storage
+  settings in one startup error when selected.
+- The Compose schema, focused 48-test provider/runtime suite, 685-test
+  service-free regression suite, multi-stage ARM64 image build, packaged
+  frontend artifact, and Hypercorn import all passed. A destructive full-stack
+  startup was intentionally not run against the developer's existing service
+  volumes; the product owner still needs to run the documented clean-deployment
+  smoke test.
+
 ## Other next work
 
 ### Near-term document work
@@ -829,9 +858,9 @@ described below.
 
 ### Platform roadmap
 
-- **Immediate next slice:** checkpoint the accepted Ollama/BGE-M3 work, then
-  package the complete local application stack with health, persistence,
-  secret injection, and backup/restore guidance. Design verified-channel
+- **Immediate next slice:** manually smoke-test the portable Compose runtime on
+  a clean project/volume set, then add production ingress/TLS and executable,
+  provider-consistent backup/restore automation. Design verified-channel
   forgotten-password recovery and decide
   whether production deployments should move the local bearer from
   `sessionStorage` to an HttpOnly cookie/BFF flow before production hardening.
@@ -943,11 +972,11 @@ The product owner also confirmed the Local-only and hybrid Local+Entra
 authentication acceptance flow, including the relevant access-control behavior,
 on 2026-08-23.
 
-Latest service-free backend regression on 2026-08-24 after the local embedding
-packaging slice:
+Latest service-free backend regression on 2026-08-24 after the portable local
+runtime packaging slice:
 
 ```text
-680 passed, 1 deselected
+685 passed, 1 deselected
 ```
 
 Command:
