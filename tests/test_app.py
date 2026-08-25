@@ -52,7 +52,7 @@ async def test_missing_env_vars():
     with mock.patch.dict(os.environ, clear=True):
         quart_app = app.create_app()
 
-        with pytest.raises(quart.testing.app.LifespanError, match="Error during startup 'AZURE_STORAGE_ACCOUNT'"):
+        with pytest.raises(quart.testing.app.LifespanError, match="AZURE_STORAGE_ACCOUNT"):
             async with quart_app.test_app() as test_app:
                 test_app.test_client()
 

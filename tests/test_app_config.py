@@ -213,6 +213,14 @@ async def test_app_config_default(monkeypatch, minimal_env):
 async def test_app_uses_minio_knowledge_storage_provider(monkeypatch, minimal_env):
     knowledge_store = mock.AsyncMock()
     monkeypatch.setenv("KNOWLEDGE_STORAGE_PROVIDER", "minio")
+    for name in (
+        "AZURE_STORAGE_ACCOUNT",
+        "AZURE_STORAGE_CONTAINER",
+        "AZURE_WEB_STORAGE_CONTAINER",
+        "AZURE_WEB_GROUP_STORAGE_CONTAINER",
+        "AZURE_GROUP_STORAGE_CONTAINER",
+    ):
+        monkeypatch.delenv(name)
     monkeypatch.setattr(app, "create_minio_knowledge_store", lambda environ: knowledge_store)
 
     quart_app = app.create_app()
@@ -223,6 +231,16 @@ async def test_app_uses_minio_knowledge_storage_provider(monkeypatch, minimal_en
         assert (await response.get_json())["knowledgeStorageProvider"] == "minio"
         assert quart_app.config[app.CONFIG_KNOWLEDGE_STORE] is knowledge_store
         knowledge_store.ensure_ready.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_app_reports_missing_azure_knowledge_storage_settings(monkeypatch, minimal_env):
+    monkeypatch.delenv("AZURE_STORAGE_ACCOUNT")
+
+    quart_app = app.create_app()
+    with pytest.raises(quart.testing.app.LifespanError, match="AZURE_STORAGE_ACCOUNT"):
+        async with quart_app.test_app():
+            pass
 
 
 @pytest.mark.asyncio

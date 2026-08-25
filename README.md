@@ -137,6 +137,9 @@ and retrieval with Qdrant, see
 [docs/local-vector-search.md](docs/local-vector-search.md).
 For local Thai/English text embeddings with Ollama and BGE-M3, see
 [docs/local-embeddings.md](docs/local-embeddings.md).
+For the complete single-host runtime (application, MongoDB, MinIO, Qdrant, and
+Ollama) suitable for a workstation or Azure VM, see
+[docs/local-runtime.md](docs/local-runtime.md).
 
 1. Install the required tools:
 
@@ -275,6 +278,7 @@ You can find extensive documentation in the [docs](docs/README.md) folder:
 - [Local Knowledge object storage](docs/local-knowledge-storage.md)
 - [Local Knowledge vector search](docs/local-vector-search.md)
 - [Local text embeddings](docs/local-embeddings.md)
+- [Portable local runtime](docs/local-runtime.md)
 - [Local MongoDB](docs/local-mongodb.md)
 - [Customizing the app](docs/customization.md)
 - [HTTP Protocol](docs/http_protocol.md)
