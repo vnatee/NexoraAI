@@ -29,7 +29,7 @@ from tokens_usage.get_usage import get_all_usage
 from feedback.createfeedback import insert_feedback
 from feedback.getfeedback import get_all_feedback
 from mongo_table_connecters.mongo_connector import get_database
-from mongo_table_connecters.teams import insert_team, get_all_teams, get_team_by_id, get_team_by_data_group_id, update_team, get_team_by_user_id, delete_team_by_id
+from mongo_table_connecters.teams import insert_team, get_all_teams, get_team_by_id, get_team_by_data_group_id, get_team_by_agent_id, update_team, get_team_by_user_id, delete_team_by_id
 from mongo_table_connecters.users import get_user_by_id, get_user_by_ad_email, get_all_user_by_is_sys_admin, get_all_users, insert_user, delete_user_by_id, update_user
 from mongo_table_connecters.local_auth import (
     LocalAuthError,
@@ -80,6 +80,7 @@ from mongo_table_connecters.external_apis import insert_apis, delete_apis_by_id,
 from mongo_table_connecters.agent_bindings import insert_agent_binding, get_all_agent_bindings_by_agent_id, delete_agent_binding_by_id, update_agent_binding,get_agent_binding_by_apisid_and_endpointname
 from mongo_table_connecters.fixed_promts import insert_fixed_prompt, get_all_fixed_prompt
 from mongo_table_connecters.external_database import insert_external_database, get_external_database_by_id, get_external_databases_by_team_id, get_all_external_databases, update_external_database, delete_external_database_by_id, serialize_external_database
+from mongo_table_connecters.integration_catalog import IntegrationAssignmentError, assign_unassigned_integration
 from mongo_table_connecters.database_binding import insert_database_binding, get_database_binding_by_id, get_database_bindings_by_agent_id, get_all_database_bindings, update_database_binding, delete_database_binding_by_id
 # ⭐ CHART CAPABILITY: import chart binding functions
 from mongo_table_connecters.chart_binding import insert_chart_binding, get_chart_bindings_by_agent_id, get_enabled_chart_bindings_by_agent_id, update_chart_binding, delete_chart_binding_by_id
@@ -622,6 +623,41 @@ def _require_system_permission(
     if permission not in permission_names:
         raise AccessControlError(f"{permission} permission is required")
     return user
+
+
+def _require_integration_catalog_access(
+    auth_claims: dict[str, Any], team_id: str, *, allow_agent_management: bool = False
+) -> dict[str, Any]:
+    """Authorize integration catalog access without making unassigned items public."""
+    normalized_team_id = str(team_id or "").strip()
+    if normalized_team_id:
+        try:
+            user, _ = _require_team_access(
+                auth_claims, normalized_team_id, permission="Manage integrations"
+            )
+            return user
+        except AccessControlError:
+            if not allow_agent_management:
+                raise
+            user, _ = _require_team_access(
+                auth_claims, normalized_team_id, permission="Manage agents"
+            )
+            return user
+    user = _application_user_for_claims(auth_claims)
+    if not user or user.get("active", True) is not True:
+        raise AccessControlError("The signed-in application user is unavailable")
+    if user.get("is_sys_admin") is not True:
+        raise AccessControlError("Only a system administrator can manage unassigned integrations")
+    return user
+
+
+def _require_agent_integration_team(agent_id: str, integration: dict[str, Any] | None) -> None:
+    team = get_team_by_agent_id(str(agent_id or ""))
+    if not team or not integration:
+        raise AccessControlError("Agent or integration not found", status_code=404)
+    integration_team_id = str(integration.get("team_id") or "")
+    if not integration_team_id or integration_team_id != str(team.get("_id") or ""):
+        raise AccessControlError("Integration is not assigned to the Agent's team")
 
 
 def _require_user_management_target(
@@ -2925,8 +2961,10 @@ def _mail_binding_response(document: dict[str, Any]) -> dict[str, Any]:
 @authenticated
 async def mail_configs(auth_claims: dict[str, Any]):
     team_id = str(request.args.get("team_id") or "")
-    if not team_id:
-        return jsonify({"error": "team_id is required"}), 400
+    try:
+        _require_integration_catalog_access(auth_claims, team_id, allow_agent_management=True)
+    except AccessControlError as error:
+        return error_response(error, "/mail_configs")
     results = []
     for document in list_mail_connections(team_id):
         usage_count = mail_bindings_collection.count_documents(
@@ -2942,10 +2980,11 @@ async def create_mail_config(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         normalized = normalize_mail_connection(body)
-        if not normalized["team_id"]:
-            raise ValueError("team_id is required")
+        _require_integration_catalog_access(auth_claims, normalized["team_id"])
         document = insert_mail_connection(normalized)
         return jsonify({"message": "Mail connection created", "connection": serialize_mail_connection(document)}), 201
+    except AccessControlError as exc:
+        return error_response(exc, "/insert_mail_config")
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -2959,10 +2998,15 @@ async def edit_mail_config(auth_claims: dict[str, Any]):
         existing = get_mail_connection(connection_id)
         if not existing:
             return jsonify({"error": "Mail connection not found"}), 404
+        _require_integration_catalog_access(auth_claims, str(existing.get("team_id") or ""))
+        if "team_id" in body and str(body.get("team_id") or "") != str(existing.get("team_id") or ""):
+            raise ValueError("Use Assign to team to change integration ownership")
         document = update_mail_connection(
             connection_id, normalize_mail_connection(body, existing=existing)
         )
         return jsonify({"message": "Mail connection updated", "connection": serialize_mail_connection(document or existing)})
+    except AccessControlError as exc:
+        return error_response(exc, "/edit_mail_config")
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -2970,8 +3014,15 @@ async def edit_mail_config(auth_claims: dict[str, Any]):
 @bp.post("/delete_mail_config")
 @authenticated
 async def remove_mail_config(auth_claims: dict[str, Any]):
-    body = await request.get_json()
-    connection_id = str(body.get("config_id") or "")
+    try:
+        body = await request.get_json()
+        connection_id = str(body.get("config_id") or "")
+        existing = get_mail_connection(connection_id)
+        if not existing:
+            return jsonify({"error": "Mail connection not found"}), 404
+        _require_integration_catalog_access(auth_claims, str(existing.get("team_id") or ""))
+    except AccessControlError as error:
+        return error_response(error, "/delete_mail_config")
     in_use = mail_bindings_collection.count_documents({"email_id": connection_id, "delete_at": None})
     if in_use:
         return jsonify({"error": f"Connection is assigned to {in_use} Agent(s); remove those bindings first"}), 409
@@ -2988,8 +3039,11 @@ async def test_mail_config(auth_claims: dict[str, Any]):
         connection = get_mail_connection(str(body.get("connection_id") or body.get("config_id") or ""))
         if not connection:
             raise ValueError("Save the mail connection before testing it")
+        _require_integration_catalog_access(auth_claims, str(connection.get("team_id") or ""))
         result = await test_mail_connection(connection, decrypt_mail_secrets(connection))
         return jsonify(result)
+    except AccessControlError as exc:
+        return error_response(exc, "/test_mail_connection")
     except (ValueError, OSError) as exc:
         current_app.logger.warning("Mail connection test failed: %s", exc)
         return jsonify({"ok": False, "error": str(exc)}), 400
@@ -3009,8 +3063,10 @@ async def create_mail_binding(auth_claims: dict[str, Any]):
         normalized = normalize_mail_binding(await request.get_json())
         if not normalized["agent_id"] or not get_agent_by_id(normalized["agent_id"]):
             raise ValueError("A valid agent_id is required")
-        if not get_mail_connection(normalized["email_id"]):
+        mail_connection = get_mail_connection(normalized["email_id"])
+        if not mail_connection:
             raise ValueError("A valid email_id is required")
+        _require_agent_integration_team(normalized["agent_id"], mail_connection)
         existing = mail_bindings_collection.find_one({
             "agent_id": normalized["agent_id"], "email_id": normalized["email_id"], "delete_at": None
         })
@@ -3041,8 +3097,10 @@ async def edit_mail_binding(auth_claims: dict[str, Any]):
         if not existing:
             return jsonify({"error": "Mail binding not found"}), 404
         normalized = normalize_mail_binding({**existing, **body})
-        if not get_mail_connection(normalized["email_id"]):
+        mail_connection = get_mail_connection(normalized["email_id"])
+        if not mail_connection:
             raise ValueError("A valid email_id is required")
+        _require_agent_integration_team(normalized["agent_id"], mail_connection)
         duplicate = mail_bindings_collection.find_one({
             "_id": {"$ne": binding_id}, "agent_id": normalized["agent_id"],
             "email_id": normalized["email_id"], "delete_at": None,
@@ -3068,6 +3126,10 @@ async def remove_mail_binding(auth_claims: dict[str, Any]):
 @authenticated
 async def messaging_connections(auth_claims: dict[str, Any]):
     team_id = str(request.args.get("team_id") or "")
+    try:
+        _require_integration_catalog_access(auth_claims, team_id, allow_agent_management=True)
+    except AccessControlError as error:
+        return error_response(error, "/messaging_connections")
     results = []
     for item in list_messaging_connections(team_id):
         count = messaging_bindings_collection.count_documents({"connection_id": str(item["_id"]), "delete_at": None})
@@ -3083,9 +3145,14 @@ async def save_messaging_connection(auth_claims: dict[str, Any]):
         connection_id = str(body.get("connection_id") or "")
         existing = get_messaging_connection(connection_id) if connection_id else None
         normalized = normalize_messaging_connection(body, existing=existing)
-        if not normalized["team_id"]: raise ValueError("team_id is required")
+        current_team_id = str(existing.get("team_id") or "") if existing else normalized["team_id"]
+        _require_integration_catalog_access(auth_claims, current_team_id)
+        if existing and "team_id" in body and str(body.get("team_id") or "") != current_team_id:
+            raise ValueError("Use Assign to team to change integration ownership")
         document = update_messaging_connection(connection_id, normalized) if existing else insert_messaging_connection(normalized)
         return jsonify({"message": "Messaging connection saved", "connection": serialize_messaging_connection(document or existing)})
+    except AccessControlError as exc:
+        return error_response(exc, "/save_messaging_connection")
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -3097,7 +3164,10 @@ async def test_messaging_config(auth_claims: dict[str, Any]):
         body = await request.get_json()
         connection = get_messaging_connection(str(body.get("connection_id") or ""))
         if not connection: raise ValueError("Messaging connection not found")
+        _require_integration_catalog_access(auth_claims, str(connection.get("team_id") or ""))
         return jsonify(await test_messaging_connection(connection, decrypt_messaging_secrets(connection)))
+    except AccessControlError as exc:
+        return error_response(exc, "/test_messaging_connection")
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -3105,7 +3175,13 @@ async def test_messaging_config(auth_claims: dict[str, Any]):
 @bp.post("/delete_messaging_connection")
 @authenticated
 async def remove_messaging_connection(auth_claims: dict[str, Any]):
-    body = await request.get_json(); connection_id = str(body.get("connection_id") or "")
+    try:
+        body = await request.get_json(); connection_id = str(body.get("connection_id") or "")
+        existing = get_messaging_connection(connection_id)
+        if not existing: return jsonify({"error": "Connection not found"}), 404
+        _require_integration_catalog_access(auth_claims, str(existing.get("team_id") or ""))
+    except AccessControlError as error:
+        return error_response(error, "/delete_messaging_connection")
     if messaging_bindings_collection.count_documents({"connection_id": connection_id, "delete_at": None}):
         return jsonify({"error": "Remove Agent bindings before deleting this connection"}), 409
     if not delete_messaging_connection(connection_id): return jsonify({"error": "Connection not found"}), 404
@@ -3126,7 +3202,9 @@ async def save_messaging_binding(auth_claims: dict[str, Any]):
         existing = get_messaging_binding(binding_id) if binding_id else None
         normalized = normalize_messaging_binding({**(existing or {}), **body})
         if not get_agent_by_id(normalized["agent_id"]): raise ValueError("A valid agent_id is required")
-        if not get_messaging_connection(normalized["connection_id"]): raise ValueError("A valid connection_id is required")
+        messaging_connection = get_messaging_connection(normalized["connection_id"])
+        if not messaging_connection: raise ValueError("A valid connection_id is required")
+        _require_agent_integration_team(normalized["agent_id"], messaging_connection)
         duplicate = messaging_bindings_collection.find_one({"_id": {"$ne": binding_id}, "agent_id": normalized["agent_id"], "connection_id": normalized["connection_id"], "delete_at": None})
         if duplicate: return jsonify({"error": "Connection is already assigned to this Agent"}), 409
         document = existing
@@ -5787,8 +5865,9 @@ async def insert_database_connection(auth_claims: dict[str, Any]):
         body = await request.get_json()
         team_id = str(body.get("team_id") or "").strip()
         name = str(body.get("name") or "").strip()
-        if not team_id or not name:
-            raise ValueError("team_id and connection name are required")
+        if not name:
+            raise ValueError("connection name is required")
+        _require_integration_catalog_access(auth_claims, team_id)
         config = normalize_database_config(body)
         insert_external_database(
             team_id,
@@ -5811,6 +5890,10 @@ async def delete_database_connection(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         database_id = body.get("database_id", None)
+        existing = get_external_database_by_id(str(database_id or ""))
+        if not existing:
+            return jsonify({"error": "Database connection not found"}), 404
+        _require_integration_catalog_access(auth_claims, str(existing.get("team_id") or ""))
         reference_count = get_database().database_bindings.count_documents(
             {"integration_id": database_id, "delete_at": None}
         )
@@ -5837,12 +5920,15 @@ async def edit_database_connection(auth_claims: dict[str, Any]):
         existing = get_external_database_by_id(database_id)
         if not existing:
             return jsonify({"error": "Database connection not found"}), 404
+        _require_integration_catalog_access(auth_claims, str(existing.get("team_id") or ""))
+        if "team_id" in body and str(body.get("team_id") or "") != str(existing.get("team_id") or ""):
+            raise ValueError("Use Assign to team to change integration ownership")
         merged = {**existing, **{key: value for key, value in body.items() if value is not None}}
         config = normalize_database_config(merged)
         name = str(merged.get("name") or "").strip()
         team_id = str(merged.get("team_id") or "").strip()
-        if not team_id or not name:
-            raise ValueError("team_id and connection name are required")
+        if not name:
+            raise ValueError("connection name is required")
         password_update = body.get("password")
         if not password_update and existing.get("password") and not existing.get("password_ciphertext"):
             password_update = existing["password"]
@@ -5868,7 +5954,8 @@ async def edit_database_connection(auth_claims: dict[str, Any]):
 async def get_database_connection_by_team(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
-        team_id = body.get("team_id", None)
+        team_id = str(body.get("team_id") or "")
+        _require_integration_catalog_access(auth_claims, team_id, allow_agent_management=True)
         all_database_connections = get_external_databases_by_team_id(team_id)
         serialized_connections = []
         for item in all_database_connections:
@@ -5893,6 +5980,10 @@ async def test_database_connection_route(auth_claims: dict[str, Any]):
         existing = get_external_database_by_id(database_id) if database_id else None
         if database_id and not existing:
             return jsonify({"error": "Database connection not found"}), 404
+        if existing:
+            _require_integration_catalog_access(auth_claims, str(existing.get("team_id") or ""))
+        else:
+            _require_integration_catalog_access(auth_claims, str(body.get("team_id") or ""))
 
         connection = {**(existing or {}), **{key: value for key, value in body.items() if value is not None}}
         if not body.get("password") and existing:
@@ -5913,6 +6004,9 @@ async def insert_database_binding_func(auth_claims: dict[str, Any]):
         body = await request.get_json()
         agent_id = body.get("agent_id", None)
         integration_id = body.get("integration_id", None)
+        _require_agent_integration_team(
+            str(agent_id or ""), get_external_database_by_id(str(integration_id or ""))
+        )
         alias = body.get("alias", None)
         trigger_keywords = body.get("trigger_keywords", None)
         enabled = body.get("enabled", True)
@@ -5963,8 +6057,14 @@ async def update_database_binding_func(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         binding_id = str(body.get("database_binding_id") or "").strip()
-        if not binding_id or not get_database_binding_by_id(binding_id):
+        existing_binding = get_database_binding_by_id(binding_id) if binding_id else None
+        if not existing_binding:
             return jsonify({"error": "Database binding not found"}), 404
+        next_integration_id = str(body.get("integration_id") or existing_binding.get("integration_id") or "")
+        _require_agent_integration_team(
+            str(existing_binding.get("agent_id") or ""),
+            get_external_database_by_id(next_integration_id),
+        )
         update_database_binding(
             binding_id,
             integration_id=body.get("integration_id"),
@@ -6069,7 +6169,8 @@ async def insert_external_api(auth_claims: dict[str, Any]):
         body = await request.get_json()
         name = body.get("name", None)
         type = body.get("type", None)
-        team_id = body.get("team_id", None)
+        team_id = str(body.get("team_id") or "")
+        _require_integration_catalog_access(auth_claims, team_id)
         base_url = body.get("base_url", None)
         auth = body.get("auth", None)
         endpoints = body.get("endpoints", None)
@@ -6084,6 +6185,10 @@ async def delete_external_api(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         api_id = body.get("api_id", None)
+        existing = get_apis_by_id(str(api_id or ""))
+        if not existing:
+            return jsonify({"error": "REST API not found"}), 404
+        _require_integration_catalog_access(auth_claims, str(existing.get("team_id") or ""))
         reference_count = get_database().agent_bindings.count_documents(
             {"integration_id": api_id, "delete_at": None}
         )
@@ -6107,9 +6212,15 @@ async def edit_external_api(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         api_id = body.get("api_id", None)
+        existing = get_apis_by_id(str(api_id or ""))
+        if not existing:
+            return jsonify({"error": "REST API not found"}), 404
+        _require_integration_catalog_access(auth_claims, str(existing.get("team_id") or ""))
         name = body.get("name", None)
         type = body.get("type", None)
         team_id = body.get("team_id", None)
+        if team_id is not None and str(team_id or "") != str(existing.get("team_id") or ""):
+            raise ValueError("Use Assign to team to change integration ownership")
         base_url = body.get("base_url", None)
         auth = body.get("auth", None)
         endpoints = body.get("endpoints", None)
@@ -6123,7 +6234,8 @@ async def edit_external_api(auth_claims: dict[str, Any]):
 async def get_external_apis_by_team(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
-        team_id = body.get("team_id", None)
+        team_id = str(body.get("team_id") or "")
+        _require_integration_catalog_access(auth_claims, team_id)
         all_apis = get_all_apis_by_team_id(team_id)
         for api in all_apis:
             api["agent_usage_count"] = len(
@@ -6142,6 +6254,9 @@ async def get_external_api_by_id(auth_claims: dict[str, Any]):
         body = await request.get_json()
         api_id = body.get("api_id", None)
         apis = get_apis_by_id(api_id)
+        if not apis:
+            return jsonify({"error": "REST API not found"}), 404
+        _require_integration_catalog_access(auth_claims, str(apis.get("team_id") or ""))
         return jsonify({"result": apis}), 200
     except Exception as error_txt:
         return jsonify({"error": str(error_txt)}), 400
@@ -6153,6 +6268,9 @@ async def insert_agent_binding_func(auth_claims: dict[str, Any]):
         body = await request.get_json()
         agent_id = body.get("agent_id", None)
         integration_id = body.get("integration_id", None)
+        _require_agent_integration_team(
+            str(agent_id or ""), get_apis_by_id(str(integration_id or ""))
+        )
         integration_type = body.get("integration_type", None)
         endpoint_name = body.get("endpoint_name", None)
         trigger_keywords = body.get("trigger_keywords", None)
@@ -6204,12 +6322,41 @@ async def get_agent_bindings_by_agent(auth_claims: dict[str, Any]):
 async def get_integrations_by_team(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
-        team_id = body.get("team_id", None)
+        team_id = str(body.get("team_id") or "")
+        _require_integration_catalog_access(auth_claims, team_id, allow_agent_management=True)
         all_apis = get_all_apis_by_team_id(team_id)
         new_all_apis = [{"_id":api["_id"],"name":api["name"],"type":api["type"],"endpoints":api["endpoints"]} for api in all_apis]
         return jsonify({"result": new_all_apis}), 200
     except Exception as error_txt:
         return jsonify({"error": str(error_txt)}), 400
+
+
+@bp.post("/assign_integration_team")
+@authenticated
+async def assign_integration_team(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        if not isinstance(body, dict):
+            raise IntegrationAssignmentError("request must be json")
+        team_id = str(body.get("team_id") or "").strip()
+        integration_id = str(body.get("integration_id") or "").strip()
+        integration_type = str(body.get("integration_type") or "").strip()
+
+        actor = _application_user_for_claims(auth_claims)
+        if not actor or actor.get("active", True) is not True:
+            raise AccessControlError("The signed-in application user is unavailable")
+        if actor.get("is_sys_admin") is not True:
+            raise AccessControlError("Only a system administrator can assign catalog integrations")
+        _require_team_access(auth_claims, team_id)
+
+        assignment = assign_unassigned_integration(
+            integration_type, integration_id, team_id
+        )
+        return jsonify({"message": "Integration assigned", "assignment": assignment}), 200
+    except IntegrationAssignmentError as error:
+        return jsonify({"error": str(error)}), 400
+    except AccessControlError as error:
+        return error_response(error, "/assign_integration_team")
 
 async def insert_first_limit_size(global_limit, team_limit, personal_limit):
     try:

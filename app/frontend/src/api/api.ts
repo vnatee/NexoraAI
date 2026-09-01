@@ -1925,6 +1925,27 @@ export async function get_integrations_by_team(team_id: string, idToken: string)
     return dataResponse;
 }
 
+export type IntegrationCatalogType = "rest_api" | "database" | "mail" | "messaging";
+
+export async function assign_integration_team(
+    integration_type: IntegrationCatalogType,
+    integration_id: string,
+    team_id: string,
+    idToken: string
+): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/assign_integration_team", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ integration_type, integration_id, team_id })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(result.error || `assign integration failed: ${response.statusText}`);
+    }
+    return result;
+}
+
 export async function get_db_connections(team_id: string, _idToken: string): Promise<DatabaseConnection[]> {
     const headers = await getHeaders(_idToken);
     const response = await fetch("/get_database_connection_by_team", {

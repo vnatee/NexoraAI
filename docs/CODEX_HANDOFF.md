@@ -161,6 +161,21 @@ See `docs/database-integrations.md`.
 - Integration Management was reorganized into grouped catalogs while retaining
   the existing visual style.
 - Agent Integration tabs were aligned with the management catalogs.
+- System administrators can now open **Administration → Integrations** without
+  an active Team, create and test REST API, database, mail, or messaging
+  connections in an `Unassigned` catalog, and explicitly assign each connection
+  to one Team. Unassigned connections are excluded from Team lists and cannot
+  be bound to Agents. Assignment is a one-way ownership transition in this
+  slice; moving an assigned connection or sharing one credential across Teams
+  requires an explicit future workflow rather than changing `team_id` through
+  an edit request.
+- Team Settings now uses its explicit target Team for the Agents and
+  Integrations tabs instead of rereading potentially stale Active Team browser
+  state. When there is no active Team, the dialog is titled **Administration**,
+  hides Team-scoped tabs, and exposes the unassigned catalog only to System
+  Admins. Integration catalog CRUD is authorized against `Manage integrations`
+  for a Team or System Admin for unassigned records. Agent binding creation and
+  update reject unassigned and cross-Team connections server-side.
 - Mail connections: Microsoft 365 Graph, Gmail API, and generic IMAP/POP3 +
   SMTP, with Agent read/send permissions, recipient constraints, templates, and
   encrypted credentials.
@@ -989,11 +1004,11 @@ The product owner also confirmed the Local-only and hybrid Local+Entra
 authentication acceptance flow, including the relevant access-control behavior,
 on 2026-08-23.
 
-Latest service-free backend regression on 2026-08-24 after the portable local
-runtime packaging slice:
+Latest service-free backend regression on 2026-09-01 after the unassigned
+integration catalog and target-Team consistency slice:
 
 ```text
-685 passed, 1 deselected
+695 passed, 1 deselected
 ```
 
 Command:

@@ -2,6 +2,11 @@
 
 NexoraAI supports three centrally managed mail connection types. A team administrator stores a connection in **Admin Management > Integrations > Mail**, then assigns it to an Agent with `Read` and/or `Send` permission. Credentials are encrypted at rest with `APP_DATA_ENCRYPTION_KEY` and are never returned to the browser.
 
+A System Admin can also create and test a connection in the unassigned Platform
+Integration Catalog before a Team exists. It cannot be bound to an Agent until
+the System Admin assigns it to one Team. Direct edit requests cannot silently
+move an assigned connection between Teams.
+
 ## Microsoft 365
 
 This implementation uses Microsoft Graph with the OAuth 2.0 client-credentials flow (application identity).

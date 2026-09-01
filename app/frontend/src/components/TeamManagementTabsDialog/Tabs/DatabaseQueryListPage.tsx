@@ -32,6 +32,7 @@ import { delete_db_connection, edit_db_connection, get_db_connections, insert_db
 import { getToken } from "../../../authConfig";
 import { useMsal } from "@azure/msal-react";
 import { useNotification } from "../../../utill/NotificationProvider";
+import { AssignIntegrationTeamButton } from "./AssignIntegrationTeamButton";
 
 const DB_TYPES: { value: DbType; label: string; defaultPort: number }[] = [
     { value: "postgresql", label: "PostgreSQL", defaultPort: 5432 },
@@ -41,7 +42,7 @@ const DB_TYPES: { value: DbType; label: string; defaultPort: number }[] = [
     { value: "sqlite", label: "SQLite (Local)", defaultPort: 0 }
 ];
 
-export function DatabaseQueryListPage({ team, onBack }: { team: TeamProfile; onBack: () => void }) {
+export function DatabaseQueryListPage({ team, onBack }: { team: TeamProfile | null; onBack: () => void }) {
     const [connections, setConnections] = useState<DatabaseConnection[]>([]);
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
@@ -52,12 +53,13 @@ export function DatabaseQueryListPage({ team, onBack }: { team: TeamProfile; onB
 
     const client = useMsal().instance;
     const { showNotification } = useNotification();
+    const teamId = team?._id ?? "";
 
     const loadConnections = async (tokenOverride?: string) => {
         const token = tokenOverride ?? (await getToken(client));
         if (!token) throw new Error("No authentication token");
 
-        const res = await get_db_connections(team._id, token);
+        const res = await get_db_connections(teamId, token);
         setConnections(Array.isArray(res) ? res : []);
     };
 
@@ -75,7 +77,7 @@ export function DatabaseQueryListPage({ team, onBack }: { team: TeamProfile; onB
         }
 
         load();
-    }, [client, team._id]);
+    }, [client, teamId]);
 
     const handleSave = async (conn: DatabaseConnection) => {
         try {
@@ -85,7 +87,7 @@ export function DatabaseQueryListPage({ team, onBack }: { team: TeamProfile; onB
             if (!token) throw new Error("No authentication token");
 
             const payload: any = {
-                team_id: team._id,
+                team_id: teamId,
                 name: conn.name,
                 db_type: conn.db_type,
                 host: conn.host,
@@ -153,6 +155,12 @@ export function DatabaseQueryListPage({ team, onBack }: { team: TeamProfile; onB
                 <SummaryCard title="Connections" value={connections.length} subtitle="Configured database targets" />
             </Stack>
 
+            {!team && (
+                <Typography variant="body2" color="text.secondary" mb={2}>
+                    Connections created here are unassigned and unavailable to Agents until assigned to a team.
+                </Typography>
+            )}
+
             <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpen(true)} sx={{ mb: 2 }}>
                 Add Connection
             </Button>
@@ -183,6 +191,7 @@ export function DatabaseQueryListPage({ team, onBack }: { team: TeamProfile; onB
                                         <Chip size="small" label={DB_TYPES.find(item => item.value === conn.db_type)?.label ?? conn.db_type} />
                                         <Chip size="small" label="Read-only" color="success" variant="outlined" />
                                         <Chip size="small" label={`${conn.agent_usage_count ?? 0} Agent(s)`} color="primary" variant="outlined" />
+                                        {!team && <Chip size="small" label="Unassigned" color="warning" variant="outlined" />}
                                         <Chip
                                             size="small"
                                             label={conn.db_type === "sqlite" || conn.has_password ? "Credentials configured" : "Credential status unknown"}
@@ -205,6 +214,13 @@ export function DatabaseQueryListPage({ team, onBack }: { team: TeamProfile; onB
                                 </Box>
 
                                 <Stack direction="row" spacing={1} alignSelf={{ xs: "flex-start", md: "center" }}>
+                                    {!team && (
+                                        <AssignIntegrationTeamButton
+                                            integrationId={conn._id}
+                                            integrationType="database"
+                                            onAssigned={loadConnections}
+                                        />
+                                    )}
                                     <Button
                                         size="small"
                                         variant="outlined"
@@ -278,7 +294,7 @@ function DatabaseConnectionDialog({
 }: {
     open: boolean;
     connection: DatabaseConnection | null;
-    team: TeamProfile;
+    team: TeamProfile | null;
     saving?: boolean;
     onClose: () => void;
     onSave: (conn: DatabaseConnection) => void;
@@ -345,7 +361,7 @@ function DatabaseConnectionDialog({
     const isValid = Boolean(name.trim() && database.trim() && (isSqlite || (host.trim() && port > 0)));
     const formValue = (): DatabaseConnection => ({
         _id: connection?._id ?? "",
-        team_id: team._id,
+        team_id: team?._id ?? "",
         name,
         db_type: dbType,
         host: isSqlite ? "" : host,

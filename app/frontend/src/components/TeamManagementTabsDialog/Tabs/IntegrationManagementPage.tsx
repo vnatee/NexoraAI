@@ -29,26 +29,18 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
         setView("types");
     }, [team?._id]);
 
-    if (!team) {
-        return (
-            <Box p={3}>
-                <Typography color="text.secondary">No active team selected</Typography>
-            </Box>
-        );
-    }
-
     if (view === "external_api") {
-        return <ExternalApiListPage key={team._id} team={team} onBack={() => setView("types")} />;
+        return <ExternalApiListPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
     }
 
     if (view === "database") {
-        return <DatabaseQueryListPage key={team._id} team={team} onBack={() => setView("types")} />;
+        return <DatabaseQueryListPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
     }
 
     if (view === "mail") {
-        return <MailIntegrationListPage key={team._id} team={team} onBack={() => setView("types")} />;
+        return <MailIntegrationListPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
     }
-    if (view === "messaging") return <MessagingIntegrationListPage key={team._id} team={team} onBack={() => setView("types")} />;
+    if (view === "messaging") return <MessagingIntegrationListPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
     if (view === "document_processing") return <DocumentProcessingPage onBack={() => setView("types")} />;
 
     // ✅ scalable integration type config
@@ -136,11 +128,13 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
             }}
         >
             <Typography variant="h6" mb={1}>
-                Integrations
+                {team ? `${team.name} integrations` : "Platform integration catalog"}
             </Typography>
 
             <Typography variant="body2" color="text.secondary" mb={3}>
-                Connect external services to this team
+                {team
+                    ? "Manage connections assigned to this team."
+                    : "Create and test connections before assigning them to a team. Unassigned connections cannot be used by Agents."}
             </Typography>
 
             <Stack spacing={2}>

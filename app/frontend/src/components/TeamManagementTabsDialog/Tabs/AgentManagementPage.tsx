@@ -49,9 +49,7 @@ import {
     MessagingConnection,
     MessagingBindingData
 } from "../../../api";
-import { getToken, getUsername } from "../../../authConfig";
-import { STORAGE_KEYS } from "../../../utill/storageKeys";
-import { Storage } from "../../../utill/storage";
+import { getToken } from "../../../authConfig";
 import { useNotification } from "../../../utill/NotificationProvider";
 import { AgentBindingDialog } from "../dialog/AgentBindingDialog";
 import { DatabaseBindingDialog, DatabaseBindingInput } from "../dialog/DatabaseBindingDialog";
@@ -140,7 +138,7 @@ type Binding = BindingInput & {
 /* =========================================================
    PAGE
 ========================================================= */
-export function AgentManagementPage({ onAgentsChanged }: { onAgentsChanged?: () => void } = {}) {
+export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfile | null; onAgentsChanged?: () => void }) {
     const { instance } = useMsal();
     const [agents, setAgents] = useState<Agent[]>([]);
     const [loading, setLoading] = useState(false);
@@ -148,7 +146,6 @@ export function AgentManagementPage({ onAgentsChanged }: { onAgentsChanged?: () 
     const [mode, setMode] = useState<AgentDialogMode>("new");
     const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
     const [search, setSearch] = useState("");
-    const [team, setTeam] = useState<TeamProfile | null>(null);
     const { showNotification } = useNotification();
 
     // ✅ ADD
@@ -158,23 +155,6 @@ export function AgentManagementPage({ onAgentsChanged }: { onAgentsChanged?: () 
     // confirm delete
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [agentToDelete, setAgentToDelete] = useState<Agent | null>(null);
-
-    /* =========================
-       LOAD ACTIVE TEAM
-    ========================= */
-    useEffect(() => {
-        const loadTeam = async () => {
-            const activeTeams = Storage.get<Record<string, TeamProfile>>(STORAGE_KEYS.Active_Teams);
-            if (!activeTeams) return;
-
-            const username = (await getUsername(instance)) ?? "";
-            if (!username) return;
-
-            setTeam(activeTeams[username] ?? null);
-        };
-
-        loadTeam();
-    }, [instance]);
 
     /* =========================
        LOAD AGENTS
