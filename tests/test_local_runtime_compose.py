@@ -38,6 +38,8 @@ def test_local_runtime_app_uses_local_provider_endpoints_and_health_dependencies
     assert environment["LLM_BASE_URL"] == "http://ollama:11434/v1"
     assert environment["AZURE_ENFORCE_ACCESS_CONTROL"] == "true"
     assert environment["AZURE_ENABLE_UNAUTHENTICATED_ACCESS"] == "false"
+    assert environment["USE_CHAT_HISTORY_COSMOS"] == "false"
+    assert environment["USE_CHAT_HISTORY_BROWSER"] == "true"
     assert environment["CHAT_ATTACHMENT_STORE"] == "local"
     assert all(
         dependency["condition"] in {"service_healthy", "service_completed_successfully"}

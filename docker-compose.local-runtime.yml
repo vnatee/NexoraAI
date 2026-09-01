@@ -54,7 +54,8 @@ services:
       USE_USER_UPLOAD: "true"
       USE_LOCAL_PDF_PARSER: "true"
       USE_LOCAL_HTML_PARSER: "true"
-      USE_CHAT_HISTORY_COSMOS: "true"
+      USE_CHAT_HISTORY_COSMOS: "false"
+      USE_CHAT_HISTORY_BROWSER: "true"
       CHAT_ATTACHMENT_STORE: local
       CHAT_ATTACHMENT_LOCAL_PATH: /data/chat-attachments
       MAX_UPLOAD_SIZE_BYTES: ${MAX_UPLOAD_SIZE_BYTES:-104857600}

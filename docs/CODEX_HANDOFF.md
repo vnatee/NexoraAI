@@ -1,6 +1,6 @@
 # Codex handoff — NexoraAI
 
-Last updated: 2026-08-24 UTC
+Last updated: 2026-09-01 UTC
 
 This document replaces a raw chat transcript as the engineering handoff. It
 captures the decisions and evidence needed to continue without storing copied
@@ -846,6 +846,15 @@ described below.
   runtime/configuration tests passed. A subsequent full service-free run was
   interrupted after it stopped making progress around 20%; the prior complete
   685-test result below remains the latest completed full regression.
+- The local Compose profile disables the optional Azure Cosmos-native Chat
+  History provider and enables owner-isolated browser/IndexedDB history. This
+  prevents a clean local deployment from requiring `AZURE_COSMOSDB_ACCOUNT` at
+  startup. Local history currently remains browser/device-local; adding a
+  provider-neutral Mongo-backed server history adapter is future work. Azure
+  deployments may continue to enable the existing Cosmos history provider.
+- The focused local-runtime/entry-point regression after this correction passed
+  (`6 passed`), and `docker compose config` confirmed both history flags in the
+  rendered application environment.
 - The Compose schema, focused 48-test provider/runtime suite, 685-test
   service-free regression suite, multi-stage ARM64 image build, packaged
   frontend artifact, and Hypercorn import all passed. A destructive full-stack

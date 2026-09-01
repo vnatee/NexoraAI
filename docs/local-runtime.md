@@ -5,7 +5,7 @@ plane on one Docker host. The same stack can run on a developer machine or an
 Azure Linux VM:
 
 - NexoraAI application and production frontend bundle
-- MongoDB for identities, Teams, configuration, jobs, and chat history
+- MongoDB for identities, Teams, configuration, jobs, and document metadata
 - MinIO for Knowledge source objects
 - Qdrant for vector retrieval
 - Ollama with BGE-M3 embeddings and a local chat model
@@ -14,6 +14,13 @@ Azure Linux VM:
 Azure remains supported. This Compose file is one deployment option; the
 provider environment variables can still point NexoraAI at Azure OpenAI,
 Azure AI Search, Azure Storage, and Cosmos DB in a different deployment.
+
+The single-host local stack disables the optional Azure Cosmos-native Chat
+History provider and enables the browser history provider. Conversation history
+is therefore stored in IndexedDB on the signed-in user's browser and isolated by
+application user ID. It is not synchronized between browsers or devices. A
+server-side local history provider is separate future work; MongoDB continues
+to store the platform records listed above.
 
 ## Prepare secrets
 
