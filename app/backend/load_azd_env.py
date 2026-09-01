@@ -2,10 +2,16 @@ import json
 import logging
 import os
 import subprocess
+from collections.abc import Mapping
 
 from dotenv import load_dotenv
 
 logger = logging.getLogger("scripts")
+
+
+def should_load_azd_env(environ: Mapping[str, str]) -> bool:
+    """Return whether a non-Azure process should import its local azd environment."""
+    return environ.get("APP_RUNTIME_MODE", "azure").strip().lower() != "local"
 
 
 def load_azd_env():

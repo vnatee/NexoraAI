@@ -838,6 +838,14 @@ described below.
 - MinIO startup no longer requires placeholder Azure Blob variables. Azure
   storage remains the default and now reports all missing Azure storage
   settings in one startup error when selected.
+- The production entry point skips `azd env list` when
+  `APP_RUNTIME_MODE=local`, so the Compose application consumes its injected
+  environment without requiring Azure Developer CLI inside the image. The
+  existing Azure-compatible local development path still loads the default
+  `azd` environment. The direct local entry-point import and 38 focused
+  runtime/configuration tests passed. A subsequent full service-free run was
+  interrupted after it stopped making progress around 20%; the prior complete
+  685-test result below remains the latest completed full regression.
 - The Compose schema, focused 48-test provider/runtime suite, 685-test
   service-free regression suite, multi-stage ARM64 image build, packaged
   frontend artifact, and Hypercorn import all passed. A destructive full-stack
