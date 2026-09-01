@@ -16,7 +16,6 @@ import { AgentAuditManagement } from "../AgentAuditManagement";
 
 interface Props {
     open: boolean;
-    teamName: string;
     onClose: () => void;
     is_sys_admin: boolean;
     sys_permissions: string[] | null;
@@ -25,7 +24,7 @@ interface Props {
     onTeamChanged?: (team: TeamProfile) => void;
 }
 
-export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin, selectTeamData, sys_permissions, onAgentsChanged, onTeamChanged }: Props) {
+export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTeamData, sys_permissions, onAgentsChanged, onTeamChanged }: Props) {
     const [tab, setTab] = useState(0);
     const [managedTeam, setManagedTeam] = useState<TeamProfile | null>(selectTeamData);
 
@@ -43,22 +42,26 @@ export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin
         {
             label: "Members",
             permission: ["Manage team users"],
+            teamScoped: true,
             element: <TeamUserManagementPage team={managedTeam} />
         },
         {
             label: "Data access",
             permission: ["Manage team data groups"],
+            teamScoped: true,
             element: <DataGroupManagementPage team={managedTeam} />
         },
         {
             label: "Roles & permissions",
             permission: ["Manage team permissions"],
+            teamScoped: true,
             element: <RBACManagementPage team={managedTeam} />
         },
         {
             label: "Agents",
             permission: ["Manage agents"],
-            element: <AgentManagementPage onAgentsChanged={onAgentsChanged} />
+            teamScoped: true,
+            element: <AgentManagementPage team={managedTeam} onAgentsChanged={onAgentsChanged} />
         },
         {
             label: "Integrations",
@@ -92,6 +95,8 @@ export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin
 
     const allowedTabs = tabs.filter(
         t =>
+            (!("teamScoped" in t) || !t.teamScoped || Boolean(managedTeam)) &&
+            (t.label !== "Integrations" || Boolean(managedTeam) || is_sys_admin) &&
             (!("systemAdminOnly" in t) || !t.systemAdminOnly || is_sys_admin) &&
             hasPermission({
                 is_sys_admin,
@@ -111,9 +116,11 @@ export function TeamManagementTabsDialog({ open, teamName, onClose, is_sys_admin
         <Dialog open={open} onClose={onClose} maxWidth="xl" fullWidth>
             <DialogTitle>
                 <Box>
-                    <Typography variant="h6">Team settings · {managedTeam?.name || teamName}</Typography>
+                    <Typography variant="h6">{managedTeam ? `Team settings · ${managedTeam.name}` : "Administration"}</Typography>
                     <Typography variant="body2" color="text.secondary">
-                        Manage membership, document access, roles, agents, and integrations for this team.
+                        {managedTeam
+                            ? "Manage membership, document access, roles, agents, and integrations for this team."
+                            : "Manage the unassigned integration catalog or create and select a team for team-scoped settings."}
                     </Typography>
                 </Box>
             </DialogTitle>

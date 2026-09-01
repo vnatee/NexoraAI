@@ -34,11 +34,17 @@ Paths outside that directory, missing files, and file extensions other than `.db
 
 ## Agent setup
 
-1. In Team Management, add and test the database connection.
+1. A System Admin may add and test the database connection in the unassigned
+   Platform Integration Catalog before any Team exists, then assign it to one
+   Team. A Team integration manager may instead create it directly inside that
+   Team.
 2. In Agent Management, enable **External Database**.
 3. Bind one or more connections to the agent and give each a clear alias and optional trigger keywords.
 4. Configure the binding's **Database Query Profile**.
 5. Use the LangGraph runtime for that agent.
+
+An unassigned connection is configuration-only: the backend rejects Agent
+bindings until it has been assigned to the same Team as the Agent.
 
 For SQL connections, the generated tool supports `action=schema`, `action=query`, and `action=chart_aggregate`. For MongoDB it supports schema inspection and a collection/filter query. Ordinary query results are capped at 200 rows/documents per call.
 

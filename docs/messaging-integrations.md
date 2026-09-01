@@ -2,6 +2,10 @@
 
 Connections are managed in **Admin Management > Integrations > Messaging & Chat**. Assign them in **Agent > Integrations > Messaging**. Tokens and webhook URLs are encrypted with `APP_DATA_ENCRYPTION_KEY`.
 
+A System Admin may create and test an unassigned connection before creating a
+Team, then explicitly assign it to one Team. Unassigned and cross-Team
+connections are rejected by the Agent-binding API.
+
 ## LINE Messaging API
 
 1. Create a LINE Official Account and Messaging API channel in LINE Developers Console.

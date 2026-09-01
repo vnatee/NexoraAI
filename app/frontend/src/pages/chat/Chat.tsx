@@ -1939,7 +1939,6 @@ const Chat = () => {
                 />
                 <TeamManagementTabsDialog
                     open={openTeamAdminManagement}
-                    teamName={selectTeamData?.name || "System Admin"}
                     is_sys_admin={userData ? userData?.is_sys_admin! : false}
                     selectTeamData={selectTeamData}
                     sys_permissions={sysPers ? sysPers : []}

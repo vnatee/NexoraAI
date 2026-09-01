@@ -27,10 +27,11 @@ import { get_external_apis_by_team, insert_external_api, edit_external_api, dele
 import { getToken } from "../../../authConfig";
 import { useMsal } from "@azure/msal-react";
 import { useNotification } from "../../../utill/NotificationProvider";
+import { AssignIntegrationTeamButton } from "./AssignIntegrationTeamButton";
 
 /* ================= PAGE ================= */
 
-export function ExternalApiListPage({ team, onBack }: { team: TeamProfile; onBack: () => void }) {
+export function ExternalApiListPage({ team, onBack }: { team: TeamProfile | null; onBack: () => void }) {
     const [apis, setApis] = useState<ExternalApi[]>([]);
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
@@ -39,6 +40,7 @@ export function ExternalApiListPage({ team, onBack }: { team: TeamProfile; onBac
     const [editing, setEditing] = useState<ExternalApi | null>(null);
     const client = useMsal().instance;
     const { showNotification } = useNotification();
+    const teamId = team?._id ?? "";
 
     /* ================= LOAD ================= */
     useEffect(() => {
@@ -47,7 +49,7 @@ export function ExternalApiListPage({ team, onBack }: { team: TeamProfile; onBac
                 setLoading(true);
                 const token = await getToken(client);
                 if (!token) throw new Error("No authentication token");
-                const res = await get_external_apis_by_team(team._id, token);
+                const res = await get_external_apis_by_team(teamId, token);
                 const apiData = res?.result || res?.data || res || [];
                 setApis(Array.isArray(apiData) ? apiData : []);
             } catch (err) {
@@ -58,7 +60,7 @@ export function ExternalApiListPage({ team, onBack }: { team: TeamProfile; onBac
         }
 
         load();
-    }, [team._id]);
+    }, [teamId]);
 
     /* ================= SAVE ================= */
 
@@ -69,7 +71,7 @@ export function ExternalApiListPage({ team, onBack }: { team: TeamProfile; onBac
             const token = await getToken(client);
             if (!token) throw new Error("No authentication token");
             const payload: any = {
-                team_id: team._id,
+                team_id: teamId,
                 name: api.name,
                 type: api.type,
                 base_url: api.base_url,
@@ -90,7 +92,7 @@ export function ExternalApiListPage({ team, onBack }: { team: TeamProfile; onBac
             setEditing(null);
 
             // Reload list
-            const res = await get_external_apis_by_team(team._id, token);
+            const res = await get_external_apis_by_team(teamId, token);
             const apiData = res?.result || res?.data || res || [];
             setApis(Array.isArray(apiData) ? apiData : []);
             setLoading(false);
@@ -141,6 +143,12 @@ export function ExternalApiListPage({ team, onBack }: { team: TeamProfile; onBac
                 Add REST API
             </Button>
 
+            {!team && (
+                <Alert severity="info" sx={{ mb: 2 }}>
+                    New connections remain unavailable to Agents until assigned to a team.
+                </Alert>
+            )}
+
             {loading ? (
                 <ExternalApiListSkeleton count={4} />
             ) : (
@@ -165,6 +173,7 @@ export function ExternalApiListPage({ team, onBack }: { team: TeamProfile; onBac
                                 <Stack direction="row" spacing={0.75} mt={1} flexWrap="wrap" useFlexGap>
                                     <Chip size="small" label={`${api.endpoints.length} endpoint${api.endpoints.length === 1 ? "" : "s"}`} />
                                     <Chip size="small" color="primary" variant="outlined" label={`${api.agent_usage_count ?? 0} Agent(s)`} />
+                                    {!team && <Chip size="small" color="warning" variant="outlined" label="Unassigned" />}
                                     <Chip
                                         size="small"
                                         variant="outlined"
@@ -184,6 +193,19 @@ export function ExternalApiListPage({ team, onBack }: { team: TeamProfile; onBac
                             </Box>
 
                             <Box>
+                                {!team && (
+                                    <AssignIntegrationTeamButton
+                                        integrationId={api._id}
+                                        integrationType="rest_api"
+                                        onAssigned={async () => {
+                                            const token = await getToken(client);
+                                            if (!token) return;
+                                            const res = await get_external_apis_by_team(teamId, token);
+                                            const apiData = res?.result || res?.data || res || [];
+                                            setApis(Array.isArray(apiData) ? apiData : []);
+                                        }}
+                                    />
+                                )}
                                 <IconButton
                                     onClick={() => {
                                         setEditing(api);
@@ -232,7 +254,7 @@ function ExternalApiDialog({
 }: {
     open: boolean;
     api: ExternalApi | null;
-    team: TeamProfile;
+    team: TeamProfile | null;
     loading?: boolean;
     saving?: boolean;
     onClose: () => void;
@@ -385,7 +407,7 @@ function ExternalApiDialog({
                     onClick={() =>
                         onSave({
                             _id: api?._id ?? "",
-                            team_id: team._id,
+                            team_id: team?._id ?? "",
                             name,
                             base_url: baseUrl,
                             type: "rest",
