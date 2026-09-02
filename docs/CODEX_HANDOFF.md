@@ -9,7 +9,7 @@ logs, credentials, attachments, or repetitive conversational text.
 ## Repository state
 
 - Workspace: `/workspaces/NexoraAI`
-- Branch: `feature/local-runtime-stack`
+- Branch: `feature/usage-analytics-dashboard`
 - Base checkpoint: `09eef3e feat: add private chat document workflows`.
 - Implementation checkpoint: `eff68fb feat: recover interrupted document
   processing`. It adds private Chat document extraction recovery and managed OCR
@@ -926,6 +926,37 @@ described below.
   volumes; the product owner still needs to run the documented clean-deployment
   smoke test.
 
+### Usage analytics dashboard — current working tree
+
+- Branch `feature/usage-analytics-dashboard` starts from checkpoint `af326ba
+  feat: add configurable AI guardrails`.
+- Chat and Ask usage now records safe provider-neutral dimensions for Agent,
+  provider, model/deployment, LLM profile, runtime, request mode, reasoning
+  tokens, and per-stage model calls. Raw prompts and responses are not stored.
+- Successful Knowledge ingestion records document-processing telemetry for all
+  configured providers (including local parsers), with scope, provider/profile,
+  file type, page count, and duration. This replaces the Azure Document
+  Intelligence-only assumption for new records while retaining safe legacy
+  totals.
+- `GET /usage-analytics` performs aggregation on the backend and enforces three
+  scopes: System requires `View system dashboard`, Team requires membership plus
+  the new `View team dashboard` Team permission, and Personal is forcibly bound
+  to the signed-in application user. Reporting periods are capped at 366 days.
+- The Chat navigation now opens **Usage Analytics**, with System/Team/Personal,
+  date, daily/weekly/monthly, Team, user, Agent, provider, and model filters.
+  It separates LLM token and document-processing views and shows timelines and
+  top breakdowns without returning raw usage records to the browser.
+- Existing records remain visible; historically absent dimensions appear as
+  `Unknown`. Legacy OCR rows are excluded from Personal summaries because they
+  did not store an immutable application user ID.
+- Focused analytics validation passed (`11 passed`). The complete service-free
+  suite passed (`740 passed, 1 deselected`), and the memory-safe frontend
+  production build passed. An unfiltered run also reached `740 passed` with one
+  unrelated `data_integration` failure caused by a local PDF fixture that
+  yielded no text sections.
+
+See `docs/usage-analytics.md`.
+
 ## Other next work
 
 ### Near-term document work
@@ -949,8 +980,9 @@ described below.
   secret injection, backup/restore, and then Helm/Kubernetes.
 - AI guardrails.
 - Agent Invocation API.
-- Usage dashboard/reporting by user, team, Agent, model/provider, tokens, tools,
-  errors, latency, and estimated cost.
+- Extend usage analytics with a versioned pricing catalog, estimated cost,
+  budgets/alerts, CSV/Excel export, scheduled reports, tool/error/latency
+  telemetry, retention rollups, and high-volume database indexes.
 - Shared time/token budgets across a delegation tree, persisted LangGraph
   checkpoints, and audit retention/index policies.
 
@@ -1239,6 +1271,14 @@ Known non-blocking warnings:
 
 ## Manual smoke-test checklist before the next checkpoint
 
+- As System Admin, send Chat/Ask requests through two Agents/models and index
+  documents with two processing profiles. Open **Usage Analytics**, verify
+  System/Team/Personal totals, change date bucket and all dimension filters,
+  and confirm old rows show `Unknown` rather than disappearing. Assign `View
+  team dashboard` to one Team role and verify that user sees only that Team;
+  verify a user without it receives 403 and My usage cannot be broadened with a
+  different user ID. Confirm the analytics records contain no prompt, response,
+  extracted text, credentials, or tool output.
 - As a System Admin, open **Administration → Guardrail Policy**, save a System
   policy with PII output `Redact`, then open a Team's **Guardrail Policy** and
   save a stricter PII input `Block` policy. Configure an Agent with weaker

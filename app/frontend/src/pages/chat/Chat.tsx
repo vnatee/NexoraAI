@@ -1735,12 +1735,21 @@ const Chat = () => {
                                                                 </>
                                                             )}
 
-                                                        {hasPermission({
-                                                            is_sys_admin: userData ? userData?.is_sys_admin : false,
-                                                            permissions: selectTeamData ? selectTeamData?.permissions : [],
-                                                            sys_permissions: sysPers ? sysPers : [],
-                                                            requiredPermissions: ["View system dashboard"]
-                                                        }) && <Dashboard className={styles.menuItem} disabled={!loggedIn} dialogRef={dashboardDialogRef} />}
+                                                        <Dashboard
+                                                            className={styles.menuItem}
+                                                            disabled={!loggedIn}
+                                                            dialogRef={dashboardDialogRef}
+                                                            teamId={selectTeamData?._id}
+                                                            teamName={selectTeamData?.name}
+                                                            canViewSystem={Boolean(
+                                                                userData?.is_sys_admin ||
+                                                                sysPers?.some(permission => permission.toLowerCase() === "view system dashboard")
+                                                            )}
+                                                            canViewTeam={Boolean(
+                                                                userData?.is_sys_admin ||
+                                                                selectTeamData?.permissions?.some(permission => permission.toLowerCase() === "view team dashboard")
+                                                            )}
+                                                        />
 
                                                         {hasPermission({
                                                             is_sys_admin: userData ? userData?.is_sys_admin : false,

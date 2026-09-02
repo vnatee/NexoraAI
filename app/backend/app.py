@@ -24,9 +24,8 @@ import asyncio
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, Dict, Union, cast
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from tokens_usage.save_tokens_usage import insert_user_usage
-from tokens_usage.get_usage import get_all_usage
 from feedback.createfeedback import insert_feedback
 from feedback.getfeedback import get_all_feedback
 from mongo_table_connecters.mongo_connector import get_database
@@ -351,7 +350,8 @@ from prepdocs import (
 )
 from prepdocslib.filestrategy import UploadUserFileStrategy
 from prepdocslib.listfilestrategy import File
-from prepdocslib.docinteldb import insert_docintel_usage, get_all_docintel_usage
+from prepdocslib.docinteldb import insert_document_processing_usage
+from mongo_table_connecters.usage_analytics import get_usage_analytics
 from addons.scraping_web import run_scraping_job
 
 
@@ -518,6 +518,21 @@ def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> N
             }
         ).id
         for item_id, item in profiles.items()
+    }
+
+
+def _usage_metadata(context: dict[str, Any], agent_id: str | None) -> dict[str, str]:
+    overrides = context.get("overrides") if isinstance(context.get("overrides"), dict) else {}
+    agent = get_agent_by_id(agent_id) if agent_id else None
+    agent_config = (agent or {}).get("config") or {}
+    return {
+        "agent_id": str(agent_id or ""),
+        "agent_name": str((agent or {}).get("name") or "System default"),
+        "provider": str(overrides.get("_llm_vendor") or "unknown"),
+        "model": str(overrides.get("_llm_model") or "unknown"),
+        "deployment": str(overrides.get("_llm_deployment") or ""),
+        "profile_id": str(overrides.get("_llm_profile_id") or ""),
+        "runtime": str(agent_config.get("runtime") or "legacy"),
     }
 
 
@@ -1305,6 +1320,7 @@ async def ask(auth_claims: dict[str, Any]):
                     context.get("auth_claims") or auth_claims,
                     r,
                     "ask",
+                    _usage_metadata(context, agent_id),
                 )
             except Exception:
                 current_app.logger.exception("Can't insert user usage")
@@ -2527,6 +2543,7 @@ Always respond in the same language as the user"""
                                 context.get("auth_claims") or auth_claims,
                                 data_str,
                                 "chat",
+                                _usage_metadata(context, agent_id),
                             )
                         except Exception:
                             logging.exception("Can't insert user usage")
@@ -4247,6 +4264,7 @@ async def _run_ingestion_job(job_id: str) -> None:
         current_stage = status
         await _set_job_blob_status(job, "InProgress")
 
+    started_at = time.monotonic()
     try:
         await _set_job_blob_status(job, "InProgress")
         scope = str(job["scope"])
@@ -4264,21 +4282,33 @@ async def _run_ingestion_job(job_id: str) -> None:
         ingester: UploadUserFileStrategy = current_app.config[CONFIG_INGESTER]
         async with INGEST_SEM:
             if scope == "personal":
-                is_docintel, count = await ingester.add_file(
+                _is_docintel, count = await ingester.add_file(
                     File(content=stream, acls=acls, url=stored.url),
                     routing_context=job.get("routing_context") or {},
                     status_callback=update_stage,
                 )
             else:
-                is_docintel, count = await ingester.add_global_file(
+                _is_docintel, count = await ingester.add_global_file(
                     File(content=stream, acls=acls, url=stored.url),
                     folder,
                     routing_context=job.get("routing_context") or {},
                     status_callback=update_stage,
                 )
-            if is_docintel:
-                usage_scope = "personal" if scope == "personal" else ("team" if scope == "team" else "public")
-                insert_docintel_usage(str(job.get("owner_name") or ""), str(job.get("team_id") or ""), usage_scope, count)
+            usage_scope = "personal" if scope == "personal" else ("team" if scope == "team" else "global")
+            await asyncio.to_thread(
+                insert_document_processing_usage,
+                owner_id=str(job.get("owner_id") or ""),
+                owner_name=str(job.get("owner_name") or ""),
+                team_id=str(job.get("team_id") or ""),
+                scope=usage_scope,
+                provider_id=str(job.get("provider_id") or ""),
+                provider_name=str(job.get("provider_name") or "System parser"),
+                profile_id=str(job.get("profile_id") or ""),
+                profile_name=str(job.get("profile_name") or ""),
+                page_count=count,
+                file_type=Path(str(job.get("filename") or "")).suffix.lstrip("."),
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+            )
         await asyncio.to_thread(
             update_ingestion_job_status,
             job_id,
@@ -4895,58 +4925,98 @@ async def get_fixed_prompt(auth_claims: dict[str, Any]):
     return jsonify(prompts[0]), 200
 
 
+@bp.get("/usage-analytics")
+@authenticated
+async def usage_analytics(auth_claims: dict[str, Any]):
+    try:
+        scope = str(request.args.get("scope") or "system").strip().lower()
+        team_id = str(request.args.get("team_id") or "").strip()
+        requested_user_id = str(request.args.get("user_id") or "").strip()
+        actor = _application_user_for_claims(auth_claims)
+        if not actor or actor.get("active", True) is not True:
+            raise AccessControlError("The signed-in application user is unavailable")
+
+        query: dict[str, Any] = {"delete_at": None}
+        if scope == "system":
+            _require_system_permission(auth_claims, "View system dashboard")
+            if team_id:
+                query["group._id"] = team_id
+            if requested_user_id:
+                query["user._id"] = requested_user_id
+        elif scope == "team":
+            if not team_id:
+                raise AccessControlError("team_id is required for team scope", status_code=400)
+            _require_team_access(auth_claims, team_id, permission="View team dashboard")
+            query["group._id"] = team_id
+            if requested_user_id:
+                team = get_team_by_id(team_id) or {}
+                if requested_user_id not in {str(item) for item in (team.get("user_id") or [])}:
+                    raise AccessControlError("The selected user is not a member of this team", status_code=400)
+                query["user._id"] = requested_user_id
+        elif scope == "personal":
+            query["user._id"] = str(actor.get("_id") or "")
+        else:
+            raise AccessControlError("scope must be system, team or personal", status_code=400)
+
+        now = datetime.now(timezone.utc)
+        default_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=29)
+
+        def parse_date(value: str, fallback: datetime, *, end: bool = False) -> datetime:
+            if not value:
+                return fallback
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError as error:
+                raise AccessControlError("from and to must be ISO-8601 dates", status_code=400) from error
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            if len(value) == 10 and end:
+                parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+            return parsed.astimezone(timezone.utc)
+
+        start = parse_date(str(request.args.get("from") or ""), default_start)
+        end = parse_date(str(request.args.get("to") or ""), now, end=True)
+        if end < start or (end - start).days > 366:
+            raise AccessControlError("The reporting period must be between 0 and 366 days", status_code=400)
+        query["create_at"] = {"$gte": start, "$lte": end}
+
+        bucket = str(request.args.get("bucket") or "day").strip().lower()
+        if bucket not in {"day", "week", "month"}:
+            raise AccessControlError("bucket must be day, week or month", status_code=400)
+        data = await asyncio.to_thread(
+            get_usage_analytics,
+            query,
+            bucket=bucket,
+            agent_id=str(request.args.get("agent_id") or "").strip(),
+            provider=str(request.args.get("provider") or "").strip(),
+            model=str(request.args.get("model") or "").strip(),
+        )
+        data["scope"] = scope
+        data["period"] = {"from": start.isoformat(), "to": end.isoformat(), "bucket": bucket}
+        return jsonify(data), 200
+    except Exception as error:
+        return error_response(error, "/usage-analytics")
+
+
 @bp.get("/get_usage")
 @authenticated
 async def get_usage(auth_claims: dict[str, Any]):
+    """Deprecated raw endpoint retained temporarily for compatible clients."""
     try:
-        usages = get_all_usage()
-        users = get_all_users()
-        
-        user_map = {}
-        for u in users:
-            if u.get("_id"):
-                user_map[str(u["_id"])] = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip()
-                
-        for usage in usages:
-            if usage.get("user") and usage["user"].get("_id"):
-                uid = str(usage["user"]["_id"])
-                if uid in user_map:
-                    usage["user"]["name"] = user_map[uid]
-
-        data = {
-            "data": usages,
-            "total_chunk": int(current_app.config[CONFIG_SEARCH_INDEX_CLIENT]['document_count']),
-            "total_size": int(current_app.config[CONFIG_SEARCH_INDEX_CLIENT]['storage_size'])
-        }
-        return jsonify(data), 200
+        _require_system_permission(auth_claims, "View system dashboard")
+        return jsonify({"error": "Use /usage-analytics"}), 410
     except Exception as error:
-        current_app.logger.exception("Error to get uasge", error)
-        return jsonify({"error": "Error to get uasge"}), 500
+        return error_response(error, "/get_usage")
 
 
 @bp.get("/get_docintel_usage")
 @authenticated
 async def get_docintel_usage(auth_claims: dict[str, Any]):
     try:
-        usages = get_all_docintel_usage()
-        users = get_all_users()
-        
-        user_map = {}
-        for u in users:
-            if u.get("ad_email"):
-                user_map[u["ad_email"]] = f"{u.get('first_name', '')} {u.get('last_name', '')}".strip()
-                
-        for usage in usages:
-            if usage.get("user") in user_map:
-                usage["user"] = user_map[usage["user"]]
-
-        data = {
-            "data": usages
-        }
-        return jsonify(data), 200
+        _require_system_permission(auth_claims, "View system dashboard")
+        return jsonify({"error": "Use /usage-analytics"}), 410
     except Exception as error:
-        current_app.logger.exception("Error to get uasge", error)
-        return jsonify({"error": "Error to get uasge"}), 500
+        return error_response(error, "/get_docintel_usage")
 
 
 @bp.post("/add_feedback_page")
@@ -6049,7 +6119,7 @@ async def insert_permissions():
         sys_permission = ["Manage teams", "Manage users", "Manage global uploads",
                           "View feedback dashboard", "View system dashboard", "Manage user groups"]
         team_permission = ["Manage team users", "Manage team data groups", "Manage agents",
-                           "Manage team uploads", "Manage team permissions"]
+                           "Manage team uploads", "Manage team permissions", "View team dashboard"]
         for permis in sys_permission:
             insert_permission(permis, "System Permissions")
         for permis in team_permission:
