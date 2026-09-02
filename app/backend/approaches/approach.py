@@ -35,6 +35,7 @@ from openai.types.chat import (
 from approaches.promptmanager import PromptManager
 from core.attachment_retrieval import source_display_filename
 from core.authentication import AuthenticationHelper
+from core.guardrails import GuardrailPolicy, sanitize_untrusted_context
 from core.knowledge_search import KnowledgeSearchClient
 from core.llm_vendors import apply_llm_vendor_chat_policy
 from prepdocslib.embeddings import OpenAIEmbeddings
@@ -345,7 +346,9 @@ class Approach(ABC):
             for doc in results:
                 source = str(doc.sourcefile).replace(str(doc.sourcefile).split("/")[-1],"") + str(doc.sourcepage)
                 citation = self.get_citation(source, use_image_citation)
-                final_result.append(format_source(doc, citation, nonewlines(" . ".join([cast(str, c.text) for c in (doc.captions or [])]))))
+                content = nonewlines(" . ".join([cast(str, c.text) for c in (doc.captions or [])]))
+                content = sanitize_untrusted_context(content, GuardrailPolicy()).text
+                final_result.append(format_source(doc, citation, content))
             return final_result
             # return [
             #     (self.get_citation((doc.sourcepage or ""), use_image_citation))
@@ -358,7 +361,8 @@ class Approach(ABC):
             for doc in results:
                 source = str(doc.sourcefile).replace(str(doc.sourcefile).split("/")[-1],"") + str(doc.sourcepage)
                 citation = self.get_citation(source, use_image_citation)
-                final_result.append(format_source(doc, citation, nonewlines(doc.content or "")))
+                content = sanitize_untrusted_context(nonewlines(doc.content or ""), GuardrailPolicy()).text
+                final_result.append(format_source(doc, citation, content))
             return final_result
             # return [
             #     (self.get_citation((doc.sourcepage or ""), use_image_citation)) + ": " + nonewlines(doc.content or "")

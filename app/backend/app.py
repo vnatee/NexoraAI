@@ -1,5 +1,6 @@
 
 import dataclasses
+import copy
 import io
 from io import BytesIO
 import json
@@ -52,6 +53,10 @@ from mongo_table_connecters.auth_settings import (
     save_auth_settings,
     serialize_auth_settings,
 )
+from mongo_table_connecters.guardrail_settings import (
+    get_guardrail_settings,
+    save_guardrail_settings,
+)
 from mongo_table_connecters.agents import insert_agent, get_agent_by_id, update_agent, delete_agent_by_id
 from mongo_table_connecters.llm_providers import (
     get_llm_provider,
@@ -71,6 +76,7 @@ from mongo_table_connecters.mcp_servers import (
     update_mcp_server,
 )
 from mongo_table_connecters.agent_audit import list_agent_audit_events
+from agent_runtime.observability import AuditTrail
 from mongo_table_connecters.data_group import get_data_group_by_id, insert_data_group, delete_data_group_by_id, get_all_data_groups_by_user_id, update_data_group
 from mongo_table_connecters.permissions import insert_permission, get_all_permissions, get_permission_by_name
 from mongo_table_connecters.user_permission import get_user_permission_by_user_id, get_user_permission_by_team_id, delete_user_permission_by_id, get_user_permission_by_user_team_id, insert_user_permission, update_user_permission
@@ -326,6 +332,16 @@ from core.model_profiles import (
 from core.provider_secrets import decrypt_provider_secret, encrypt_provider_secret
 from core.runtime_settings import LLMProviderSettings, ModelProvider, RuntimeSettings, parse_model_provider
 from agent_runtime.policy import normalize_tool_policy
+from core.guardrails import (
+    GuardrailPolicy,
+    GuardrailResult,
+    GuardrailViolation,
+    blocked_message as guardrail_blocked_message,
+    evaluate_input as evaluate_guardrail_input,
+    evaluate_output as evaluate_guardrail_output,
+    merge_guardrail_policies,
+    sanitize_untrusted_context,
+)
 from core.sessionhelper import create_session_id, ensure_conversation_id
 from decorators import authenticated, authenticated_path
 from error import error_dict, error_response
@@ -413,6 +429,7 @@ def _validate_agent_model_config(config: object) -> dict[str, Any]:
         ),
         "tool_policy": normalize_tool_policy(raw_tool_settings.get("tool_policy")),
     }
+    guardrails = GuardrailPolicy.from_config(config.get("guardrails")).serialize()
     return {
         **config,
         "llm_profile_id": profile_id,
@@ -420,6 +437,7 @@ def _validate_agent_model_config(config: object) -> dict[str, Any]:
         "image_input_enabled": image_input_enabled,
         "document_attachments_enabled": config.get("document_attachments_enabled", True) is not False,
         "tool_settings": tool_settings,
+        "guardrails": guardrails,
     }
 
 
@@ -1484,6 +1502,178 @@ def _use_langgraph_runtime(agent_id: str | None) -> bool:
     return False
 
 
+def _guardrail_policy_for_agent(
+    agent_id: str | None, team_id: str | None = None
+) -> GuardrailPolicy:
+    agent = get_agent_by_id(agent_id) if agent_id else None
+    system_config = get_guardrail_settings()
+    team_config = get_guardrail_settings(team_id) if team_id else None
+    return merge_guardrail_policies(
+        GuardrailPolicy.from_config(system_config) if system_config is not None else None,
+        GuardrailPolicy.from_config(team_config) if team_config is not None else None,
+        GuardrailPolicy.from_config(((agent or {}).get("config") or {}).get("guardrails")),
+    )
+
+
+async def _enforce_input_guardrails(
+    *,
+    messages: object,
+    agent_id: str | None,
+    team_id: str | None,
+    auth_claims: dict[str, Any],
+) -> tuple[GuardrailPolicy, AuditTrail]:
+    policy = _guardrail_policy_for_agent(agent_id, team_id)
+    audit = AuditTrail(
+        agent_id=str(agent_id or "system"),
+        team_id=team_id,
+        auth_claims=auth_claims,
+    )
+    result = evaluate_guardrail_input(messages, policy)
+    if result.findings:
+        await audit.emit(
+            "guardrail_input_evaluated",
+            status="denied" if result.blocked else "warning",
+            source="guardrail",
+            details=result.audit_details(direction="input"),
+        )
+    if result.blocked:
+        raise GuardrailViolation(
+            guardrail_blocked_message(result, direction="input"),
+            category=result.findings[0].category,
+            detector_ids=tuple(finding.detector_id for finding in result.findings),
+        )
+    return policy, audit
+
+
+async def _prepare_guardrail_context(
+    context: dict[str, Any], policy: GuardrailPolicy, audit: AuditTrail
+) -> None:
+    if not policy.enabled:
+        return
+    overrides = context.setdefault("overrides", {})
+    sources = overrides.get("_temporary_attachment_sources")
+    if not isinstance(sources, list):
+        return
+    sanitized_sources: list[str] = []
+    findings = []
+    redacted = False
+    for source in sources:
+        result = sanitize_untrusted_context(str(source), policy)
+        sanitized_sources.append(result.text)
+        findings.extend(result.findings)
+        redacted = redacted or result.redacted
+    overrides["_temporary_attachment_sources"] = sanitized_sources
+    if findings:
+        summary = GuardrailResult(
+            text="",
+            findings=tuple(findings),
+            redacted=redacted,
+        )
+        await audit.emit(
+            "guardrail_retrieval_evaluated",
+            status="redacted" if redacted else "warning",
+            source="guardrail",
+            details=summary.audit_details(direction="retrieval"),
+        )
+
+
+async def _apply_guardrails_to_response(
+    response: dict[str, Any], policy: GuardrailPolicy, audit: AuditTrail
+) -> dict[str, Any]:
+    message = response.get("message")
+    if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+        return response
+    result = evaluate_guardrail_output(message["content"], policy)
+    if result.findings:
+        await audit.emit(
+            "guardrail_output_evaluated",
+            status="denied" if result.blocked else "redacted" if result.redacted else "warning",
+            source="guardrail",
+            details=result.audit_details(direction="output"),
+        )
+    message["content"] = (
+        guardrail_blocked_message(result, direction="output") if result.blocked else result.text
+    )
+    return response
+
+
+def _stream_event_content(event: dict[str, Any]) -> str | None:
+    delta = event.get("delta")
+    if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+        return delta["content"]
+    choices = event.get("choices")
+    if isinstance(choices, list) and choices:
+        choice_delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
+        if isinstance(choice_delta, dict) and isinstance(choice_delta.get("content"), str):
+            return choice_delta["content"]
+    return None
+
+
+def _clear_stream_event_content(event: dict[str, Any]) -> None:
+    delta = event.get("delta")
+    if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+        delta["content"] = None
+    choices = event.get("choices")
+    if isinstance(choices, list):
+        for choice in choices:
+            choice_delta = choice.get("delta") if isinstance(choice, dict) else None
+            if isinstance(choice_delta, dict) and isinstance(choice_delta.get("content"), str):
+                choice_delta["content"] = None
+
+
+async def _guardrail_response_stream(
+    result: AsyncGenerator[dict, None], policy: GuardrailPolicy, audit: AuditTrail
+) -> AsyncGenerator[dict, None]:
+    if not policy.enabled or (
+        policy.sensitive_output_action == "allow"
+        and policy.pii_output_action == "allow"
+        and policy.content_safety_output_action == "allow"
+    ):
+        async for event in result:
+            yield event
+        return
+
+    buffered_events: list[dict[str, Any]] = []
+    content_parts: list[str] = []
+    uses_choices = False
+    async for event in result:
+        # Some legacy approaches reuse and mutate context objects between
+        # chunks. Snapshot each event at arrival so buffering does not change
+        # the observable stream.
+        buffered_events.append(copy.deepcopy(event))
+        content = _stream_event_content(event)
+        if content is not None:
+            content_parts.append(content)
+            uses_choices = uses_choices or isinstance(event.get("choices"), list)
+
+    output = evaluate_guardrail_output("".join(content_parts), policy)
+    if not output.findings:
+        for event in buffered_events:
+            yield event
+        return
+
+    await audit.emit(
+        "guardrail_output_evaluated",
+        status="denied" if output.blocked else "redacted" if output.redacted else "warning",
+        source="guardrail",
+        details=output.audit_details(direction="output"),
+    )
+    for event in buffered_events:
+        _clear_stream_event_content(event)
+        yield event
+    safe_content = (
+        guardrail_blocked_message(output, direction="output") if output.blocked else output.text
+    )
+    if uses_choices:
+        yield {
+            "choices": [
+                {"delta": {"role": "assistant", "content": safe_content}, "index": 0, "finish_reason": None}
+            ]
+        }
+    else:
+        yield {"delta": {"role": "assistant", "content": safe_content}}
+
+
 async def _run_langgraph_as_chat_stream(
     *,
     approach: Approach,
@@ -1987,8 +2177,15 @@ async def chat(auth_claims: dict[str, Any]):
     context = request_json.get("context", {})
     try:
         agent_id = request_json.get("agent_id")
+        team_id = request_json.get("team_id")
         context["auth_claims"] = _authorized_request_claims(
             request_json, auth_claims, agent_id=agent_id
+        )
+        guardrail_policy, guardrail_audit = await _enforce_input_guardrails(
+            messages=request_json.get("messages"),
+            agent_id=agent_id,
+            team_id=team_id,
+            auth_claims=context["auth_claims"],
         )
         context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
@@ -2001,6 +2198,7 @@ async def chat(auth_claims: dict[str, Any]):
             select_vision_from_attachments=bool(agent_id),
         )
         await _apply_temporary_attachment_retrieval(request_json, context, auth_claims)
+        await _prepare_guardrail_context(context, guardrail_policy, guardrail_audit)
         approach: Approach
         if _use_vision_approach(context) and CONFIG_CHAT_VISION_APPROACH in current_app.config:
             approach = cast(
@@ -2021,7 +2219,7 @@ async def chat(auth_claims: dict[str, Any]):
             context=context,
             session_state=session_state,
         )
-        return jsonify(result)
+        return jsonify(await _apply_guardrails_to_response(result, guardrail_policy, guardrail_audit))
     except Exception as error:
         return error_response(error, "/chat")
 
@@ -2039,6 +2237,12 @@ async def chat_stream(auth_claims: dict[str, Any]):
     try:
         context["auth_claims"] = _authorized_request_claims(
             request_json, auth_claims, agent_id=agent_id
+        )
+        guardrail_policy, guardrail_audit = await _enforce_input_guardrails(
+            messages=request_json.get("messages"),
+            agent_id=agent_id,
+            team_id=team_id,
+            auth_claims=context["auth_claims"],
         )
     except Exception as error:
         return error_response(error, "/chat/stream")
@@ -2250,6 +2454,7 @@ Always respond in the same language as the user"""
             select_vision_from_attachments=bool(agent_id),
         )
         await _apply_temporary_attachment_retrieval(request_json, context, auth_claims)
+        await _prepare_guardrail_context(context, guardrail_policy, guardrail_audit)
         approach: Approach
         if _use_vision_approach(context) and CONFIG_CHAT_VISION_APPROACH in current_app.config:
             approach = cast(
@@ -2299,6 +2504,8 @@ Always respond in the same language as the user"""
                 allowed_types=_allowed,
                 chart_binding_cfg=chart_binding_cfg,
             )
+
+        result = _guardrail_response_stream(result, guardrail_policy, guardrail_audit)
 
         # Stream NDJSON immediately. Legacy chart extraction still buffers internally,
         # while normal and LangGraph responses are no longer buffered by this route.
@@ -2539,6 +2746,71 @@ async def admin_reset_auth_settings(auth_claims: dict[str, Any]):
         client_app_id=os.getenv("AZURE_CLIENT_APP_ID"),
     )
     return jsonify({"success": True}), 200
+
+
+@bp.get("/admin/guardrail-settings")
+@authenticated
+async def admin_get_guardrail_settings(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    configured = get_guardrail_settings()
+    return jsonify(
+        {
+            "configured": configured is not None,
+            "policy": GuardrailPolicy.from_config(configured).serialize(),
+        }
+    )
+
+
+@bp.put("/admin/guardrail-settings")
+@authenticated
+async def admin_update_guardrail_settings(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        body = await request.get_json()
+        return jsonify({"configured": True, "policy": save_guardrail_settings(body or {})})
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.get("/teams/<team_id>/guardrail-settings")
+@authenticated
+async def team_get_guardrail_settings(auth_claims: dict[str, Any], team_id: str):
+    _require_team_access(auth_claims, team_id, permission="Manage agents")
+    system_config = get_guardrail_settings()
+    team_config = get_guardrail_settings(team_id)
+    effective = merge_guardrail_policies(
+        GuardrailPolicy.from_config(system_config) if system_config is not None else None,
+        GuardrailPolicy.from_config(team_config) if team_config is not None else None,
+    )
+    return jsonify(
+        {
+            "configured": team_config is not None,
+            "policy": GuardrailPolicy.from_config(team_config).serialize(),
+            "system_policy": GuardrailPolicy.from_config(system_config).serialize()
+            if system_config is not None
+            else None,
+            "effective_policy": effective.serialize(),
+        }
+    )
+
+
+@bp.put("/teams/<team_id>/guardrail-settings")
+@authenticated
+async def team_update_guardrail_settings(auth_claims: dict[str, Any], team_id: str):
+    _require_team_access(auth_claims, team_id, permission="Manage agents")
+    try:
+        body = await request.get_json()
+        policy = save_guardrail_settings(body or {}, team_id)
+        system_config = get_guardrail_settings()
+        effective = merge_guardrail_policies(
+            GuardrailPolicy.from_config(system_config) if system_config is not None else None,
+            GuardrailPolicy.from_config(policy),
+        )
+        return jsonify(
+            {"configured": True, "policy": policy, "effective_policy": effective.serialize()}
+        )
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
 
 
 @bp.get("/admin/llm-providers")
@@ -5510,11 +5782,14 @@ async def create_agent(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         team_id = body.get("team_id", None)
+        _, team = _require_team_access(
+            auth_claims, str(team_id or ""), permission="Manage agents"
+        )
         agent_name = body.get("agent_name", None)
         agent_config = _validate_agent_model_config(body.get("config", None))
         agent_prompt = body.get("prompt", None)
         result, agent_id = insert_agent(agent_name, agent_prompt, agent_config)
-        agent_team = get_team_by_id(team_id=team_id).get("agent_id")
+        agent_team = team.get("agent_id")
         if agent_team:
             agent_team.append(str(agent_id))
         else:
@@ -5522,7 +5797,7 @@ async def create_agent(auth_claims: dict[str, Any]):
         update_team(team_id=team_id, agent_id=agent_team)
         return jsonify({"success": f"Create agent {agent_name} success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/create_agent")
 
 
 @bp.post("/get_agent_by_team")
@@ -5531,9 +5806,7 @@ async def get_agent_by_team(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         team_id = body.get("team_id", None)
-        team = get_team_by_id(team_id=team_id)
-        if not team:
-            return jsonify({"error": "Team not found"}), 404
+        _, team = _require_team_access(auth_claims, str(team_id or ""))
         agents = []
         for agent_id in team.get("agent_id") or []:
             agent = get_agent_by_id(str(agent_id))
@@ -5541,7 +5814,7 @@ async def get_agent_by_team(auth_claims: dict[str, Any]):
                 agents.append(agent)
         return jsonify({"result": agents}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/get_agent_by_team")
 
 
 @bp.post("/edit_agent")
@@ -5549,14 +5822,20 @@ async def get_agent_by_team(auth_claims: dict[str, Any]):
 async def edit_agent(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
+        team_id = body.get("team_id", None)
         agent_id = body.get("agent_id", None)
+        _, team = _require_team_access(
+            auth_claims, str(team_id or ""), permission="Manage agents"
+        )
+        if str(agent_id or "") not in {str(item) for item in (team.get("agent_id") or [])}:
+            raise AccessControlError("Agent does not belong to this team", status_code=404)
         agent_name = body.get("agent_name", None)
         agent_config = _validate_agent_model_config(body.get("config", None))
         agent_prompt = body.get("prompt", None)
         update_agent(agent_id, agent_name, agent_prompt, agent_config)
         return jsonify({"success": f"Edit agent success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/edit_agent")
 
 
 @bp.post("/delete_agent")
@@ -5566,13 +5845,18 @@ async def delete_agent(auth_claims: dict[str, Any]):
         body = await request.get_json()
         team_id = body.get("team_id", None)
         agent_id = body.get("agent_id", None)
-        agent_team = get_team_by_id(team_id=team_id).get("agent_id")
+        _, team = _require_team_access(
+            auth_claims, str(team_id or ""), permission="Manage agents"
+        )
+        agent_team = list(team.get("agent_id") or [])
+        if str(agent_id or "") not in {str(item) for item in agent_team}:
+            raise AccessControlError("Agent does not belong to this team", status_code=404)
         agent_team.remove(agent_id)
         update_team(team_id=team_id, agent_id=agent_team)
         delete_agent_by_id(agent_id)
         return jsonify({"success": f"Delete agent success"}), 200
     except Exception as error_txt:
-        return jsonify({"error": str(error_txt)}), 400
+        return error_response(error_txt, "/delete_agent")
 
 
 @bp.post("/create_data_group")

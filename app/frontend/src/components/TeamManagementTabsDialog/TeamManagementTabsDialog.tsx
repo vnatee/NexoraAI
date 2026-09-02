@@ -13,6 +13,7 @@ import { IntegrationManagementPage } from "./Tabs/IntegrationManagementPage";
 import { LLMProviderManagement } from "../LLMProviderManagement";
 import { MCPServerManagement } from "../MCPServerManagement";
 import { AgentAuditManagement } from "../AgentAuditManagement";
+import { GuardrailPolicyPage } from "./Tabs/GuardrailPolicyPage";
 
 interface Props {
     open: boolean;
@@ -90,6 +91,12 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             permission: ["Manage users", "Manage teams"],
             systemAdminOnly: true,
             element: <AgentAuditManagement />
+        },
+        {
+            label: "Guardrail Policy",
+            permission: ["Manage agents"],
+            systemAdminOnly: !managedTeam,
+            element: <GuardrailPolicyPage team={managedTeam} />
         }
     ];
 

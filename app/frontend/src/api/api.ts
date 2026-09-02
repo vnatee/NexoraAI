@@ -27,7 +27,9 @@ import {
     IngestionJob,
     ChatDocumentAttachment,
     EffectiveAccessResponse,
-    AuthenticationSettings
+    AuthenticationSettings,
+    AgentGuardrailPolicy,
+    GuardrailSettingsResponse
 } from "./models";
 import { useLogin, getToken, isUsingAppServicesLogin } from "../authConfig";
 
@@ -73,6 +75,37 @@ export async function resetAuthenticationSettings(idToken: string): Promise<void
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Unable to restore environment settings");
+}
+
+export async function getGuardrailSettings(
+    idToken: string,
+    teamId?: string
+): Promise<GuardrailSettingsResponse> {
+    const path = teamId
+        ? `/teams/${encodeURIComponent(teamId)}/guardrail-settings`
+        : "/admin/guardrail-settings";
+    const response = await fetch(path, { headers: await getHeaders(idToken) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to load guardrail settings");
+    return data;
+}
+
+export async function updateGuardrailSettings(
+    policy: AgentGuardrailPolicy,
+    idToken: string,
+    teamId?: string
+): Promise<GuardrailSettingsResponse> {
+    const path = teamId
+        ? `/teams/${encodeURIComponent(teamId)}/guardrail-settings`
+        : "/admin/guardrail-settings";
+    const response = await fetch(path, {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(policy)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to save guardrail settings");
+    return data;
 }
 
 export async function configApi(): Promise<Config> {
@@ -1455,13 +1488,13 @@ export async function get_agent_by_team(team_id: string, idToken: string): Promi
     return await dataResponse.result;
 }
 
-export async function edit_agent(agent_id: string, agent_name: string, config: AgentConfig, prompt: Prompt, idToken: string): Promise<any> {
+export async function edit_agent(team_id: string, agent_id: string, agent_name: string, config: AgentConfig, prompt: Prompt, idToken: string): Promise<any> {
     const headers = await getHeaders(idToken);
 
     const response = await fetch("/edit_agent", {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ agent_id, agent_name, config, prompt })
+        body: JSON.stringify({ team_id, agent_id, agent_name, config, prompt })
     });
 
     if (!response.ok) {

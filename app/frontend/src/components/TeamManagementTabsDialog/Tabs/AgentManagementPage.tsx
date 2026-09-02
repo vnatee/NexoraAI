@@ -113,6 +113,19 @@ const DEFAULT_AGENT_TOOL_SETTINGS = {
     tool_policy: { ...DEFAULT_TOOL_POLICY }
 };
 
+const DEFAULT_GUARDRAILS = {
+    enabled: true,
+    max_input_chars: 20000,
+    prompt_injection_action: "block" as const,
+    sensitive_input_action: "block" as const,
+    sensitive_output_action: "redact" as const,
+    pii_input_action: "block" as const,
+    pii_output_action: "redact" as const,
+    content_safety_input_action: "block" as const,
+    content_safety_output_action: "block" as const,
+    blocked_phrases: [] as string[]
+};
+
 const normalizeRuntimeToolName = (value: string) => {
     let normalized = value
         .trim()
@@ -215,7 +228,7 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
             }
 
             if (mode === "edit") {
-                await edit_agent(agent._id, agent.agent_name, agent.config, agent.prompt, token);
+                await edit_agent(team._id, agent._id, agent.agent_name, agent.config, agent.prompt, token);
                 showNotification("Agent updated successfully", "success");
             }
 
@@ -453,7 +466,8 @@ function AgentDialog({
         runtime: "legacy",
         image_input_enabled: false,
         document_attachments_enabled: true,
-        tool_settings: { ...DEFAULT_AGENT_TOOL_SETTINGS }
+        tool_settings: { ...DEFAULT_AGENT_TOOL_SETTINGS },
+        guardrails: { ...DEFAULT_GUARDRAILS }
     });
 
     const [prompt, setPrompt] = useState<Prompt>({
@@ -628,7 +642,8 @@ function AgentDialog({
                         ...DEFAULT_TOOL_POLICY,
                         ...(agent.config.tool_settings?.tool_policy ?? {})
                     }
-                }
+                },
+                guardrails: { ...DEFAULT_GUARDRAILS, ...(agent.config.guardrails ?? {}) }
             });
             setPrompt(agent.prompt ?? EMPTY_PROMPT); // ✅ FIX
         } else {
@@ -643,7 +658,8 @@ function AgentDialog({
                 runtime: "legacy",
                 image_input_enabled: false,
                 document_attachments_enabled: true,
-                tool_settings: { ...DEFAULT_AGENT_TOOL_SETTINGS }
+                tool_settings: { ...DEFAULT_AGENT_TOOL_SETTINGS },
+                guardrails: { ...DEFAULT_GUARDRAILS }
             });
             setPrompt(EMPTY_PROMPT);
         }
@@ -768,6 +784,238 @@ function AgentDialog({
                                         <Typography variant="caption" color="text.secondary">
                                             Allows private PDF, Office, text, CSV, and Markdown files when attachment storage is configured.
                                         </Typography>
+                                    </Stack>
+                                </Paper>
+                                <Paper variant="outlined" sx={{ p: 2 }}>
+                                    <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ sm: "center" }} spacing={1}>
+                                        <Box>
+                                            <Typography fontWeight={600}>AI Guardrails</Typography>
+                                            <Typography variant="caption" color="text.secondary">
+                                                Provider-independent checks applied to both Legacy and LangGraph requests.
+                                            </Typography>
+                                        </Box>
+                                        <FormControlLabel
+                                            control={
+                                                <Switch
+                                                    checked={config.guardrails?.enabled !== false}
+                                                    disabled={isFieldDisabled}
+                                                    onChange={event =>
+                                                        setConfig({
+                                                            ...config,
+                                                            guardrails: {
+                                                                ...DEFAULT_GUARDRAILS,
+                                                                ...(config.guardrails ?? {}),
+                                                                enabled: event.target.checked
+                                                            }
+                                                        })
+                                                    }
+                                                />
+                                            }
+                                            label={config.guardrails?.enabled === false ? "Disabled" : "Enabled"}
+                                        />
+                                    </Stack>
+                                    <Stack spacing={2} mt={2}>
+                                        <TextField
+                                            size="small"
+                                            type="number"
+                                            label="Maximum Input Characters"
+                                            disabled={isFieldDisabled || config.guardrails?.enabled === false}
+                                            value={config.guardrails?.max_input_chars ?? DEFAULT_GUARDRAILS.max_input_chars}
+                                            inputProps={{ min: 256, max: 200000 }}
+                                            onChange={event =>
+                                                setConfig({
+                                                    ...config,
+                                                    guardrails: {
+                                                        ...DEFAULT_GUARDRAILS,
+                                                        ...(config.guardrails ?? {}),
+                                                        max_input_chars: Number(event.target.value)
+                                                    }
+                                                })
+                                            }
+                                        />
+                                        <Stack direction={{ xs: "column", md: "row" }} spacing={1}>
+                                            <TextField
+                                                select
+                                                fullWidth
+                                                size="small"
+                                                label="Prompt Injection"
+                                                disabled={isFieldDisabled || config.guardrails?.enabled === false}
+                                                value={config.guardrails?.prompt_injection_action ?? "block"}
+                                                onChange={event =>
+                                                    setConfig({
+                                                        ...config,
+                                                        guardrails: {
+                                                            ...DEFAULT_GUARDRAILS,
+                                                            ...(config.guardrails ?? {}),
+                                                            prompt_injection_action: event.target.value as "allow" | "warn" | "block"
+                                                        }
+                                                    })
+                                                }
+                                            >
+                                                <MenuItem value="block">Block</MenuItem>
+                                                <MenuItem value="warn">Audit only</MenuItem>
+                                                <MenuItem value="allow">Allow</MenuItem>
+                                            </TextField>
+                                            <TextField
+                                                select
+                                                fullWidth
+                                                size="small"
+                                                label="Secrets in Input"
+                                                disabled={isFieldDisabled || config.guardrails?.enabled === false}
+                                                value={config.guardrails?.sensitive_input_action ?? "block"}
+                                                onChange={event =>
+                                                    setConfig({
+                                                        ...config,
+                                                        guardrails: {
+                                                            ...DEFAULT_GUARDRAILS,
+                                                            ...(config.guardrails ?? {}),
+                                                            sensitive_input_action: event.target.value as "allow" | "warn" | "block"
+                                                        }
+                                                    })
+                                                }
+                                            >
+                                                <MenuItem value="block">Block</MenuItem>
+                                                <MenuItem value="warn">Audit only</MenuItem>
+                                                <MenuItem value="allow">Allow</MenuItem>
+                                            </TextField>
+                                            <TextField
+                                                select
+                                                fullWidth
+                                                size="small"
+                                                label="Secrets in Output"
+                                                disabled={isFieldDisabled || config.guardrails?.enabled === false}
+                                                value={config.guardrails?.sensitive_output_action ?? "redact"}
+                                                onChange={event =>
+                                                    setConfig({
+                                                        ...config,
+                                                        guardrails: {
+                                                            ...DEFAULT_GUARDRAILS,
+                                                            ...(config.guardrails ?? {}),
+                                                            sensitive_output_action: event.target.value as "allow" | "warn" | "redact" | "block"
+                                                        }
+                                                    })
+                                                }
+                                            >
+                                                <MenuItem value="redact">Redact</MenuItem>
+                                                <MenuItem value="block">Block response</MenuItem>
+                                                <MenuItem value="warn">Audit only</MenuItem>
+                                                <MenuItem value="allow">Allow</MenuItem>
+                                            </TextField>
+                                        </Stack>
+                                        <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+                                            <TextField
+                                                select
+                                                fullWidth
+                                                size="small"
+                                                label="PII in Input"
+                                                disabled={isFieldDisabled || config.guardrails?.enabled === false}
+                                                value={config.guardrails?.pii_input_action ?? "block"}
+                                                onChange={event =>
+                                                    setConfig({
+                                                        ...config,
+                                                        guardrails: {
+                                                            ...DEFAULT_GUARDRAILS,
+                                                            ...(config.guardrails ?? {}),
+                                                            pii_input_action: event.target.value as "allow" | "warn" | "block"
+                                                        }
+                                                    })
+                                                }
+                                            >
+                                                <MenuItem value="block">Block</MenuItem>
+                                                <MenuItem value="warn">Audit only</MenuItem>
+                                                <MenuItem value="allow">Allow</MenuItem>
+                                            </TextField>
+                                            <TextField
+                                                select
+                                                fullWidth
+                                                size="small"
+                                                label="PII in Output"
+                                                disabled={isFieldDisabled || config.guardrails?.enabled === false}
+                                                value={config.guardrails?.pii_output_action ?? "redact"}
+                                                onChange={event =>
+                                                    setConfig({
+                                                        ...config,
+                                                        guardrails: {
+                                                            ...DEFAULT_GUARDRAILS,
+                                                            ...(config.guardrails ?? {}),
+                                                            pii_output_action: event.target.value as "allow" | "warn" | "redact" | "block"
+                                                        }
+                                                    })
+                                                }
+                                            >
+                                                <MenuItem value="redact">Redact</MenuItem>
+                                                <MenuItem value="block">Block response</MenuItem>
+                                                <MenuItem value="warn">Audit only</MenuItem>
+                                                <MenuItem value="allow">Allow</MenuItem>
+                                            </TextField>
+                                            <TextField
+                                                select
+                                                fullWidth
+                                                size="small"
+                                                label="Unsafe Content in Input"
+                                                disabled={isFieldDisabled || config.guardrails?.enabled === false}
+                                                value={config.guardrails?.content_safety_input_action ?? "block"}
+                                                onChange={event =>
+                                                    setConfig({
+                                                        ...config,
+                                                        guardrails: {
+                                                            ...DEFAULT_GUARDRAILS,
+                                                            ...(config.guardrails ?? {}),
+                                                            content_safety_input_action: event.target.value as "allow" | "warn" | "block"
+                                                        }
+                                                    })
+                                                }
+                                            >
+                                                <MenuItem value="block">Block</MenuItem>
+                                                <MenuItem value="warn">Audit only</MenuItem>
+                                                <MenuItem value="allow">Allow</MenuItem>
+                                            </TextField>
+                                            <TextField
+                                                select
+                                                fullWidth
+                                                size="small"
+                                                label="Unsafe Content in Output"
+                                                disabled={isFieldDisabled || config.guardrails?.enabled === false}
+                                                value={config.guardrails?.content_safety_output_action ?? "block"}
+                                                onChange={event =>
+                                                    setConfig({
+                                                        ...config,
+                                                        guardrails: {
+                                                            ...DEFAULT_GUARDRAILS,
+                                                            ...(config.guardrails ?? {}),
+                                                            content_safety_output_action: event.target.value as "allow" | "warn" | "block"
+                                                        }
+                                                    })
+                                                }
+                                            >
+                                                <MenuItem value="block">Block response</MenuItem>
+                                                <MenuItem value="warn">Audit only</MenuItem>
+                                                <MenuItem value="allow">Allow</MenuItem>
+                                            </TextField>
+                                        </Stack>
+                                        <TextField
+                                            size="small"
+                                            label="Blocked Phrases"
+                                            disabled={isFieldDisabled || config.guardrails?.enabled === false}
+                                            value={(config.guardrails?.blocked_phrases ?? []).join(", ")}
+                                            onChange={event =>
+                                                setConfig({
+                                                    ...config,
+                                                    guardrails: {
+                                                        ...DEFAULT_GUARDRAILS,
+                                                        ...(config.guardrails ?? {}),
+                                                        blocked_phrases: event.target.value
+                                                            .split(",")
+                                                            .map(value => value.trim())
+                                                            .filter(Boolean)
+                                                    }
+                                                })
+                                            }
+                                            helperText="Optional literal phrases to block, separated by commas. Matching is case-insensitive."
+                                        />
+                                        <Alert severity="info">
+                                            Guardrail audit events store detector names and counts only—not prompts, secrets, or model output.
+                                        </Alert>
                                     </Stack>
                                 </Paper>
                                 {config.runtime === "langgraph" && (

@@ -63,6 +63,12 @@ MockSearchIndex = SearchIndex(
 MockAgent = KnowledgeAgent(name="test", models=[], target_indexes=[], request_limits=[])
 
 
+@pytest.fixture(autouse=True)
+def mock_managed_guardrail_settings(monkeypatch):
+    """Keep service-free tests independent from the managed Mongo policy store."""
+    monkeypatch.setattr(app, "get_guardrail_settings", lambda team_id=None: None)
+
+
 def set_custom_app_test_env(monkeypatch):
     monkeypatch.setenv("AZURE_WEB_STORAGE_CONTAINER", "test-web-storage-container")
     monkeypatch.setenv("AZURE_WEB_GROUP_STORAGE_CONTAINER", "test-web-group-storage-container")

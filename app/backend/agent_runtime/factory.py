@@ -9,8 +9,8 @@ from agent_runtime.adapters import (
     register_chart_tool,
     register_database_tools,
     register_external_api_tools,
-    register_mcp_tools,
     register_mail_tools,
+    register_mcp_tools,
     register_messaging_tools,
     register_rag_tool,
     register_subagent_tools,
@@ -21,10 +21,14 @@ from agent_runtime.policy import ToolExecutionPolicy
 from agent_runtime.runtime import AgentRuntime, AgentRuntimeConfig
 from agent_runtime.tools import ToolRegistry, ToolRuntimeContext
 from approaches.approach import Approach
-from core.attachment_retrieval import ATTACHMENT_SECURITY_INSTRUCTION, REQUIREMENTS_EVIDENCE_MATRIX_INSTRUCTION
+from core.attachment_retrieval import (
+    ATTACHMENT_SECURITY_INSTRUCTION,
+    REQUIREMENTS_EVIDENCE_MATRIX_INSTRUCTION,
+)
 from mongo_table_connecters.agent_bindings import get_all_agent_bindings_by_agent_id
 from mongo_table_connecters.agents import get_agent_by_id
 from mongo_table_connecters.chart_binding import get_enabled_chart_bindings_by_agent_id
+from mongo_table_connecters.guardrail_settings import effective_guardrail_policy
 from mongo_table_connecters.mcp_servers import (
     decrypt_mcp_headers,
     get_mcp_server,
@@ -75,6 +79,9 @@ async def create_agent_runtime(
         ),
         policy=ToolExecutionPolicy.from_config(tool_settings.get("tool_policy")),
         audit=audit,
+        guardrail_policy=effective_guardrail_policy(
+            (agent.get("config") or {}).get("guardrails"), team_id=team_id
+        ),
     )
     has_temporary_attachments = bool(overrides.get("_temporary_attachment_ids"))
     attachment_evidence_scope = str(overrides.get("_attachment_evidence_scope") or "")
