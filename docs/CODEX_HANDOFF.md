@@ -1,6 +1,6 @@
 # Codex handoff — NexoraAI
 
-Last updated: 2026-09-01 UTC
+Last updated: 2026-09-02 UTC
 
 This document replaces a raw chat transcript as the engineering handoff. It
 captures the decisions and evidence needed to continue without storing copied
@@ -123,6 +123,55 @@ See `docs/model_provider_configuration.md`.
 - Admin Agent Audit page and audit query endpoint.
 
 See `docs/langgraph-agent-runtime.md`.
+
+### AI guardrails — current working tree
+
+- Branch `feature/ai-guardrails` starts from checkpoint `bf08076 feat: add
+  unassigned integration catalog`, which the product owner manually accepted.
+- A provider-independent Guardrail policy is normalized into every Agent
+  configuration and is enforced for both Legacy and LangGraph Chat routes.
+  Safe defaults block high-confidence prompt injection, excessive latest-user
+  input, and credentials/secrets in input; model secrets are redacted before
+  response text is released.
+- Agent configuration exposes enablement, input limit, input/output actions,
+  and organization-specific literal blocked phrases. Output redact/block mode
+  intentionally buffers response text until validation is complete.
+- Knowledge/temporary attachment text and LangGraph tool output are treated as
+  untrusted data. Detected embedded instruction patterns are neutralized before
+  being consumed as instructions, and tool output also passes secret controls.
+- Guardrail audit events persist only detector/category/count/outcome metadata,
+  never raw prompts, matched values, retrieved content, tool output, or model
+  output.
+- Agent create/edit/delete now requires the Team `Manage agents` permission
+  server-side and edit/delete verifies that the Agent belongs to the supplied
+  Team. This prevents an authenticated caller from disabling another Team's
+  guardrail policy through a direct API request.
+- The first slice is not complete DLP/moderation. Multilingual semantic
+  classifiers, groundedness, human review, and production malware scanning
+  remain pending.
+- The current uncommitted second slice adds separate PII/DLP and content-safety
+  actions for input and output. Deterministic PII coverage includes email,
+  Thai telephone numbers, US SSNs, checksum-valid Thai national IDs, and
+  checksum-valid payment cards. High-confidence requests to disclose protected
+  identifiers are also detected. Output PII is redacted by default and input
+  PII is blocked by default; deployments with legitimate contact-data workflows
+  may explicitly select Audit only.
+- Narrow high-confidence English/Thai harmful-instruction detectors now support
+  block/audit/allow actions. This is deliberately not presented as complete
+  semantic multilingual moderation.
+- Optional System and Team policies are persisted in the existing
+  `application_settings` collection. Runtime enforcement merges
+  **System → Team → Agent** using the smallest input limit, strictest action,
+  and union of blocked phrases. An enabled parent cannot be disabled or
+  weakened below it. System Admins configure the System minimum in
+  **Administration → Guardrail Policy**; Team administrators with `Manage
+  agents` configure their Team minimum in **Team settings → Guardrail Policy**.
+- The product owner manually accepted this Guardrails scope on 2026-09-02,
+  including protected-identifier request blocking. Further Guardrails work is
+  intentionally deferred to the product backlog; do not expand this slice
+  before checkpointing unless a concrete defect is found.
+
+See `docs/ai-guardrails.md`.
 
 ### MCP
 
@@ -991,6 +1040,23 @@ Do not put real credentials in this file or examples.
 
 ## Validation status
 
+Latest Guardrails regression on 2026-09-02:
+
+```text
+36 passed
+```
+
+This focused suite covers deterministic secret/PII/content checks, policy
+inheritance, cross-chunk redaction, untrusted tool output, and Team policy
+authorization. The complete service-free backend regression also passed:
+
+```text
+731 passed, 1 deselected
+```
+
+Frontend TypeScript checking and the memory-safe production build passed. The
+build retains the existing large-vendor-chunk warning.
+
 The product owner manually verified graceful-stop recovery of an in-progress
 Knowledge ingestion job on 2026-08-22. A legacy job left with the former
 one-hour lease was reset only after confirming no backend worker was running;
@@ -1172,6 +1238,17 @@ Known non-blocking warnings:
 - PyMongo can emit a Cosmos DB feature-compatibility warning.
 
 ## Manual smoke-test checklist before the next checkpoint
+
+- As a System Admin, open **Administration → Guardrail Policy**, save a System
+  policy with PII output `Redact`, then open a Team's **Guardrail Policy** and
+  save a stricter PII input `Block` policy. Configure an Agent with weaker
+  `Allow` values and verify the effective runtime still blocks a valid PII test
+  value in input and redacts an email/telephone number in output. Confirm a
+  Team user without `Manage agents` receives 403 from the Team guardrail API.
+  Repeat one blocked English and Thai high-confidence unsafe instruction and
+  one ordinary safety-policy question to check the intended precision. Finally,
+  confirm **Agent Audit** contains only detector/category/count/outcome metadata
+  and no submitted PII, prompt, or model response.
 
 - Follow `docs/local-knowledge-storage.md`, start MinIO with newly generated
   credentials, and run the backend with `KNOWLEDGE_STORAGE_PROVIDER=minio`.

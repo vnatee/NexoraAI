@@ -138,11 +138,29 @@ backend-enforced workflow contract. This synchronous first slice reads at most
 evaluation, server-validated row JSON, and CSV/Excel export remain future
 phases.
 
-## Proposed — AI guardrails
+## In progress — AI guardrails
 
 Add configurable safeguards around agent input, model output, retrieved content, and tool execution.
 
 Initial discussion scope:
+
+- Implemented first slice: Agent-level provider-independent policy, request
+  size limits, high-confidence prompt-injection blocking, credential/secret
+  input blocking, output redaction/blocking, literal blocked phrases,
+  untrusted Knowledge/attachment/tool-output neutralization, metadata-only
+  audit events, and server-enforced Agent-management authorization. See
+  `docs/ai-guardrails.md`.
+- Implemented second slice: deterministic PII/DLP redaction and policy actions,
+  narrow high-confidence English/Thai content-safety controls, and optional
+  System → Team → Agent policy inheritance where lower levels cannot weaken an
+  enabled parent policy.
+- Next guardrail slices: pluggable semantic multilingual classifiers,
+  groundedness validation, human review, versioned evaluation datasets, wider
+  jurisdiction-specific PII coverage, and production malware scanning.
+
+Deferred after manual acceptance on 2026-09-02. Resume these advanced slices
+later as separate, measured work; the current deterministic Guardrails scope is
+complete for this checkpoint.
 
 - Guardrail levels: system, team, agent, and individual tool.
 - Input controls: prompt-injection detection, sensitive-data detection, topic/policy rules, and request-size limits.

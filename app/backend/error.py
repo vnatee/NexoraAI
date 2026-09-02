@@ -6,6 +6,7 @@ from quart import jsonify
 from core.chat_attachments import ChatAttachmentError
 from core.attachment_retrieval import AttachmentRetrievalError
 from core.effective_access import AccessControlError
+from core.guardrails import GuardrailViolation
 from core.sessionhelper import ConversationIdError
 
 ERROR_MESSAGE = """The app encountered an error processing your request.
@@ -18,7 +19,7 @@ ERROR_MESSAGE_LENGTH = """Your message exceeded the context length limit for thi
 
 
 def error_dict(error: Exception) -> dict:
-    if isinstance(error, (AccessControlError, AttachmentRetrievalError, ChatAttachmentError, ConversationIdError)):
+    if isinstance(error, (AccessControlError, AttachmentRetrievalError, ChatAttachmentError, ConversationIdError, GuardrailViolation)):
         return {"error": str(error)}
     if isinstance(error, APIError) and error.code == "content_filter":
         return {"error": ERROR_MESSAGE_FILTER}
@@ -31,7 +32,7 @@ def error_response(error: Exception, route: str, status_code: int = 500):
     logging.exception("Exception in %s: %s", route, error)
     if isinstance(error, AccessControlError):
         status_code = error.status_code
-    elif isinstance(error, (AttachmentRetrievalError, ChatAttachmentError, ConversationIdError)):
+    elif isinstance(error, (AttachmentRetrievalError, ChatAttachmentError, ConversationIdError, GuardrailViolation)):
         status_code = 400
     if isinstance(error, APIError) and error.code == "content_filter":
         status_code = 400

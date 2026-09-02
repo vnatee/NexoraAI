@@ -6,6 +6,7 @@ from azure.search.documents.models import VectorizedQuery
 from agent_runtime.tools import ToolRegistry, ToolSpec
 from approaches.approach import Approach
 from core.attachment_retrieval import bounded_attachment_evidence, source_display_filename
+from core.guardrails import GuardrailPolicy, sanitize_untrusted_context
 
 
 def register_rag_tool(
@@ -65,6 +66,11 @@ def register_rag_tool(
             for _, citation, text in attachment_evidence
         ]
         serialized_documents = [document.serialize_for_results() for document in documents]
+        for serialized in serialized_documents:
+            if isinstance(serialized.get("content"), str):
+                serialized["content"] = sanitize_untrusted_context(
+                    serialized["content"], GuardrailPolicy()
+                ).text
         if overrides.get("_requirements_evidence_matrix") is True:
             for serialized, document in zip(serialized_documents, documents):
                 serialized["sourcefile"] = source_display_filename(

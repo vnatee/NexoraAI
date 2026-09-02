@@ -11,6 +11,7 @@ from pydantic import ConfigDict, Field, create_model
 
 from agent_runtime.observability import AuditTrail
 from agent_runtime.policy import ToolExecutionPolicy, ToolPolicyViolation
+from core.guardrails import GuardrailPolicy, evaluate_output, sanitize_untrusted_context
 
 ToolHandler = Callable[[dict[str, Any], "ToolRuntimeContext"], Awaitable[Any]]
 
@@ -76,10 +77,12 @@ class ToolRegistry:
         *,
         policy: ToolExecutionPolicy | None = None,
         audit: AuditTrail | None = None,
+        guardrail_policy: GuardrailPolicy | None = None,
     ):
         self.context = context
         self.policy = policy or ToolExecutionPolicy()
         self.audit = audit
+        self.guardrail_policy = guardrail_policy
         self._tools: dict[str, ToolSpec] = {}
         self.execution_log: list[dict[str, Any]] = []
         self._total_calls = 0
@@ -205,6 +208,43 @@ class ToolRegistry:
             output_limit = min(spec.max_output_chars, self.policy.max_output_chars)
             if len(rendered) > output_limit:
                 rendered = rendered[:output_limit] + "\n[tool output truncated]"
+            if self.guardrail_policy and self.guardrail_policy.enabled:
+                untrusted_result = sanitize_untrusted_context(rendered, self.guardrail_policy)
+                output_result = evaluate_output(untrusted_result.text, self.guardrail_policy)
+                guardrail_findings = (*untrusted_result.findings, *output_result.findings)
+                if guardrail_findings and self.audit:
+                    await self.audit.emit(
+                        "guardrail_tool_output_evaluated",
+                        status=(
+                            "denied"
+                            if output_result.blocked
+                            else "redacted"
+                            if untrusted_result.redacted or output_result.redacted
+                            else "warning"
+                        ),
+                        tool_name=spec.name,
+                        source=spec.source,
+                        details={
+                            "direction": "tool_output",
+                            "categories": sorted({item.category for item in guardrail_findings}),
+                            "detector_ids": sorted({item.detector_id for item in guardrail_findings}),
+                            "finding_count": len(guardrail_findings),
+                            "blocked": output_result.blocked,
+                            "redacted": untrusted_result.redacted or output_result.redacted,
+                        },
+                    )
+                rendered = (
+                    json.dumps(
+                        {
+                            "error": "Tool output was blocked because it may contain sensitive information",
+                            "tool": spec.name,
+                            "guardrail_denied": True,
+                        },
+                        ensure_ascii=False,
+                    )
+                    if output_result.blocked
+                    else output_result.text
+                )
             self.execution_log.append(
                 {
                     "name": spec.name,

@@ -411,6 +411,7 @@ export interface AgentConfig {
     image_input_enabled?: boolean;
     document_attachments_enabled?: boolean;
     tool_settings?: AgentToolSettings;
+    guardrails?: AgentGuardrailPolicy;
 
     create_at?: string;
     update_at?: string;
@@ -534,6 +535,27 @@ export interface AgentConf {
     image_input_enabled?: boolean;
     document_attachments_enabled?: boolean;
     tool_settings?: AgentToolSettings;
+    guardrails?: AgentGuardrailPolicy;
+}
+
+export interface AgentGuardrailPolicy {
+    enabled: boolean;
+    max_input_chars: number;
+    prompt_injection_action: "allow" | "warn" | "block";
+    sensitive_input_action: "allow" | "warn" | "block";
+    sensitive_output_action: "allow" | "warn" | "redact" | "block";
+    pii_input_action: "allow" | "warn" | "block";
+    pii_output_action: "allow" | "warn" | "redact" | "block";
+    content_safety_input_action: "allow" | "warn" | "block";
+    content_safety_output_action: "allow" | "warn" | "block";
+    blocked_phrases: string[];
+}
+
+export interface GuardrailSettingsResponse {
+    configured: boolean;
+    policy: AgentGuardrailPolicy;
+    system_policy?: AgentGuardrailPolicy | null;
+    effective_policy?: AgentGuardrailPolicy;
 }
 
 export interface AgentToolSettings {
