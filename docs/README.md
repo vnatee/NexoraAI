@@ -25,6 +25,7 @@ These are advanced topics that are not necessary for a basic deployment.
 - [Local Knowledge object storage](local-knowledge-storage.md)
 - [Local Knowledge vector search](local-vector-search.md)
 - [Local text embeddings](local-embeddings.md)
+- [Usage analytics](usage-analytics.md)
 - [Customizing the app](customization.md)
 - [HTTP Protocol](http_protocol.md)
 - [Data ingestion](data_ingestion.md)

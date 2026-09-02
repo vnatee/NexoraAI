@@ -61,3 +61,40 @@ def test_insert_user_usage_uses_validated_application_user_and_team(monkeypatch)
     stored = collection.insert_one.call_args.args[0]
     assert stored["user"] == {"_id": "user-1", "name": "user@example.com"}
     assert stored["group"] == {"_id": "team-1", "name": "DIG"}
+
+
+def test_insert_user_usage_persists_safe_analytics_dimensions(monkeypatch):
+    collection = MagicMock()
+    monkeypatch.setattr(save_tokens_usage, "usage_collection", collection)
+    monkeypatch.setattr(save_tokens_usage, "summarize_turn", lambda _response: {
+        **_tokens(),
+        "tokens_reasoning_sum": 2,
+        "model_calls": [{
+            "title": "Generate answer",
+            "model": "gpt-4.1-mini",
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "reasoning_tokens": 2,
+            "total_tokens": 17,
+        }],
+    })
+    monkeypatch.setattr(save_tokens_usage, "get_user_by_ad_email", lambda _username: {"_id": "user-1"})
+
+    save_tokens_usage.insert_user_usage(
+        {"preferred_username": "user@example.com"},
+        "raw response that must not be stored",
+        metadata={
+            "agent_id": "agent-1",
+            "agent_name": "Analyst",
+            "provider": "openai",
+            "model": "gpt-4.1-mini",
+            "runtime": "langgraph",
+        },
+    )
+
+    stored = collection.insert_one.call_args.args[0]
+    assert stored["schema_version"] == 2
+    assert stored["metadata"]["agent_id"] == "agent-1"
+    assert stored["metadata"]["provider"] == "openai"
+    assert stored["model_calls"][0]["total_tokens"] == 17
+    assert "raw response" not in str(stored)

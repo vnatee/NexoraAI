@@ -745,6 +745,34 @@ export async function listUsageApi(idToken: string): Promise<any> {
     return dataResponse;
 }
 
+export type UsageAnalyticsParams = {
+    scope: "system" | "team" | "personal";
+    team_id?: string;
+    user_id?: string;
+    agent_id?: string;
+    provider?: string;
+    model?: string;
+    from?: string;
+    to?: string;
+    bucket?: "day" | "week" | "month";
+};
+
+export async function getUsageAnalyticsApi(idToken: string, params: UsageAnalyticsParams): Promise<any> {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+        if (value) query.set(key, value);
+    });
+    const response = await fetch(`/usage-analytics?${query.toString()}`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+    if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Loading usage analytics failed (${response.status})`);
+    }
+    return response.json();
+}
+
 export async function updateUserApi(
     user_id: string,
     username: string,

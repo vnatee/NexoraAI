@@ -1,7 +1,7 @@
 import json
 from collections import defaultdict
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from mongo_table_connecters.mongo_connector import get_database
 from mongo_table_connecters.users import get_user_by_ad_email
 from mongo_table_connecters.teams import get_team_by_id
@@ -140,7 +140,7 @@ def summarize_turn_for_ask(data_str: str):
     }
     return result
 
-def insert_user_usage(auth_claims,response,mode="chat"):
+def insert_user_usage(auth_claims, response, mode="chat", metadata=None):
     if mode == "chat":
         tokens = summarize_turn(response)
     else:
@@ -152,16 +152,36 @@ def insert_user_usage(auth_claims,response,mode="chat"):
         or ""
     )
     application_user = get_user_by_ad_email(username) if username else None
+    display_name = " ".join(
+        str((application_user or {}).get(field) or "").strip()
+        for field in ("first_name", "last_name")
+    ).strip() or username
     team_id = str(auth_claims.get("team_id") or "").strip()
     team = get_team_by_id(team_id) if team_id else None
+    metadata = metadata if isinstance(metadata, dict) else {}
+    model_calls = []
+    for call in tokens.get("model_calls") or []:
+        if not isinstance(call, dict):
+            continue
+        model_calls.append({
+            "stage": str(call.get("title") or "")[:100],
+            "model": str(call.get("model") or metadata.get("model") or "unknown")[:200],
+            "deployment": str(call.get("deployment") or metadata.get("deployment") or "")[:200],
+            "provider": str(metadata.get("provider") or "unknown")[:100],
+            "prompt_tokens": max(0, int(call.get("prompt_tokens") or 0)),
+            "completion_tokens": max(0, int(call.get("completion_tokens") or 0)),
+            "reasoning_tokens": max(0, int(call.get("reasoning_tokens") or 0)),
+            "total_tokens": max(0, int(call.get("total_tokens") or 0)),
+        })
     usage_data = {
         "_id": str(uuid.uuid4()),       
-        "create_at": datetime.utcnow(), 
-        "update_at": datetime.utcnow(),  
+        "schema_version": 2,
+        "create_at": datetime.now(timezone.utc),
+        "update_at": datetime.now(timezone.utc),
         "delete_at": None,
         "user": {
             "_id": str(auth_claims.get("application_user_id") or (application_user or {}).get("_id") or ""),
-            "name": username,
+            "name": display_name,
         },
         "group": (
             {"_id": team_id, "name": str(team.get("name") or team_id)}
@@ -170,7 +190,19 @@ def insert_user_usage(auth_claims,response,mode="chat"):
         ),
         "tokens_prompt_sum": tokens["tokens_prompt_sum"],             
         "tokens_completion_sum": tokens["tokens_completion_sum"],
+        "tokens_reasoning_sum": tokens.get("tokens_reasoning_sum", 0),
         "tokens_total_sum": tokens["tokens_total_sum"],
-        "reference_files": tokens["files"]       
+        "reference_files": tokens["files"],
+        "model_calls": model_calls,
+        "metadata": {
+            "agent_id": str(metadata.get("agent_id") or "")[:100],
+            "agent_name": str(metadata.get("agent_name") or "")[:200],
+            "provider": str(metadata.get("provider") or "unknown")[:100],
+            "model": str(metadata.get("model") or "unknown")[:200],
+            "deployment": str(metadata.get("deployment") or "")[:200],
+            "profile_id": str(metadata.get("profile_id") or "")[:100],
+            "runtime": str(metadata.get("runtime") or "legacy")[:50],
+            "request_mode": str(mode or "chat")[:20],
+        },
     }
     usage_collection.insert_one(usage_data)
