@@ -42,6 +42,27 @@ async def test_usage_analytics_system_scope_requires_permission_and_applies_filt
 
 
 @pytest.mark.asyncio
+async def test_usage_analytics_forwards_document_filters(client, monkeypatch):
+    monkeypatch.setattr(app_module, "_application_user_for_claims", lambda _claims: {"_id": "admin", "active": True})
+    monkeypatch.setattr(app_module, "_require_system_permission", lambda *_args, **_kwargs: None)
+    captured = {}
+
+    def get_analytics(_query, **kwargs):
+        captured.update(kwargs)
+        return _result()
+
+    monkeypatch.setattr(app_module, "get_usage_analytics", get_analytics)
+    response = await client.get(
+        "/usage-analytics?scope=system&profile_id=profile-1&file_type=.pdf&document_scope=team"
+    )
+
+    assert response.status_code == 200
+    assert captured["profile_id"] == "profile-1"
+    assert captured["file_type"] == ".pdf"
+    assert captured["document_scope"] == "team"
+
+
+@pytest.mark.asyncio
 async def test_usage_analytics_team_scope_does_not_fall_back_to_system_access(client, monkeypatch):
     monkeypatch.setattr(app_module, "_application_user_for_claims", lambda _claims: {"_id": "user-1", "active": True})
     monkeypatch.setattr(

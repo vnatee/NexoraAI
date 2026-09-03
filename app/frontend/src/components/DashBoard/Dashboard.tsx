@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
     Alert, Box, Button as MuiButton, Chip, Dialog, DialogContent, DialogTitle,
     FormControl, InputLabel, MenuItem, Paper, Select, Skeleton, Stack, Tab,
@@ -23,6 +23,10 @@ type Breakdown = {
     key: string; label: string; requests: number; input_tokens: number;
     output_tokens: number; reasoning_tokens: number; total_tokens: number;
 };
+type DocumentBreakdown = {
+    key: string; label: string; documents: number; processed_pages: number;
+    processing_duration_ms: number;
+};
 type AnalyticsData = {
     scope: string;
     period: { from: string; to: string; bucket: string };
@@ -33,11 +37,13 @@ type AnalyticsData = {
     };
     timeline: Array<Record<string, number | string>>;
     breakdowns: Record<string, Breakdown[]>;
+    document_breakdowns: Record<string, DocumentBreakdown[]>;
     document_providers: Array<{
         key: string; label: string; documents: number; processed_pages: number;
         processing_duration_ms: number;
     }>;
     filter_options: Record<string, Option[]>;
+    document_filter_options: Record<string, Option[]>;
 };
 
 interface Props {
@@ -84,6 +90,21 @@ function BreakdownTable({ title, rows }: { title: string; rows: Breakdown[] }) {
     );
 }
 
+function DocumentBreakdownTable({ title, rows }: { title: string; rows: DocumentBreakdown[] }) {
+    return (
+        <Paper variant="outlined" sx={{ borderRadius: 3, overflow: "hidden" }}>
+            <Typography sx={{ px: 2.5, py: 2, fontWeight: 800, borderBottom: "1px solid", borderColor: "divider" }}>{title}</Typography>
+            {rows.length === 0 ? <Typography color="text.secondary" sx={{ p: 3 }}>No processing usage in this period.</Typography> : rows.slice(0, 10).map(row => (
+                <Stack key={row.key} direction="row" alignItems="center" spacing={2} sx={{ px: 2.5, py: 1.5, borderBottom: "1px solid", borderColor: "divider" }}>
+                    <Typography flex={1} noWrap title={row.label}>{row.label}</Typography>
+                    <Chip size="small" label={`${number.format(row.documents)} documents`} variant="outlined" />
+                    <Typography minWidth={90} textAlign="right" fontWeight={700}>{number.format(row.processed_pages)} pages</Typography>
+                </Stack>
+            ))}
+        </Paper>
+    );
+}
+
 export const Dashboard: React.FC<Props> = ({
     disabled, dialogRef, className, teamId = "", teamName = "",
     canViewSystem = false, canViewTeam = false
@@ -100,12 +121,18 @@ export const Dashboard: React.FC<Props> = ({
     const [userId, setUserId] = useState("");
     const [provider, setProvider] = useState("");
     const [model, setModel] = useState("");
+    const [profileId, setProfileId] = useState("");
+    const [fileType, setFileType] = useState("");
+    const [documentScope, setDocumentScope] = useState("");
     const [data, setData] = useState<AnalyticsData | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+    const loadSequence = useRef(0);
 
     const load = async () => {
+        const sequence = ++loadSequence.current;
         setLoading(true);
+        setData(null);
         setError("");
         try {
             const token = await getToken(client);
@@ -117,17 +144,32 @@ export const Dashboard: React.FC<Props> = ({
                 from, to, bucket,
                 agent_id: agentId || undefined,
                 provider: provider || undefined,
-                model: model || undefined
+                model: model || undefined,
+                profile_id: profileId || undefined,
+                file_type: fileType || undefined,
+                document_scope: documentScope || undefined
             });
+            if (sequence !== loadSequence.current) return;
             setData(result);
         } catch (reason) {
+            if (sequence !== loadSequence.current) return;
             setError(reason instanceof Error ? reason.message : "Unable to load usage analytics");
         } finally {
-            setLoading(false);
+            if (sequence === loadSequence.current) setLoading(false);
         }
     };
 
-    useEffect(() => { if (open) void load(); }, [open, scope, from, to, bucket, selectedTeamId, userId, agentId, provider, model]);
+    useEffect(() => {
+        const scopeIsAllowed = scope === "personal" || (scope === "system" && canViewSystem) || (scope === "team" && canViewTeam && Boolean(teamId));
+        if (scopeIsAllowed) return;
+        loadSequence.current += 1;
+        setScope("personal");
+        setSelectedTeamId("");
+        setUserId("");
+        setData(null);
+    }, [scope, canViewSystem, canViewTeam, teamId]);
+
+    useEffect(() => { if (open) void load(); }, [open, scope, from, to, bucket, selectedTeamId, userId, agentId, provider, model, profileId, fileType, documentScope]);
 
     const overview = data?.overview ?? {
         requests: 0, input_tokens: 0, output_tokens: 0, reasoning_tokens: 0,
@@ -136,19 +178,26 @@ export const Dashboard: React.FC<Props> = ({
     const series = useMemo(() => tab === "tokens"
         ? [{ dataKey: "input_tokens", label: "Input", color: "#2563eb" }, { dataKey: "output_tokens", label: "Output", color: "#7c3aed" }]
         : [{ dataKey: "processed_pages", label: "Processed pages", color: "#0f766e" }], [tab]);
-    const options = (kind: string) => data?.filter_options?.[kind] ?? [];
+    const options = (kind: string) => (tab === "documents" ? data?.document_filter_options?.[kind] : data?.filter_options?.[kind]) ?? [];
+    const hasElevatedAnalyticsAccess = canViewSystem || canViewTeam;
+    const dashboardLabel = hasElevatedAnalyticsAccess ? "Usage Analytics" : "My Usage";
+    const dialogTitle = scope === "personal" ? "My Usage" : "Usage Analytics";
 
     return (
         <Box>
             <div className={`${styles.container} ${className ?? ""}`} ref={dialogRef}>
-                <Button icon={<AnalyticsOutlinedIcon />} className="buttonText" onClick={() => setOpen(true)} disabled={disabled}>Usage Analytics</Button>
+                <Button icon={<AnalyticsOutlinedIcon />} className="buttonText" onClick={() => setOpen(true)} disabled={disabled}>{dashboardLabel}</Button>
             </div>
             <Dialog open={open} onClose={() => setOpen(false)} maxWidth={false} PaperProps={{ sx: { width: "94vw", height: "92vh", borderRadius: 3 } }}>
                 <DialogTitle sx={{ borderBottom: "1px solid", borderColor: "divider", py: 2.25 }}>
                     <Stack direction="row" alignItems="center" justifyContent="space-between">
                         <Box>
-                            <Typography variant="h5" fontWeight={850}>Usage Analytics</Typography>
-                            <Typography variant="body2" color="text.secondary">LLM and document activity without storing prompt or response content.</Typography>
+                            <Typography variant="h5" fontWeight={850}>{dialogTitle}</Typography>
+                            <Typography variant="body2" color="text.secondary">
+                                {scope === "personal"
+                                    ? "Your LLM and document activity without storing prompt or response content."
+                                    : "LLM and document activity without storing prompt or response content."}
+                            </Typography>
                         </Box>
                         <MuiButton startIcon={<RefreshIcon />} onClick={() => void load()} disabled={loading}>Refresh</MuiButton>
                     </Stack>
@@ -157,30 +206,50 @@ export const Dashboard: React.FC<Props> = ({
                     <Stack spacing={3}>
                         <Paper variant="outlined" sx={{ p: 2, borderRadius: 3 }}>
                             <Stack direction="row" spacing={1.5} flexWrap="wrap" useFlexGap>
-                                <FormControl size="small" sx={{ minWidth: 160 }}>
-                                    <InputLabel>View</InputLabel>
-                                    <Select value={scope} label="View" onChange={event => {
-                                        setScope(event.target.value as UsageAnalyticsParams["scope"]);
-                                        setSelectedTeamId("");
-                                        setUserId("");
-                                    }}>
-                                        {canViewSystem && <MenuItem value="system">Entire system</MenuItem>}
-                                        {canViewTeam && teamId && <MenuItem value="team">Team: {teamName || teamId}</MenuItem>}
-                                        <MenuItem value="personal">My usage</MenuItem>
-                                    </Select>
-                                </FormControl>
+                                {hasElevatedAnalyticsAccess ? (
+                                    <FormControl size="small" sx={{ minWidth: 160 }}>
+                                        <InputLabel>View</InputLabel>
+                                        <Select value={scope} label="View" onChange={event => {
+                                            setScope(event.target.value as UsageAnalyticsParams["scope"]);
+                                            setSelectedTeamId("");
+                                            setUserId("");
+                                        }}>
+                                            {canViewSystem && <MenuItem value="system">Entire system</MenuItem>}
+                                            {canViewTeam && teamId && <MenuItem value="team">Team: {teamName || teamId}</MenuItem>}
+                                            <MenuItem value="personal">My usage</MenuItem>
+                                        </Select>
+                                    </FormControl>
+                                ) : (
+                                    <Chip label="My usage" color="primary" variant="outlined" />
+                                )}
                                 <TextField size="small" type="date" label="From" value={from} onChange={event => setFrom(event.target.value)} InputLabelProps={{ shrink: true }} />
                                 <TextField size="small" type="date" label="To" value={to} onChange={event => setTo(event.target.value)} InputLabelProps={{ shrink: true }} />
                                 <FormControl size="small" sx={{ minWidth: 110 }}><InputLabel>Bucket</InputLabel><Select value={bucket} label="Bucket" onChange={event => setBucket(event.target.value as typeof bucket)}><MenuItem value="day">Daily</MenuItem><MenuItem value="week">Weekly</MenuItem><MenuItem value="month">Monthly</MenuItem></Select></FormControl>
                                 {scope === "system" && <FormControl size="small" sx={{ minWidth: 150 }}><InputLabel>Team</InputLabel><Select value={selectedTeamId} label="Team" onChange={event => { setSelectedTeamId(event.target.value); setUserId(""); }}><MenuItem value="">All teams</MenuItem>{options("teams").map(item => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}</Select></FormControl>}
                                 {scope !== "personal" && <FormControl size="small" sx={{ minWidth: 150 }}><InputLabel>User</InputLabel><Select value={userId} label="User" onChange={event => setUserId(event.target.value)}><MenuItem value="">All users</MenuItem>{options("users").map(item => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}</Select></FormControl>}
-                                <FormControl size="small" sx={{ minWidth: 150 }}><InputLabel>Agent</InputLabel><Select value={agentId} label="Agent" onChange={event => setAgentId(event.target.value)}><MenuItem value="">All agents</MenuItem>{options("agents").map(item => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}</Select></FormControl>
+                                {tab === "tokens" && <FormControl size="small" sx={{ minWidth: 150 }}><InputLabel>Agent</InputLabel><Select value={agentId} label="Agent" onChange={event => setAgentId(event.target.value)}><MenuItem value="">All agents</MenuItem>{options("agents").map(item => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}</Select></FormControl>}
                                 <FormControl size="small" sx={{ minWidth: 150 }}><InputLabel>Provider</InputLabel><Select value={provider} label="Provider" onChange={event => setProvider(event.target.value)}><MenuItem value="">All providers</MenuItem>{options("providers").map(item => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}</Select></FormControl>
-                                <FormControl size="small" sx={{ minWidth: 170 }}><InputLabel>Model</InputLabel><Select value={model} label="Model" onChange={event => setModel(event.target.value)}><MenuItem value="">All models</MenuItem>{options("models").map(item => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}</Select></FormControl>
+                                {tab === "tokens" ? (
+                                    <FormControl size="small" sx={{ minWidth: 170 }}><InputLabel>Model</InputLabel><Select value={model} label="Model" onChange={event => setModel(event.target.value)}><MenuItem value="">All models</MenuItem>{options("models").map(item => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}</Select></FormControl>
+                                ) : (
+                                    <>
+                                        <FormControl size="small" sx={{ minWidth: 170 }}><InputLabel>Profile</InputLabel><Select value={profileId} label="Profile" onChange={event => setProfileId(event.target.value)}><MenuItem value="">All profiles</MenuItem>{options("profiles").map(item => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}</Select></FormControl>
+                                        <FormControl size="small" sx={{ minWidth: 140 }}><InputLabel>File type</InputLabel><Select value={fileType} label="File type" onChange={event => setFileType(event.target.value)}><MenuItem value="">All file types</MenuItem>{options("file_types").map(item => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}</Select></FormControl>
+                                        <FormControl size="small" sx={{ minWidth: 140 }}><InputLabel>Document scope</InputLabel><Select value={documentScope} label="Document scope" onChange={event => setDocumentScope(event.target.value)}><MenuItem value="">All scopes</MenuItem>{options("scopes").map(item => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}</Select></FormControl>
+                                    </>
+                                )}
                             </Stack>
                         </Paper>
                         {error && <Alert severity="error">{error}</Alert>}
-                        <Tabs value={tab} onChange={(_, value) => setTab(value)}><Tab value="tokens" label="LLM tokens" /><Tab value="documents" label="Document processing" /></Tabs>
+                        <Tabs value={tab} onChange={(_, value) => {
+                            setTab(value);
+                            setAgentId("");
+                            setProvider("");
+                            setModel("");
+                            setProfileId("");
+                            setFileType("");
+                            setDocumentScope("");
+                        }}><Tab value="tokens" label="LLM tokens" /><Tab value="documents" label="Document processing" /></Tabs>
                         <Stack direction="row" gap={2} flexWrap="wrap">
                             {tab === "tokens" ? <>
                                 <MetricCard icon={<AutoAwesomeOutlinedIcon />} label="Requests" value={overview.requests} loading={loading} />
@@ -201,13 +270,17 @@ export const Dashboard: React.FC<Props> = ({
                                 <BreakdownTable title="Models" rows={data?.breakdowns?.models ?? []} />
                                 <BreakdownTable title="Agents" rows={data?.breakdowns?.agents ?? []} />
                                 <BreakdownTable title="Teams" rows={data?.breakdowns?.teams ?? []} />
-                                <BreakdownTable title="Users" rows={data?.breakdowns?.users ?? []} />
+                                {scope !== "personal" && <BreakdownTable title="Users" rows={data?.breakdowns?.users ?? []} />}
                             </Box>
                         ) : (
-                            <Paper variant="outlined" sx={{ borderRadius: 3, overflow: "hidden" }}>
-                                <Typography sx={{ px: 2.5, py: 2, fontWeight: 800 }}>Processing providers</Typography>
-                                {(data?.document_providers ?? []).map(row => <Stack key={row.key} direction="row" sx={{ px: 2.5, py: 1.5, borderTop: "1px solid", borderColor: "divider" }}><Typography flex={1}>{row.label}</Typography><Typography>{number.format(row.documents)} documents · {number.format(row.processed_pages)} pages</Typography></Stack>)}
-                            </Paper>
+                            <Box display="grid" gridTemplateColumns={{ xs: "1fr", lg: "1fr 1fr" }} gap={2}>
+                                <DocumentBreakdownTable title="Processing providers" rows={data?.document_breakdowns?.providers ?? data?.document_providers ?? []} />
+                                <DocumentBreakdownTable title="Processing profiles" rows={data?.document_breakdowns?.profiles ?? []} />
+                                <DocumentBreakdownTable title="File types" rows={data?.document_breakdowns?.file_types ?? []} />
+                                <DocumentBreakdownTable title="Document scopes" rows={data?.document_breakdowns?.scopes ?? []} />
+                                {scope === "system" && <DocumentBreakdownTable title="Teams" rows={data?.document_breakdowns?.teams ?? []} />}
+                                {scope !== "personal" && <DocumentBreakdownTable title="Users" rows={data?.document_breakdowns?.users ?? []} />}
+                            </Box>
                         )}
                     </Stack>
                 </DialogContent>

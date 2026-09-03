@@ -1,8 +1,10 @@
 import { Box, Button, Chip, Tooltip, Typography } from "@mui/material";
+import KeyboardArrowDownRoundedIcon from "@mui/icons-material/KeyboardArrowDownRounded";
 
 type AgentSelectionSummaryProps = {
     agentName?: string;
     modelName?: string;
+    teamName?: string;
     selectedScopes: string[];
     selectedDataGroups: string[];
     onClick: (element: HTMLButtonElement) => void;
@@ -13,6 +15,7 @@ const scopeLabel = (scope: string) => scope.charAt(0).toUpperCase() + scope.slic
 export const AgentSelectionSummary = ({
     agentName,
     modelName,
+    teamName,
     selectedScopes,
     selectedDataGroups,
     onClick
@@ -24,21 +27,23 @@ export const AgentSelectionSummary = ({
     const visibleEntries = entries.slice(0, 3);
     const hiddenCount = Math.max(entries.length - visibleEntries.length, 0);
     const fullSelection = entries.length > 0 ? entries.map(entry => entry.label).join(", ") : "No data selected";
+    const contextDescription = `${teamName ? `Team ${teamName}. ` : ""}Data scope ${fullSelection}`;
 
     return (
-        <Tooltip title={`Data scope: ${fullSelection}`} arrow placement="bottom-start">
+        <Tooltip title={contextDescription} arrow placement="bottom-start">
             <Button
                 variant="outlined"
                 size="small"
                 onClick={event => onClick(event.currentTarget)}
-                aria-label={`${agentName ?? "Select Agent"}. Model ${modelName ?? "not selected"}. Data scope ${fullSelection}`}
+                aria-label={`${agentName ?? "Select Agent"}. Model ${modelName ?? "not selected"}. ${contextDescription}`}
                 sx={{
                     textTransform: "none",
                     borderRadius: 2.5,
                     px: 1.25,
                     py: 0.7,
                     minHeight: 56,
-                    maxWidth: { xs: 300, sm: 520 },
+                    width: "100%",
+                    maxWidth: { xs: "100%", sm: 680 },
                     justifyContent: "flex-start",
                     color: "text.primary",
                     borderColor: "rgba(100, 116, 139, 0.28)",
@@ -51,7 +56,7 @@ export const AgentSelectionSummary = ({
                     }
                 }}
             >
-                <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-start", minWidth: 0, gap: 0.55 }}>
+                <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-start", minWidth: 0, flex: 1, gap: 0.55 }}>
                     <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.75, minWidth: 0, maxWidth: "100%" }}>
                         <Typography component="span" variant="body2" fontWeight={600} noWrap>
                             🤖 {agentName ?? "Select Agent"}
@@ -65,8 +70,21 @@ export const AgentSelectionSummary = ({
 
                     {agentName && (
                         <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, minWidth: 0, maxWidth: "100%", overflow: "hidden" }}>
+                            {teamName && (
+                                <Chip
+                                    label={`Team: ${teamName}`}
+                                    size="small"
+                                    variant="outlined"
+                                    sx={{
+                                        height: 20,
+                                        maxWidth: 150,
+                                        fontSize: "0.66rem",
+                                        "& .MuiChip-label": { px: 0.8, overflow: "hidden", textOverflow: "ellipsis" }
+                                    }}
+                                />
+                            )}
                             <Typography component="span" variant="caption" color="text.secondary" sx={{ fontSize: "0.66rem", flexShrink: 0 }}>
-                                Data scope
+                                Data
                             </Typography>
                             {visibleEntries.length === 0 ? (
                                 <Chip
@@ -102,6 +120,12 @@ export const AgentSelectionSummary = ({
                             )}
                         </Box>
                     )}
+                </Box>
+                <Box sx={{ display: "flex", alignItems: "center", pl: 0.75, color: "text.secondary", flexShrink: 0 }}>
+                    <Typography component="span" variant="caption" sx={{ display: { xs: "none", sm: "inline" } }}>
+                        Change
+                    </Typography>
+                    <KeyboardArrowDownRoundedIcon fontSize="small" />
                 </Box>
             </Button>
         </Tooltip>

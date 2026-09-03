@@ -23,16 +23,23 @@ Open **Usage Analytics** from the Chat navigation. The first slice provides:
 - LLM request, input-token, output-token, reasoning-token, and total-token
   counts;
 - token breakdowns by model, provider, Agent, Team, and user;
-- document and processed-page counts by document-processing provider;
+- document and processed-page counts with breakdowns by processing provider,
+  profile, file type, and document scope;
+- document-processing breakdowns by user for authorized Team/System views and
+  by Team for the System view;
 - System, Team, and Personal views;
-- date range (maximum 366 days), daily/weekly/monthly buckets, and Team, user,
-  Agent, provider, and model filters.
+- date range (maximum 366 days) and daily/weekly/monthly buckets;
+- Team/user filters where authorized, Agent/model filters for LLM usage, and
+  provider/profile/file-type/document-scope filters for document processing.
 
 Records created before this feature remain visible, but dimensions that were
 not stored historically appear as `Unknown`. Legacy Azure Document
 Intelligence page records are included in System and Team summaries when they
 can be scoped safely. They are excluded from Personal reports because the old
-schema stored an email rather than an immutable application user ID.
+schema stored an email rather than an immutable application user ID. In
+authorized aggregate breakdowns, dimensions that cannot be attributed safely
+are labeled `Unknown / legacy`; the application does not infer an identity from
+the historical email value.
 
 ## Validation
 
@@ -41,8 +48,12 @@ schema stored an email rather than an immutable application user ID.
 3. Send Chat and Ask requests through at least two Agents/models.
 4. Upload and index documents through two configured processing profiles.
 5. Open **Usage Analytics**, change the View and date bucket, and verify the
-   totals and breakdowns.
-6. Verify a Team viewer cannot request another Team, and a normal user selecting
+   LLM totals and breakdowns.
+6. Open **Document processing** and verify provider, profile, file type, and
+   document-scope filters. In System view verify Team and User breakdowns; in
+   Team view verify only User; in My usage verify neither User nor Team is
+   shown.
+7. Verify a Team viewer cannot request another Team, and a normal user selecting
    My usage sees only their own records.
 
 Focused automated tests:
