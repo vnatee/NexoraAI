@@ -237,6 +237,10 @@ Important design and operational requirements:
   administration functions remain available after expiry.
 - License ceilings and usage quotas both apply. For example, a license may
   allow 100 users while Team token quotas independently control consumption.
+- Subscription editions may provide Team default per-member allowances, but
+  contractual enforcement must preserve independent Team totals and
+  `(team_id, user_id)` overrides. A member override replaces the Team default;
+  it does not create capacity beyond the licensed System or Team ceiling.
 - Do not treat the current asynchronous usage collection as a billing ledger.
   Contractual consumption needs durable idempotent usage events, reservations
   or reconciliation, immutable period boundaries, and explicit handling of
@@ -257,14 +261,19 @@ Important design and operational requirements:
 
 Recommended delivery order:
 
-1. Versioned entitlement schema and in-process evaluator with deterministic
+1. Finish the durable metering foundation with provider reconciliation,
+   per-model-call/sub-agent and embedding attribution, document-page
+   reservations, and immutable billing-period rollups. Request-level LLM
+   reservations, idempotent LLM/document events, and threshold/block audit
+   events are implemented and validated on `feature/durable-usage-metering`.
+2. Versioned entitlement schema and in-process evaluator with deterministic
    tests; no enforcement yet.
-2. Signed offline license verification, stable installation identity, secure
+3. Signed offline license verification, stable installation identity, secure
    persistence, and System Admin status/import UI.
-3. Feature gates and capacity ceilings enforced server-side, starting in audit
+4. Feature gates and capacity ceilings enforced server-side, starting in audit
    mode before blocking production operations.
-4. Grace/expiry/renewal/re-host workflows and audit events.
-5. Optional activation/revocation service, customer portal integration, and
+5. Grace/expiry/renewal/re-host workflows and audit events.
+6. Optional activation/revocation service, customer portal integration, and
    subscription SKU catalog.
 
 ## Discussion order

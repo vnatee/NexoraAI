@@ -695,6 +695,7 @@ const Chat = () => {
             ]);
 
             const request: ChatAppRequest = {
+                usage_request_id: crypto.randomUUID(),
                 messages: [...messages, { content: question, role: "user" }],
                 ...(attachments.length ? { attachments } : {}),
                 ...(documents.length ? { document_attachment_ids: documents.map(document => document.id) } : {}),

@@ -65,6 +65,7 @@ class UsageQuotaPolicy:
     monthly_llm_tokens: int = 0
     monthly_document_pages: int = 0
     llm_requests_per_minute: int = 0
+    monthly_llm_tokens_per_user: int = 0
     llm_token_rules: tuple[LLMTokenQuotaRule, ...] = ()
 
     @classmethod
@@ -91,6 +92,7 @@ class UsageQuotaPolicy:
         return cls(
             enabled=data.get("enabled") is True,
             monthly_llm_tokens=limit("monthly_llm_tokens"),
+            monthly_llm_tokens_per_user=limit("monthly_llm_tokens_per_user"),
             monthly_document_pages=limit("monthly_document_pages"),
             llm_requests_per_minute=limit("llm_requests_per_minute"),
             llm_token_rules=rules,
@@ -100,6 +102,7 @@ class UsageQuotaPolicy:
         return {
             "enabled": self.enabled,
             "monthly_llm_tokens": self.monthly_llm_tokens,
+            "monthly_llm_tokens_per_user": self.monthly_llm_tokens_per_user,
             "monthly_document_pages": self.monthly_document_pages,
             "llm_requests_per_minute": self.llm_requests_per_minute,
             "llm_token_rules": [rule.serialize() for rule in self.llm_token_rules],
@@ -127,6 +130,7 @@ def effective_quota_policy(*policies: UsageQuotaPolicy | None) -> UsageQuotaPoli
     return UsageQuotaPolicy(
         enabled=True,
         monthly_llm_tokens=strictest("monthly_llm_tokens"),
+        monthly_llm_tokens_per_user=strictest("monthly_llm_tokens_per_user"),
         monthly_document_pages=strictest("monthly_document_pages"),
         llm_requests_per_minute=strictest("llm_requests_per_minute"),
         llm_token_rules=tuple(strictest_rules.values()),

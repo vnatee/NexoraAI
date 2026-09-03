@@ -148,6 +148,24 @@ export async function updateUserQuotaSettings(policy: UsageQuotaPolicy, idToken:
     return data;
 }
 
+export async function getTeamUserQuotaSettings(idToken: string, teamId: string, userId: string): Promise<UsageQuotaSettingsResponse> {
+    const response = await fetch(`/teams/${encodeURIComponent(teamId)}/users/${encodeURIComponent(userId)}/quota-settings`, { headers: await getHeaders(idToken) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to load Team member quota settings");
+    return data;
+}
+
+export async function updateTeamUserQuotaSettings(policy: UsageQuotaPolicy, idToken: string, teamId: string, userId: string): Promise<UsageQuotaSettingsResponse> {
+    const response = await fetch(`/teams/${encodeURIComponent(teamId)}/users/${encodeURIComponent(userId)}/quota-settings`, {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(policy)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to save Team member quota settings");
+    return data;
+}
+
 export async function configApi(): Promise<Config> {
     const response = await fetch(`${BACKEND_URI}/config`, {
         method: "GET"

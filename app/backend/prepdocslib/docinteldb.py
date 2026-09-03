@@ -38,12 +38,14 @@ def insert_document_processing_usage(
     page_count: int,
     file_type: str,
     duration_ms: int,
-) -> None:
+    event_id: str = "",
+) -> dict:
     """Persist safe, provider-neutral document processing telemetry."""
     now = datetime.now(timezone.utc)
-    processing_usage_collection.insert_one({
-        "_id": str(uuid.uuid4()),
-        "schema_version": 1,
+    usage_event_id = str(event_id or uuid.uuid4())[:100]
+    document = {
+        "_id": usage_event_id,
+        "schema_version": 2,
         "create_at": now,
         "update_at": now,
         "delete_at": None,
@@ -58,4 +60,8 @@ def insert_document_processing_usage(
         "page_count": max(0, int(page_count or 0)),
         "duration_ms": max(0, int(duration_ms or 0)),
         "status": "completed",
-    })
+    }
+    result = processing_usage_collection.update_one(
+        {"_id": usage_event_id}, {"$setOnInsert": document}, upsert=True
+    )
+    return {"usage_event_id": usage_event_id, "inserted": result.upserted_id is not None}

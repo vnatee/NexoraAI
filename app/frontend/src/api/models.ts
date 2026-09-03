@@ -115,6 +115,7 @@ export type ChatAppRequestContext = {
 };
 
 export type ChatAppRequest = {
+    usage_request_id?: string;
     messages: ResponseMessage[];
     attachments?: ChatAttachmentInput[];
     document_attachment_ids?: string[];
@@ -571,6 +572,7 @@ export interface LLMTokenQuotaRule {
 export interface UsageQuotaPolicy {
     enabled: boolean;
     monthly_llm_tokens: number;
+    monthly_llm_tokens_per_user: number;
     monthly_document_pages: number;
     llm_requests_per_minute: number;
     llm_token_rules: LLMTokenQuotaRule[];
@@ -580,8 +582,32 @@ export interface UsageQuotaSettingsResponse {
     configured: boolean;
     policy: UsageQuotaPolicy;
     effective_policy?: UsageQuotaPolicy;
+    member_limit_source?: "" | "team_default" | "override";
+    effective_member_limit?: number;
     usage?: { monthly_llm_tokens: number; monthly_document_pages: number };
     rule_usage?: Array<Pick<LLMTokenQuotaRule, "dimension" | "target_id" | "workload"> & { monthly_tokens: number }>;
+    status?: Array<{
+        kind: string;
+        label: string;
+        used: number;
+        reserved: number;
+        limit: number;
+        percentage: number;
+        severity: "normal" | "warning" | "critical" | "exceeded";
+    }>;
+    audit_events?: Array<{
+        _id: string;
+        event_type: "quota_threshold" | "quota_blocked" | "metering_failed";
+        level: "system" | "team" | "user" | "team_user";
+        subject_id: string;
+        limit: number;
+        projected: number;
+        threshold: number;
+        created_at: string;
+        provider_id?: string;
+        profile_id?: string;
+        workload?: string;
+    }>;
 }
 
 export interface AgentToolSettings {
