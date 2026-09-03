@@ -175,6 +175,7 @@ async def test_cancelled_ingestion_releases_owned_job(monkeypatch):
             return CancelledFileClient()
 
     monkeypatch.setattr(app_module, "claim_ingestion_job", lambda *args, **kwargs: job)
+    monkeypatch.setattr(app_module, "check_document_quota", lambda *_args: None)
     monkeypatch.setattr(
         app_module,
         "release_ingestion_job",

@@ -89,7 +89,8 @@ async def test_app_exposes_safe_agent_llm_profiles(monkeypatch, minimal_env):
             {
                 "id": "system",
                 "label": "System default",
-                "provider": "azure_openai",
+                    "provider": "azure_openai",
+                    "quotaProviderId": "configured:azure_openai",
                     "model": "gpt-4.1-mini",
                     "supportsTools": True,
                     "supportsVision": False,
@@ -97,7 +98,8 @@ async def test_app_exposes_safe_agent_llm_profiles(monkeypatch, minimal_env):
             {
                 "id": "local-qwen",
                 "label": "Local Qwen",
-                "provider": "openai_compatible",
+                    "provider": "openai_compatible",
+                    "quotaProviderId": "configured:openai_compatible",
                     "model": "qwen3",
                     "supportsTools": True,
                     "supportsVision": False,

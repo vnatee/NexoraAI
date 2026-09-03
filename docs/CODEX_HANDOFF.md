@@ -1,6 +1,6 @@
 # Codex handoff — NexoraAI
 
-Last updated: 2026-09-02 UTC
+Last updated: 2026-09-03 UTC
 
 This document replaces a raw chat transcript as the engineering handoff. It
 captures the decisions and evidence needed to continue without storing copied
@@ -9,7 +9,7 @@ logs, credentials, attachments, or repetitive conversational text.
 ## Repository state
 
 - Workspace: `/workspaces/NexoraAI`
-- Branch: `feature/usage-analytics-dashboard`
+- Branch: `feature/usage-quotas`
 - Base checkpoint: `09eef3e feat: add private chat document workflows`.
 - Implementation checkpoint: `eff68fb feat: recover interrupted document
   processing`. It adds private Chat document extraction recovery and managed OCR
@@ -956,6 +956,53 @@ described below.
   yielded no text sections.
 
 See `docs/usage-analytics.md`.
+
+### Usage quotas — current working tree
+
+- Usage Analytics was checkpointed as `f053fa0 feat: add scoped usage analytics
+  dashboard`; the product owner manually accepted it before this slice.
+- Provider-independent quota policies can be stored at System, Team, and User
+  levels. Enabled limits merge System → Team → User using the smallest non-zero
+  value; zero means unlimited at that level.
+- The first enforceable limits are monthly LLM tokens, monthly processed
+  document pages, and LLM requests per minute. Each hierarchy level is compared
+  against usage in its own scope. Requests-per-minute uses atomic MongoDB
+  fixed-window counters.
+- Optional monthly token rules can target a configured provider or exact model
+  profile and can apply to all requests, Chat, or Ask. Stable provider/profile
+  IDs are used for enforcement; labels are snapshots only. All matching rules
+  must pass, while the Overall limit automatically covers newly added models.
+  Deleted provider/model targets remain visible as unavailable rules until an
+  administrator removes them.
+- Quotas are checked before Chat/Ask provider calls and before document
+  extraction. A reached LLM quota returns 429; a reached document quota fails
+  the persistent ingestion job before invoking its parser.
+- System Admins configure System and per-User overrides under **Usage Quotas**.
+  Team administrators with `Manage team permissions` configure their Team
+  policy. To avoid a hidden Administration-only route, System Admins can switch
+  **Entire system / Current team / Specific user** from the same page even when
+  Team settings is open. Current monthly usage is shown beside each configured
+  limit.
+- Monthly usage currently counts completed persisted events. One in-flight LLM
+  response or document can therefore finish slightly above the boundary.
+  Advance reservations, warning thresholds, approval workflows, notifications,
+  pricing/cost budgets, and audit history remain follow-up work.
+- Token totals include input, output, and reasoning tokens. Provider/model
+  attribution applies to newly metered selected request profiles; old events
+  remain in Overall totals, and exact per-call attribution for multi-model
+  sub-agent runs and embeddings remains follow-up work.
+- Subscription licensing is intentionally designed as a separate entitlement
+  layer rather than being embedded in quota records. The approved direction for
+  signed offline licenses, one-year terms, feature/capacity claims, grace and
+  renewal behavior is recorded in `docs/product-backlog.md`.
+- Focused quota/config/analytics/ingestion validation passed (`55 passed`), the
+  complete service-free suite passed (`748 passed, 1 deselected`), frontend
+  TypeScript validation passed, and the memory-safe production build passed.
+  A broader run reached `748 passed` with the known unrelated
+  `data_integration` failure caused by a repository PDF fixture that yields no
+  local text sections.
+
+See `docs/usage-quotas.md`.
 
 ## Other next work
 

@@ -199,6 +199,74 @@ Initial discussion scope:
 - Presentation: summary KPIs, trends, drill-down filters, CSV export, and configurable date ranges.
 - Privacy: user identifiers, prompt/content exclusion, aggregation thresholds, and retention/deletion policies.
 
+## Approved direction — Subscription licensing and entitlements
+
+Add commercial licensing after usage metering and quota behavior are stable.
+Licensing must answer what a deployment is entitled to use; quota policy must
+continue to answer how much an entitled System, Team, or User may consume.
+They are separate layers and a license must never silently rewrite customer
+quota configuration.
+
+Planned commercial capabilities:
+
+- Time-bound subscriptions such as one year, with `not_before`, `expires_at`,
+  renewal, configurable grace period, and explicit active/grace/expired/
+  revoked/invalid states.
+- Edition and feature entitlements for limits such as users, Teams, Agents,
+  managed providers/models, OCR engines, LangGraph, MCP/tools, dashboards,
+  API access, HA replicas, and local/cloud deployment modes.
+- Signed license key or license document import for offline/on-premises
+  deployments, plus optional online activation and revocation for connected
+  deployments. Use asymmetric signatures: the product contains only the
+  verification public key; the private signing key remains in the vendor
+  licensing service.
+- Stable claims including license/customer/product identifiers, edition,
+  validity, feature flags, capacity ceilings, deployment binding policy, issuer,
+  schema version, and key ID for signing-key rotation.
+- A backend-authoritative entitlement service consumed consistently by routes,
+  workers, and the Portal. Hiding a disabled feature in the UI is not an
+  authorization boundary.
+- A System Administration license page showing edition, status, expiry,
+  entitled features/capacities, deployment identity, last validation, and safe
+  renewal/import actions. Never log or expose the raw license key.
+
+Important design and operational requirements:
+
+- Expiry should enter a documented grace/read-only mode and must not delete or
+  corrupt customer data. Define which security, backup/export, and
+  administration functions remain available after expiry.
+- License ceilings and usage quotas both apply. For example, a license may
+  allow 100 users while Team token quotas independently control consumption.
+- Do not treat the current asynchronous usage collection as a billing ledger.
+  Contractual consumption needs durable idempotent usage events, reservations
+  or reconciliation, immutable period boundaries, and explicit handling of
+  provider usage corrections and telemetry-write failures.
+- New providers/models inherit the Overall operational quota, but their use may
+  also require a provider/model/feature entitlement from the license.
+- Support HA without consuming a license per restart. If deployment binding is
+  used, bind to a stable installation ID rather than ephemeral container or
+  host identifiers, and provide a controlled re-host procedure.
+- Define clock rollback/tamper handling, signing-key rotation, offline
+  revocation limits, backup/restore behavior, audit metadata, and a recovery
+  path when a valid license cannot be read.
+- Usage reporting or online activation must disclose exactly what telemetry
+  leaves the deployment. Offline installations must not require hidden
+  phone-home behavior.
+- Do not store licensing private keys, customer credentials, raw prompts, or
+  tool output in this repository or application audit records.
+
+Recommended delivery order:
+
+1. Versioned entitlement schema and in-process evaluator with deterministic
+   tests; no enforcement yet.
+2. Signed offline license verification, stable installation identity, secure
+   persistence, and System Admin status/import UI.
+3. Feature gates and capacity ceilings enforced server-side, starting in audit
+   mode before blocking production operations.
+4. Grace/expiry/renewal/re-host workflows and audit events.
+5. Optional activation/revocation service, customer portal integration, and
+   subscription SKU catalog.
+
 ## Discussion order
 
 Recommended order when these items are scheduled:

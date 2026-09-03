@@ -56,6 +56,16 @@ from mongo_table_connecters.guardrail_settings import (
     get_guardrail_settings,
     save_guardrail_settings,
 )
+from mongo_table_connecters.usage_quotas import (
+    check_and_record_request,
+    check_document_quota,
+    current_llm_rule_usages,
+    current_usage,
+    effective_quota_settings,
+    get_quota_settings,
+    save_quota_settings,
+)
+from core.usage_quotas import UsageQuotaPolicy
 from mongo_table_connecters.agents import insert_agent, get_agent_by_id, update_agent, delete_agent_by_id
 from mongo_table_connecters.llm_providers import (
     get_llm_provider,
@@ -482,6 +492,9 @@ def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> N
     overrides["_llm_model"] = profile.settings.model
     overrides["_llm_deployment"] = profile.settings.deployment
     overrides["_llm_profile_id"] = profile_id
+    overrides["_llm_provider_id"] = (
+        profile.managed_provider_id or f"configured:{profile.settings.provider.value}"
+    )
     overrides["_llm_supports_tools"] = profile.supports_tools
     overrides["_llm_supports_vision"] = profile.supports_vision
     overrides["_rag_vision_enabled"] = current_app.config.get(CONFIG_KNOWLEDGE_VISION_ENABLED, False)
@@ -521,7 +534,9 @@ def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> N
     }
 
 
-def _usage_metadata(context: dict[str, Any], agent_id: str | None) -> dict[str, str]:
+def _usage_metadata(
+    context: dict[str, Any], agent_id: str | None, workload: str = "chat"
+) -> dict[str, str]:
     overrides = context.get("overrides") if isinstance(context.get("overrides"), dict) else {}
     agent = get_agent_by_id(agent_id) if agent_id else None
     agent_config = (agent or {}).get("config") or {}
@@ -529,11 +544,34 @@ def _usage_metadata(context: dict[str, Any], agent_id: str | None) -> dict[str, 
         "agent_id": str(agent_id or ""),
         "agent_name": str((agent or {}).get("name") or "System default"),
         "provider": str(overrides.get("_llm_vendor") or "unknown"),
+        "provider_id": str(overrides.get("_llm_provider_id") or ""),
         "model": str(overrides.get("_llm_model") or "unknown"),
         "deployment": str(overrides.get("_llm_deployment") or ""),
         "profile_id": str(overrides.get("_llm_profile_id") or ""),
         "runtime": str(agent_config.get("runtime") or "legacy"),
+        "workload": workload,
     }
+
+
+async def _enforce_llm_quota(
+    auth_claims: dict[str, Any], context: dict[str, Any], *, workload: str
+) -> None:
+    if os.getenv("DISABLE_USAGE_QUOTAS", "").lower() == "true":
+        return
+    user_id = str(auth_claims.get("application_user_id") or "")
+    team_id = str(auth_claims.get("team_id") or "")
+    overrides = context.get("overrides") if isinstance(context.get("overrides"), dict) else {}
+    try:
+        await asyncio.to_thread(
+            check_and_record_request,
+            team_id,
+            user_id,
+            provider_id=str(overrides.get("_llm_provider_id") or ""),
+            profile_id=str(overrides.get("_llm_profile_id") or ""),
+            workload=workload,
+        )
+    except ValueError as error:
+        raise AccessControlError(str(error), status_code=429) from error
 
 
 def _require_system_admin(auth_claims: dict[str, Any]) -> dict[str, Any]:
@@ -1293,6 +1331,9 @@ async def ask(auth_claims: dict[str, Any]):
         )
         context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
+        await _enforce_llm_quota(
+            context.get("auth_claims") or auth_claims, context, workload="ask"
+        )
         overrides = context.get("overrides", {})
         _apply_inline_image_attachments(
             request_json,
@@ -1320,7 +1361,7 @@ async def ask(auth_claims: dict[str, Any]):
                     context.get("auth_claims") or auth_claims,
                     r,
                     "ask",
-                    _usage_metadata(context, agent_id),
+                    _usage_metadata(context, agent_id, "ask"),
                 )
             except Exception:
                 current_app.logger.exception("Can't insert user usage")
@@ -2205,6 +2246,9 @@ async def chat(auth_claims: dict[str, Any]):
         )
         context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
+        await _enforce_llm_quota(
+            context.get("auth_claims") or auth_claims, context, workload="chat"
+        )
         overrides = context.get("overrides", {})
         _apply_inline_image_attachments(
             request_json,
@@ -2235,7 +2279,16 @@ async def chat(auth_claims: dict[str, Any]):
             context=context,
             session_state=session_state,
         )
-        return jsonify(await _apply_guardrails_to_response(result, guardrail_policy, guardrail_audit))
+        guarded_result = await _apply_guardrails_to_response(result, guardrail_policy, guardrail_audit)
+        if os.getenv("DISABLE_USAGE_PERSISTENCE", "").lower() != "true":
+            asyncio.create_task(asyncio.to_thread(
+                insert_user_usage,
+                context.get("auth_claims") or auth_claims,
+                guarded_result,
+                "ask",
+                _usage_metadata(context, agent_id, "chat"),
+            ))
+        return jsonify(guarded_result)
     except Exception as error:
         return error_response(error, "/chat")
 
@@ -2460,6 +2513,9 @@ Always respond in the same language as the user"""
     try:
         context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
+        await _enforce_llm_quota(
+            context.get("auth_claims") or auth_claims, context, workload="chat"
+        )
         overrides = context.get("overrides", {})
         _apply_inline_image_attachments(
             request_json,
@@ -2543,7 +2599,7 @@ Always respond in the same language as the user"""
                                 context.get("auth_claims") or auth_claims,
                                 data_str,
                                 "chat",
-                                _usage_metadata(context, agent_id),
+                                _usage_metadata(context, agent_id, "chat"),
                             )
                         except Exception:
                             logging.exception("Can't insert user usage")
@@ -2826,6 +2882,79 @@ async def team_update_guardrail_settings(auth_claims: dict[str, Any], team_id: s
         return jsonify(
             {"configured": True, "policy": policy, "effective_policy": effective.serialize()}
         )
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+def _quota_settings_response(level: str, subject_id: str = "", *, team_id: str = "", user_id: str = ""):
+    configured = get_quota_settings(level, subject_id)
+    configured_policy = UsageQuotaPolicy.from_config(configured)
+    effective, inherited = effective_quota_settings(team_id, user_id)
+    usage = current_usage(team_id, user_id)
+    return {
+        "configured": configured is not None,
+        "policy": configured_policy.serialize(),
+        "effective_policy": effective.serialize(),
+        "inherited": inherited,
+        "usage": usage,
+        "rule_usage": current_llm_rule_usages(configured_policy, team_id, user_id),
+    }
+
+
+@bp.get("/admin/quota-settings")
+@authenticated
+async def admin_get_quota_settings(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    return jsonify(_quota_settings_response("system"))
+
+
+@bp.put("/admin/quota-settings")
+@authenticated
+async def admin_update_quota_settings(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        save_quota_settings("system", "", await request.get_json() or {})
+        return jsonify(_quota_settings_response("system"))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.get("/teams/<team_id>/quota-settings")
+@authenticated
+async def team_get_quota_settings(auth_claims: dict[str, Any], team_id: str):
+    _require_team_access(auth_claims, team_id, permission="Manage team permissions")
+    return jsonify(_quota_settings_response("team", team_id, team_id=team_id))
+
+
+@bp.put("/teams/<team_id>/quota-settings")
+@authenticated
+async def team_update_quota_settings(auth_claims: dict[str, Any], team_id: str):
+    _require_team_access(auth_claims, team_id, permission="Manage team permissions")
+    try:
+        save_quota_settings("team", team_id, await request.get_json() or {})
+        return jsonify(_quota_settings_response("team", team_id, team_id=team_id))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.get("/admin/users/<user_id>/quota-settings")
+@authenticated
+async def user_get_quota_settings(auth_claims: dict[str, Any], user_id: str):
+    _require_system_admin(auth_claims)
+    if not get_user_by_id(user_id):
+        raise AccessControlError("User not found", status_code=404)
+    return jsonify(_quota_settings_response("user", user_id, user_id=user_id))
+
+
+@bp.put("/admin/users/<user_id>/quota-settings")
+@authenticated
+async def user_update_quota_settings(auth_claims: dict[str, Any], user_id: str):
+    _require_system_admin(auth_claims)
+    if not get_user_by_id(user_id):
+        raise AccessControlError("User not found", status_code=404)
+    try:
+        save_quota_settings("user", user_id, await request.get_json() or {})
+        return jsonify(_quota_settings_response("user", user_id, user_id=user_id))
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
@@ -4268,6 +4397,15 @@ async def _run_ingestion_job(job_id: str) -> None:
     try:
         await _set_job_blob_status(job, "InProgress")
         scope = str(job["scope"])
+        if os.getenv("DISABLE_USAGE_QUOTAS", "").lower() != "true":
+            try:
+                await asyncio.to_thread(
+                    check_document_quota,
+                    str(job.get("team_id") or ""),
+                    str(job.get("owner_id") or ""),
+                )
+            except ValueError as error:
+                raise AccessControlError(str(error), status_code=429) from error
         stored = await _knowledge_store().read(scope, str(job["storage_path"]))
         if scope == "personal":
             acls = {"oids": [str(job["owner_id"])]}

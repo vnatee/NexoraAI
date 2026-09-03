@@ -168,6 +168,7 @@ def insert_user_usage(auth_claims, response, mode="chat", metadata=None):
             "model": str(call.get("model") or metadata.get("model") or "unknown")[:200],
             "deployment": str(call.get("deployment") or metadata.get("deployment") or "")[:200],
             "provider": str(metadata.get("provider") or "unknown")[:100],
+            "provider_id": str(metadata.get("provider_id") or "")[:200],
             "prompt_tokens": max(0, int(call.get("prompt_tokens") or 0)),
             "completion_tokens": max(0, int(call.get("completion_tokens") or 0)),
             "reasoning_tokens": max(0, int(call.get("reasoning_tokens") or 0)),
@@ -203,6 +204,7 @@ def insert_user_usage(auth_claims, response, mode="chat", metadata=None):
             "profile_id": str(metadata.get("profile_id") or "")[:100],
             "runtime": str(metadata.get("runtime") or "legacy")[:50],
             "request_mode": str(mode or "chat")[:20],
+            "workload": str(metadata.get("workload") or mode or "chat")[:20],
         },
     }
     usage_collection.insert_one(usage_data)
