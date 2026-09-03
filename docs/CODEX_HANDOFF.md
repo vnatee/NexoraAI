@@ -961,7 +961,8 @@ See `docs/usage-analytics.md`.
 
 - Hierarchical quotas were checkpointed as `89ddc72 feat: add hierarchical
   usage quotas`; the product owner manually accepted that slice. The current
-  branch is `feature/durable-usage-metering`.
+  durable metering and Team member quota checkpoint is `fa3fe65 feat: add
+  durable scoped usage quotas`.
 - Provider-independent quota policies can be stored at System, Team, and User
   levels. Enabled limits merge System → Team → User using the smallest non-zero
   value; zero means unlimited at that level.
@@ -1024,6 +1025,33 @@ See `docs/usage-analytics.md`.
   outside this service-free run under the `data_integration` marker.
 
 See `docs/usage-quotas.md`.
+
+### Settings navigation — current working tree
+
+- Branch `feature/settings-navigation` starts from the accepted durable quota
+  checkpoint `fa3fe65` so the previous horizontal-tab interface remains easy
+  to recover or compare.
+- The settings dialog now uses stable page identifiers and a categorized,
+  collapsible desktop sidebar instead of one overflowing horizontal tab row.
+  Team pages are grouped under **People & access**, **AI workspace**, and
+  **Governance**; authorized platform pages are visually separated under
+  **System administration**.
+- With no active Team, the same shell presents Administration-oriented groups
+  and labels the unassigned integration page **Integration catalog**. With a
+  Team it is labeled **Team integrations**.
+- Small screens use one grouped Settings-section selector rather than the
+  sidebar. Existing page components, permission checks, backend routes, and
+  creation flows are unchanged. Creating a Team still moves directly to Data
+  access, now by a stable page key rather than a fragile tab index.
+- The navigation shell restores the content gutter previously supplied by
+  `TabPanel` for pages that rely on it, while avoiding double padding for
+  Integrations, Guardrail Policy, and Usage Quotas, which own their content
+  spacing. This keeps page headings and primary actions away from dialog edges
+  across every current menu.
+- Frontend TypeScript validation and the memory-safe production build pass.
+  Manual checks are still required for System Admin, restricted Team Admin,
+  Team creation, collapsed navigation, and the compact/mobile selector before
+  checkpointing this branch.
 
 ## Other next work
 
