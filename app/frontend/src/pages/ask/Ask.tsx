@@ -359,6 +359,7 @@ export function Component(): JSX.Element {
                 }
             }
             const request: ChatAppRequest = {
+                usage_request_id: crypto.randomUUID(),
                 messages: [
                     {
                         content: question,

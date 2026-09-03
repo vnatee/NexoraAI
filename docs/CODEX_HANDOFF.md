@@ -959,8 +959,9 @@ See `docs/usage-analytics.md`.
 
 ### Usage quotas — current working tree
 
-- Usage Analytics was checkpointed as `f053fa0 feat: add scoped usage analytics
-  dashboard`; the product owner manually accepted it before this slice.
+- Hierarchical quotas were checkpointed as `89ddc72 feat: add hierarchical
+  usage quotas`; the product owner manually accepted that slice. The current
+  branch is `feature/durable-usage-metering`.
 - Provider-independent quota policies can be stored at System, Team, and User
   levels. Enabled limits merge System → Team → User using the smallest non-zero
   value; zero means unlimited at that level.
@@ -983,10 +984,17 @@ See `docs/usage-analytics.md`.
   **Entire system / Current team / Specific user** from the same page even when
   Team settings is open. Current monthly usage is shown beside each configured
   limit.
-- Monthly usage currently counts completed persisted events. One in-flight LLM
-  response or document can therefore finish slightly above the boundary.
-  Advance reservations, warning thresholds, approval workflows, notifications,
-  pricing/cost budgets, and audit history remain follow-up work.
+- Team policies also support a default monthly LLM-token allowance per member.
+  A Team administrator can select a current member and set a `(team_id,
+  user_id)` override that replaces that Team default without bypassing
+  Team/System totals. The same user can therefore have different allowances in
+  different Teams. Existing global User ceilings remain available to System
+  Admins and continue to act as an additional ceiling.
+- Monthly LLM enforcement now counts completed persisted events plus active
+  request reservations. Document pages are still checked from completed jobs,
+  because their authoritative page count may only be known after parsing.
+  Document-page reservations, approval workflows, notifications, pricing/cost
+  budgets, and immutable billing-period rollups remain follow-up work.
 - Token totals include input, output, and reasoning tokens. Provider/model
   attribution applies to newly metered selected request profiles; old events
   remain in Overall totals, and exact per-call attribution for multi-model
@@ -995,12 +1003,25 @@ See `docs/usage-analytics.md`.
   layer rather than being embedded in quota records. The approved direction for
   signed offline licenses, one-year terms, feature/capacity claims, grace and
   renewal behavior is recorded in `docs/product-backlog.md`.
-- Focused quota/config/analytics/ingestion validation passed (`55 passed`), the
-  complete service-free suite passed (`748 passed, 1 deselected`), frontend
+- The current uncommitted metering slice assigns each Chat/Ask call a UUID,
+  creates an expiring token reservation before provider execution, persists the
+  final LLM usage synchronously and idempotently with that UUID, and finalizes
+  the reservation. Duplicate active/completed request IDs are rejected. A
+  failed usage write leaves a conservative 15-minute reservation instead of
+  failing an otherwise successful response. Persistent ingestion-job IDs now
+  make document-processing usage idempotent across recovery/retry.
+- Quota status includes used/reserved amounts and 80/90/100 percent severity.
+  Safe metadata-only threshold, block, and metering-failure events are retained
+  for 90 days and displayed in the quota Portal. Raw prompts and responses are
+  not written to these records.
+- Remaining metering work before contractual billing includes exact
+  per-model-call/sub-agent and embedding attribution, page reservations,
+  provider reconciliation, notifications, and immutable period rollups.
+- Focused quota/config/analytics/ingestion validation passed (`186 passed`), the
+  complete service-free suite passed (`767 passed, 1 deselected`), frontend
   TypeScript validation passed, and the memory-safe production build passed.
-  A broader run reached `748 passed` with the known unrelated
-  `data_integration` failure caused by a repository PDF fixture that yields no
-  local text sections.
+  The known repository PDF fixture that yields no local text sections remains
+  outside this service-free run under the `data_integration` marker.
 
 See `docs/usage-quotas.md`.
 

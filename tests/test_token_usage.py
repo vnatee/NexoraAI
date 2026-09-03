@@ -28,7 +28,7 @@ def test_insert_user_usage_supports_request_without_team(monkeypatch):
         {"preferred_username": "user@example.com"}, "response"
     )
 
-    stored = collection.insert_one.call_args.args[0]
+    stored = collection.update_one.call_args.args[1]["$setOnInsert"]
     assert stored["user"] == {"_id": "user-1", "name": "user@example.com"}
     assert stored["group"] is None
     get_team.assert_not_called()
@@ -58,7 +58,7 @@ def test_insert_user_usage_uses_validated_application_user_and_team(monkeypatch)
         "response",
     )
 
-    stored = collection.insert_one.call_args.args[0]
+    stored = collection.update_one.call_args.args[1]["$setOnInsert"]
     assert stored["user"] == {"_id": "user-1", "name": "user@example.com"}
     assert stored["group"] == {"_id": "team-1", "name": "DIG"}
 
@@ -92,9 +92,27 @@ def test_insert_user_usage_persists_safe_analytics_dimensions(monkeypatch):
         },
     )
 
-    stored = collection.insert_one.call_args.args[0]
-    assert stored["schema_version"] == 2
+    stored = collection.update_one.call_args.args[1]["$setOnInsert"]
+    assert stored["schema_version"] == 3
     assert stored["metadata"]["agent_id"] == "agent-1"
     assert stored["metadata"]["provider"] == "openai"
     assert stored["model_calls"][0]["total_tokens"] == 17
     assert "raw response" not in str(stored)
+
+
+def test_insert_user_usage_is_idempotent_by_usage_event_id(monkeypatch):
+    collection = MagicMock()
+    collection.update_one.return_value.upserted_id = "request-1"
+    monkeypatch.setattr(save_tokens_usage, "usage_collection", collection)
+    monkeypatch.setattr(save_tokens_usage, "summarize_turn", lambda _response: _tokens())
+    monkeypatch.setattr(save_tokens_usage, "get_user_by_ad_email", lambda _username: {"_id": "user-1"})
+
+    result = save_tokens_usage.insert_user_usage(
+        {"preferred_username": "user@example.com"},
+        "response",
+        metadata={"usage_event_id": "request-1"},
+    )
+
+    assert collection.update_one.call_args.args[0] == {"_id": "request-1"}
+    assert collection.update_one.call_args.kwargs["upsert"] is True
+    assert result == {"usage_event_id": "request-1", "tokens_total": 15, "inserted": True}

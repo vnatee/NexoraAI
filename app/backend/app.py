@@ -62,8 +62,14 @@ from mongo_table_connecters.usage_quotas import (
     current_llm_rule_usages,
     current_usage,
     effective_quota_settings,
+    ensure_usage_quota_indexes,
+    finish_llm_reservation,
     get_quota_settings,
+    list_quota_audit_events,
+    quota_status,
     save_quota_settings,
+    save_team_user_quota_settings,
+    team_member_quota_policy,
 )
 from core.usage_quotas import UsageQuotaPolicy
 from mongo_table_connecters.agents import insert_agent, get_agent_by_id, update_agent, delete_agent_by_id
@@ -550,11 +556,44 @@ def _usage_metadata(
         "profile_id": str(overrides.get("_llm_profile_id") or ""),
         "runtime": str(agent_config.get("runtime") or "legacy"),
         "workload": workload,
+        "usage_event_id": str(context.get("usage_request_id") or ""),
     }
 
 
+def _prepare_usage_request(request_json: dict[str, Any], context: dict[str, Any]) -> str:
+    supplied = str(request_json.get("usage_request_id") or "").strip()
+    if supplied:
+        try:
+            request_id = str(uuid.UUID(supplied))
+        except ValueError as error:
+            raise AccessControlError("usage_request_id must be a valid UUID", status_code=400) from error
+    else:
+        request_id = str(uuid.uuid4())
+    context["usage_request_id"] = request_id
+    return request_id
+
+
+def _estimated_request_tokens(request_json: dict[str, Any], context: dict[str, Any]) -> int:
+    messages = request_json.get("messages") if isinstance(request_json.get("messages"), list) else []
+    input_characters = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            input_characters += len(content)
+        elif isinstance(content, list):
+            input_characters += sum(len(str(part.get("text") or "")) for part in content if isinstance(part, dict))
+    overrides = context.get("overrides") if isinstance(context.get("overrides"), dict) else {}
+    try:
+        output_limit = int(overrides.get("max_tokens") or 1024)
+    except (TypeError, ValueError):
+        output_limit = 1024
+    return max(1, min(1_000_000, max(1, output_limit) + math.ceil(input_characters / 4)))
+
+
 async def _enforce_llm_quota(
-    auth_claims: dict[str, Any], context: dict[str, Any], *, workload: str
+    auth_claims: dict[str, Any], context: dict[str, Any], request_json: dict[str, Any], *, workload: str
 ) -> None:
     if os.getenv("DISABLE_USAGE_QUOTAS", "").lower() == "true":
         return
@@ -569,9 +608,49 @@ async def _enforce_llm_quota(
             provider_id=str(overrides.get("_llm_provider_id") or ""),
             profile_id=str(overrides.get("_llm_profile_id") or ""),
             workload=workload,
+            request_id=str(context.get("usage_request_id") or ""),
+            reserved_tokens=_estimated_request_tokens(request_json, context),
         )
+        context["usage_reservation_active"] = True
     except ValueError as error:
         raise AccessControlError(str(error), status_code=429) from error
+
+
+async def _finish_usage_reservation(
+    context: dict[str, Any], *, state: str, actual_tokens: int = 0
+) -> None:
+    request_id = str(context.get("usage_request_id") or "")
+    if not request_id or not context.get("usage_reservation_active"):
+        return
+    try:
+        await asyncio.to_thread(
+            finish_llm_reservation,
+            request_id,
+            state=state,
+            actual_tokens=actual_tokens,
+        )
+        context["usage_reservation_active"] = False
+    except Exception:
+        current_app.logger.exception("Unable to finalize usage reservation %s", request_id)
+
+
+async def _persist_user_usage(
+    auth_claims: dict[str, Any], response: Any, mode: str, metadata: dict[str, str], context: dict[str, Any]
+) -> None:
+    if os.getenv("DISABLE_USAGE_PERSISTENCE", "").lower() == "true":
+        await _finish_usage_reservation(context, state="released")
+        return
+    try:
+        result = await asyncio.to_thread(insert_user_usage, auth_claims, response, mode, metadata)
+    except Exception:
+        await _finish_usage_reservation(context, state="metering_failed")
+        current_app.logger.exception("Unable to persist durable LLM usage event")
+        return
+    await _finish_usage_reservation(
+        context,
+        state="completed",
+        actual_tokens=int((result or {}).get("tokens_total") or 0),
+    )
 
 
 def _require_system_admin(auth_claims: dict[str, Any]) -> dict[str, Any]:
@@ -1329,10 +1408,11 @@ async def ask(auth_claims: dict[str, Any]):
         context["auth_claims"] = _authorized_request_claims(
             request_json, auth_claims, agent_id=agent_id
         )
+        _prepare_usage_request(request_json, context)
         context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
         await _enforce_llm_quota(
-            context.get("auth_claims") or auth_claims, context, workload="ask"
+            context.get("auth_claims") or auth_claims, context, request_json, workload="ask"
         )
         overrides = context.get("overrides", {})
         _apply_inline_image_attachments(
@@ -1354,21 +1434,16 @@ async def ask(auth_claims: dict[str, Any]):
                 "session_state")
         )
 
-        async def _bg():
-            try:
-                await asyncio.to_thread(
-                    insert_user_usage,
-                    context.get("auth_claims") or auth_claims,
-                    r,
-                    "ask",
-                    _usage_metadata(context, agent_id, "ask"),
-                )
-            except Exception:
-                current_app.logger.exception("Can't insert user usage")
-        if os.getenv("DISABLE_USAGE_PERSISTENCE", "").lower() != "true":
-            asyncio.create_task(_bg())
+        await _persist_user_usage(
+            context.get("auth_claims") or auth_claims,
+            r,
+            "ask",
+            _usage_metadata(context, agent_id, "ask"),
+            context,
+        )
         return jsonify(r)
     except Exception as error:
+        await _finish_usage_reservation(context, state="released")
         return error_response(error, "/ask")
 
 
@@ -2238,6 +2313,7 @@ async def chat(auth_claims: dict[str, Any]):
         context["auth_claims"] = _authorized_request_claims(
             request_json, auth_claims, agent_id=agent_id
         )
+        _prepare_usage_request(request_json, context)
         guardrail_policy, guardrail_audit = await _enforce_input_guardrails(
             messages=request_json.get("messages"),
             agent_id=agent_id,
@@ -2247,7 +2323,7 @@ async def chat(auth_claims: dict[str, Any]):
         context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
         await _enforce_llm_quota(
-            context.get("auth_claims") or auth_claims, context, workload="chat"
+            context.get("auth_claims") or auth_claims, context, request_json, workload="chat"
         )
         overrides = context.get("overrides", {})
         _apply_inline_image_attachments(
@@ -2280,16 +2356,16 @@ async def chat(auth_claims: dict[str, Any]):
             session_state=session_state,
         )
         guarded_result = await _apply_guardrails_to_response(result, guardrail_policy, guardrail_audit)
-        if os.getenv("DISABLE_USAGE_PERSISTENCE", "").lower() != "true":
-            asyncio.create_task(asyncio.to_thread(
-                insert_user_usage,
-                context.get("auth_claims") or auth_claims,
-                guarded_result,
-                "ask",
-                _usage_metadata(context, agent_id, "chat"),
-            ))
+        await _persist_user_usage(
+            context.get("auth_claims") or auth_claims,
+            guarded_result,
+            "ask",
+            _usage_metadata(context, agent_id, "chat"),
+            context,
+        )
         return jsonify(guarded_result)
     except Exception as error:
+        await _finish_usage_reservation(context, state="released")
         return error_response(error, "/chat")
 
 
@@ -2307,6 +2383,7 @@ async def chat_stream(auth_claims: dict[str, Any]):
         context["auth_claims"] = _authorized_request_claims(
             request_json, auth_claims, agent_id=agent_id
         )
+        _prepare_usage_request(request_json, context)
         guardrail_policy, guardrail_audit = await _enforce_input_guardrails(
             messages=request_json.get("messages"),
             agent_id=agent_id,
@@ -2514,7 +2591,7 @@ Always respond in the same language as the user"""
         context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
         await _enforce_llm_quota(
-            context.get("auth_claims") or auth_claims, context, workload="chat"
+            context.get("auth_claims") or auth_claims, context, request_json, workload="chat"
         )
         overrides = context.get("overrides", {})
         _apply_inline_image_attachments(
@@ -2589,28 +2666,27 @@ Always respond in the same language as the user"""
                     ndjson_lines.append(line)
                     yield line
             finally:
-                if ndjson_lines and os.getenv("DISABLE_USAGE_PERSISTENCE", "").lower() != "true":
+                if ndjson_lines:
                     data_str = "".join(ndjson_lines)
-
-                    async def _bg():
-                        try:
-                            await asyncio.to_thread(
-                                insert_user_usage,
-                                context.get("auth_claims") or auth_claims,
-                                data_str,
-                                "chat",
-                                _usage_metadata(context, agent_id, "chat"),
-                            )
-                        except Exception:
-                            logging.exception("Can't insert user usage")
-
-                    asyncio.create_task(_bg())
+                    try:
+                        await _persist_user_usage(
+                            context.get("auth_claims") or auth_claims,
+                            data_str,
+                            "chat",
+                            _usage_metadata(context, agent_id, "chat"),
+                            context,
+                        )
+                    except Exception:
+                        logging.exception("Can't insert user usage")
+                else:
+                    await _finish_usage_reservation(context, state="released")
 
         response = await make_response(stream_and_record_usage())
         response.timeout = None  # type: ignore
         response.mimetype = "application/json-lines"
         return response
     except Exception as error:
+        await _finish_usage_reservation(context, state="released")
         return error_response(error, "/chat")
 
 
@@ -2891,6 +2967,12 @@ def _quota_settings_response(level: str, subject_id: str = "", *, team_id: str =
     configured_policy = UsageQuotaPolicy.from_config(configured)
     effective, inherited = effective_quota_settings(team_id, user_id)
     usage = current_usage(team_id, user_id)
+    events = list_quota_audit_events(level, subject_id)
+    status_policy = configured_policy
+    member_limit_source = ""
+    if level == "team_user":
+        status_policy, member_limit_source = team_member_quota_policy(team_id, user_id)
+        status_policy = status_policy or UsageQuotaPolicy()
     return {
         "configured": configured is not None,
         "policy": configured_policy.serialize(),
@@ -2898,6 +2980,17 @@ def _quota_settings_response(level: str, subject_id: str = "", *, team_id: str =
         "inherited": inherited,
         "usage": usage,
         "rule_usage": current_llm_rule_usages(configured_policy, team_id, user_id),
+        "status": quota_status(status_policy, team_id, user_id),
+        "member_limit_source": member_limit_source,
+        "effective_member_limit": status_policy.monthly_llm_tokens if level == "team_user" else 0,
+        "audit_events": [
+            {
+                key: value.isoformat() if isinstance(value, datetime) else value
+                for key, value in event.items()
+                if key not in {"expires_at"}
+            }
+            for event in events
+        ],
     }
 
 
@@ -2935,6 +3028,53 @@ async def team_update_quota_settings(auth_claims: dict[str, Any], team_id: str):
         return jsonify(_quota_settings_response("team", team_id, team_id=team_id))
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
+
+
+def _require_team_quota_user(auth_claims: dict[str, Any], team_id: str, user_id: str) -> None:
+    _actor, team = _require_team_access(
+        auth_claims, team_id, permission="Manage team permissions"
+    )
+    if user_id not in {str(item) for item in (team.get("user_id") or [])}:
+        raise AccessControlError("User is not a member of this team", status_code=404)
+    if not get_user_by_id(user_id):
+        raise AccessControlError("User not found", status_code=404)
+
+
+@bp.get("/teams/<team_id>/users/<user_id>/quota-settings")
+@authenticated
+async def team_user_get_quota_settings(
+    auth_claims: dict[str, Any], team_id: str, user_id: str
+):
+    try:
+        _require_team_quota_user(auth_claims, team_id, user_id)
+        subject_id = f"{team_id}:{user_id}"
+        return jsonify(
+            _quota_settings_response(
+                "team_user", subject_id, team_id=team_id, user_id=user_id
+            )
+        )
+    except Exception as error:
+        return error_response(error, "/teams/<team_id>/users/<user_id>/quota-settings")
+
+
+@bp.put("/teams/<team_id>/users/<user_id>/quota-settings")
+@authenticated
+async def team_user_update_quota_settings(
+    auth_claims: dict[str, Any], team_id: str, user_id: str
+):
+    try:
+        _require_team_quota_user(auth_claims, team_id, user_id)
+        save_team_user_quota_settings(
+            team_id, user_id, await request.get_json() or {}
+        )
+        subject_id = f"{team_id}:{user_id}"
+        return jsonify(
+            _quota_settings_response(
+                "team_user", subject_id, team_id=team_id, user_id=user_id
+            )
+        )
+    except Exception as error:
+        return error_response(error, "/teams/<team_id>/users/<user_id>/quota-settings")
 
 
 @bp.get("/admin/users/<user_id>/quota-settings")
@@ -4446,6 +4586,7 @@ async def _run_ingestion_job(job_id: str) -> None:
                 page_count=count,
                 file_type=Path(str(job.get("filename") or "")).suffix.lstrip("."),
                 duration_ms=int((time.monotonic() - started_at) * 1000),
+                event_id=f"ingestion:{job_id}",
             )
         await asyncio.to_thread(
             update_ingestion_job_status,
@@ -7024,6 +7165,8 @@ async def setup_clients():
     MAIL_ATTACH = os.getenv("MAIL_ATTACH_URL")
     EXTERNAL_API_ENPOINT = os.getenv("EXTERNAL_API_ENPOINT")
     SKIP_STARTUP_BOOTSTRAP = os.getenv("SKIP_STARTUP_BOOTSTRAP", "").lower() == "true"
+    if not SKIP_STARTUP_BOOTSTRAP:
+        ensure_usage_quota_indexes()
 
     # Use the current user identity for keyless authentication to Azure services.
     # This assumes you use 'azd auth login' locally, and managed identity when deployed on Azure.

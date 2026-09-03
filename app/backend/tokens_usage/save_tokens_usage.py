@@ -174,9 +174,10 @@ def insert_user_usage(auth_claims, response, mode="chat", metadata=None):
             "reasoning_tokens": max(0, int(call.get("reasoning_tokens") or 0)),
             "total_tokens": max(0, int(call.get("total_tokens") or 0)),
         })
+    usage_event_id = str(metadata.get("usage_event_id") or uuid.uuid4())[:100]
     usage_data = {
-        "_id": str(uuid.uuid4()),       
-        "schema_version": 2,
+        "_id": usage_event_id,
+        "schema_version": 3,
         "create_at": datetime.now(timezone.utc),
         "update_at": datetime.now(timezone.utc),
         "delete_at": None,
@@ -205,6 +206,16 @@ def insert_user_usage(auth_claims, response, mode="chat", metadata=None):
             "runtime": str(metadata.get("runtime") or "legacy")[:50],
             "request_mode": str(mode or "chat")[:20],
             "workload": str(metadata.get("workload") or mode or "chat")[:20],
+            "usage_event_id": usage_event_id,
         },
     }
-    usage_collection.insert_one(usage_data)
+    result = usage_collection.update_one(
+        {"_id": usage_event_id},
+        {"$setOnInsert": usage_data},
+        upsert=True,
+    )
+    return {
+        "usage_event_id": usage_event_id,
+        "tokens_total": tokens["tokens_total_sum"],
+        "inserted": result.upserted_id is not None,
+    }
