@@ -14,6 +14,7 @@ import { LLMProviderManagement } from "../LLMProviderManagement";
 import { MCPServerManagement } from "../MCPServerManagement";
 import { AgentAuditManagement } from "../AgentAuditManagement";
 import { GuardrailPolicyPage } from "./Tabs/GuardrailPolicyPage";
+import { UsageQuotaPolicyPage } from "./Tabs/UsageQuotaPolicyPage";
 
 interface Props {
     open: boolean;
@@ -97,6 +98,12 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             permission: ["Manage agents"],
             systemAdminOnly: !managedTeam,
             element: <GuardrailPolicyPage team={managedTeam} />
+        },
+        {
+            label: "Usage Quotas",
+            permission: ["Manage team permissions", "Manage users"],
+            systemAdminOnly: !managedTeam,
+            element: <UsageQuotaPolicyPage team={managedTeam} isSystemAdmin={is_sys_admin} />
         }
     ];
 

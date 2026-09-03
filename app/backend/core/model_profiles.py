@@ -30,6 +30,7 @@ class LLMProfile:
             "model": self.settings.model,
             "supportsTools": self.supports_tools,
             "supportsVision": self.supports_vision,
+            "quotaProviderId": self.managed_provider_id or f"configured:{self.settings.provider.value}",
         }
         if self.managed_provider_id:
             result["managedProviderId"] = self.managed_provider_id

@@ -29,6 +29,8 @@ import {
     EffectiveAccessResponse,
     AuthenticationSettings,
     AgentGuardrailPolicy,
+    UsageQuotaPolicy,
+    UsageQuotaSettingsResponse,
     GuardrailSettingsResponse
 } from "./models";
 import { useLogin, getToken, isUsingAppServicesLogin } from "../authConfig";
@@ -105,6 +107,44 @@ export async function updateGuardrailSettings(
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Unable to save guardrail settings");
+    return data;
+}
+
+export async function getQuotaSettings(idToken: string, teamId?: string): Promise<UsageQuotaSettingsResponse> {
+    const path = teamId ? `/teams/${encodeURIComponent(teamId)}/quota-settings` : "/admin/quota-settings";
+    const response = await fetch(path, { headers: await getHeaders(idToken) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to load quota settings");
+    return data;
+}
+
+export async function updateQuotaSettings(policy: UsageQuotaPolicy, idToken: string, teamId?: string): Promise<UsageQuotaSettingsResponse> {
+    const path = teamId ? `/teams/${encodeURIComponent(teamId)}/quota-settings` : "/admin/quota-settings";
+    const response = await fetch(path, {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(policy)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to save quota settings");
+    return data;
+}
+
+export async function getUserQuotaSettings(idToken: string, userId: string): Promise<UsageQuotaSettingsResponse> {
+    const response = await fetch(`/admin/users/${encodeURIComponent(userId)}/quota-settings`, { headers: await getHeaders(idToken) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to load user quota settings");
+    return data;
+}
+
+export async function updateUserQuotaSettings(policy: UsageQuotaPolicy, idToken: string, userId: string): Promise<UsageQuotaSettingsResponse> {
+    const response = await fetch(`/admin/users/${encodeURIComponent(userId)}/quota-settings`, {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(policy)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to save user quota settings");
     return data;
 }
 

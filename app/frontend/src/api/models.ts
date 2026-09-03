@@ -173,6 +173,7 @@ export type LLMProfile = {
     model: string;
     managedProviderId?: string;
     managedModelId?: string;
+    quotaProviderId?: string;
     supportsTools?: boolean;
     supportsVision?: boolean;
 };
@@ -556,6 +557,31 @@ export interface GuardrailSettingsResponse {
     policy: AgentGuardrailPolicy;
     system_policy?: AgentGuardrailPolicy | null;
     effective_policy?: AgentGuardrailPolicy;
+}
+
+export interface LLMTokenQuotaRule {
+    dimension: "provider" | "profile";
+    target_id: string;
+    target_label: string;
+    workload: "all" | "chat" | "ask";
+    monthly_tokens: number;
+    enabled: boolean;
+}
+
+export interface UsageQuotaPolicy {
+    enabled: boolean;
+    monthly_llm_tokens: number;
+    monthly_document_pages: number;
+    llm_requests_per_minute: number;
+    llm_token_rules: LLMTokenQuotaRule[];
+}
+
+export interface UsageQuotaSettingsResponse {
+    configured: boolean;
+    policy: UsageQuotaPolicy;
+    effective_policy?: UsageQuotaPolicy;
+    usage?: { monthly_llm_tokens: number; monthly_document_pages: number };
+    rule_usage?: Array<Pick<LLMTokenQuotaRule, "dimension" | "target_id" | "workload"> & { monthly_tokens: number }>;
 }
 
 export interface AgentToolSettings {
