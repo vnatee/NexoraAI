@@ -30,10 +30,17 @@ def test_aggregate_usage_builds_safe_overview_timeline_and_breakdowns():
         [_llm_record()],
         [{
             "create_at": datetime(2026, 9, 1, 13, tzinfo=timezone.utc),
+            "user": {"_id": "user-1", "name": "Natee"},
+            "team": {"_id": "team-1"},
+            "scope": "team",
             "provider_name": "Docling",
+            "profile_id": "profile-1",
+            "profile_name": "PDF documents",
+            "file_type": "pdf",
             "page_count": 7,
             "duration_ms": 1200,
         }],
+        team_labels={"team-1": "DIG"},
     )
 
     assert result["overview"] == {
@@ -50,6 +57,12 @@ def test_aggregate_usage_builds_safe_overview_timeline_and_breakdowns():
     assert result["breakdowns"]["models"][0]["label"] == "gpt-4.1-mini"
     assert result["breakdowns"]["teams"][0]["label"] == "DIG"
     assert result["document_providers"][0]["label"] == "Docling"
+    assert result["document_breakdowns"]["users"][0]["label"] == "Natee"
+    assert result["document_breakdowns"]["teams"][0]["label"] == "DIG"
+    assert result["document_breakdowns"]["profiles"][0]["label"] == "PDF documents"
+    assert result["document_breakdowns"]["file_types"][0]["label"] == "PDF"
+    assert result["document_breakdowns"]["scopes"][0]["label"] == "Team"
+    assert result["document_filter_options"]["users"] == [{"value": "user-1", "label": "Natee"}]
 
 
 def test_aggregate_usage_filters_model_and_provider_without_mixing_calls():
@@ -63,3 +76,46 @@ def test_aggregate_usage_filters_model_and_provider_without_mixing_calls():
     assert result["overview"]["requests"] == 1
     assert result["overview"]["total_tokens"] == 130
     assert [item["label"] for item in result["breakdowns"]["models"]] == ["bge-m3"]
+
+
+def test_aggregate_usage_filters_document_dimensions_and_keeps_legacy_owner_unknown():
+    records = [
+        {
+            "create_at": datetime(2026, 9, 1, 13, tzinfo=timezone.utc),
+            "user": {"_id": "user-1", "name": "Natee"},
+            "team": {"_id": "team-1"},
+            "scope": "team",
+            "provider_name": "Docling",
+            "profile_id": "profile-1",
+            "profile_name": "PDF documents",
+            "file_type": ".pdf",
+            "page_count": 7,
+            "duration_ms": 1200,
+        },
+        {
+            "create_at": datetime(2026, 9, 1, 14, tzinfo=timezone.utc),
+            "user": "legacy@example.com",
+            "team": "team-1",
+            "upload_type": "team",
+            "ocr_pages": 3,
+        },
+    ]
+
+    result = aggregate_usage(
+        [],
+        records,
+        profile_id="profile-1",
+        file_type="pdf",
+        document_scope="team",
+        team_labels={"team-1": "DIG"},
+    )
+
+    assert result["overview"]["documents"] == 1
+    assert result["overview"]["processed_pages"] == 7
+    assert [row["label"] for row in result["document_breakdowns"]["users"]] == ["Natee"]
+    assert {item["label"] for item in result["document_filter_options"]["users"]} == {"Natee"}
+    assert result["document_filter_options"]["profiles"] == [{"value": "profile-1", "label": "PDF documents"}]
+
+    legacy = aggregate_usage([], [records[1]], team_labels={"team-1": "DIG"})
+    assert legacy["document_breakdowns"]["users"][0]["label"] == "Unknown / legacy"
+    assert legacy["document_breakdowns"]["teams"][0]["label"] == "DIG"

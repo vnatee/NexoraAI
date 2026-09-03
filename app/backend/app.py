@@ -5269,6 +5269,9 @@ async def usage_analytics(auth_claims: dict[str, Any]):
             agent_id=str(request.args.get("agent_id") or "").strip(),
             provider=str(request.args.get("provider") or "").strip(),
             model=str(request.args.get("model") or "").strip(),
+            profile_id=str(request.args.get("profile_id") or "").strip(),
+            file_type=str(request.args.get("file_type") or "").strip(),
+            document_scope=str(request.args.get("document_scope") or "").strip(),
         )
         data["scope"] = scope
         data["period"] = {"from": start.isoformat(), "to": end.isoformat(), "bucket": bucket}

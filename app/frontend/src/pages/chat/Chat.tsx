@@ -1446,6 +1446,33 @@ const Chat = () => {
     //     testLogPayload();
     // }, [loggedIn, selectedAgent?._id, dataGroups.length]);
 
+    const canOpenAdminManagement = hasPermission({
+        is_sys_admin: userData?.is_sys_admin ?? false,
+        permissions: selectTeamData?.permissions ?? [],
+        sys_permissions: sysPers ?? [],
+        requiredPermissions: [
+            "Manage team users",
+            "Manage team data groups",
+            "Manage agents",
+            "Manage team permissions",
+            "Approve team users",
+            "Manage teams",
+            "Manage users"
+        ]
+    });
+    const canManageUploads = hasPermission({
+        is_sys_admin: userData?.is_sys_admin ?? false,
+        permissions: selectTeamData?.permissions ?? [],
+        sys_permissions: sysPers ?? [],
+        requiredPermissions: ["Manage team uploads", "Manage global uploads"]
+    });
+    const canViewFeedbackDashboard = hasPermission({
+        is_sys_admin: userData?.is_sys_admin ?? false,
+        permissions: selectTeamData?.permissions ?? [],
+        sys_permissions: sysPers ?? [],
+        requiredPermissions: ["View feedback dashboard"]
+    });
+
     return (
         <div className={styles.container}>
             <Helmet>
@@ -1481,6 +1508,7 @@ const Chat = () => {
                             <AgentSelectionSummary
                                 agentName={selectedAgent?.agent_name}
                                 modelName={getAgentModelName(selectedAgent)}
+                                teamName={selectTeamData?.name}
                                 selectedScopes={selectedScopes}
                                 selectedDataGroups={selectedDataGroupNames}
                                 onClick={setAgentAnchorEl}
@@ -1669,47 +1697,41 @@ const Chat = () => {
                                             <div className={styles.historyButtons}>
                                                 {loggedIn && (
                                                     <>
-                                                        <Button
-                                                            variant="text"
-                                                            startIcon={<ChatIcon />}
-                                                            onClick={startNewChat}
-                                                            className={styles.newChatTextButton}
-                                                        >
-                                                            New Chat
-                                                        </Button>
-                                                        <Button
-                                                            variant="text"
-                                                            startIcon={<SearchIcon />}
-                                                            className={styles.newChatTextButton}
-                                                            onClick={() => setOpenSearch(true)}
-                                                        >
-                                                            Search History
-                                                        </Button>
-                                                        {userData && !userData?.is_sys_admin ? (
+                                                        <div className={styles.sidebarMenuSection}>
+                                                            <div className={styles.sidebarSectionLabel}>Workspace</div>
                                                             <Button
                                                                 variant="text"
-                                                                startIcon={<FeedIcon />}
-                                                                className={styles.newChatTextButton}
-                                                                onClick={() => setOpenFeedback(true)}
+                                                                startIcon={<ChatIcon />}
+                                                                onClick={startNewChat}
+                                                                className={`${styles.newChatTextButton} ${styles.newChatPrimaryButton}`}
                                                             >
-                                                                Feedback
+                                                                New Chat
                                                             </Button>
-                                                        ) : null}
-                                                        <UploadFile className={styles.menuItem} disabled={!loggedIn} dialogRef={uploadDialogRef} />
-                                                        {hasPermission({
-                                                            is_sys_admin: userData ? userData?.is_sys_admin : false,
-                                                            permissions: selectTeamData ? selectTeamData?.permissions : [],
-                                                            sys_permissions: sysPers ? sysPers : [],
-                                                            requiredPermissions: [
-                                                                "Manage team users",
-                                                                "Manage team data groups",
-                                                                "Manage agents",
-                                                                "Manage team permissions",
-                                                                "Approve team users",
-                                                                "Manage teams",
-                                                                "Manage users"
-                                                            ]
-                                                        }) && (
+                                                            <Button
+                                                                variant="text"
+                                                                startIcon={<SearchIcon />}
+                                                                className={styles.newChatTextButton}
+                                                                onClick={() => setOpenSearch(true)}
+                                                            >
+                                                                Search History
+                                                            </Button>
+                                                            {userData && !userData?.is_sys_admin ? (
+                                                                <Button
+                                                                    variant="text"
+                                                                    startIcon={<FeedIcon />}
+                                                                    className={styles.newChatTextButton}
+                                                                    onClick={() => setOpenFeedback(true)}
+                                                                >
+                                                                    Feedback
+                                                                </Button>
+                                                            ) : null}
+                                                            <UploadFile className={styles.menuItem} disabled={!loggedIn} dialogRef={uploadDialogRef} />
+                                                        </div>
+
+                                                        {(canOpenAdminManagement || canManageUploads) && (
+                                                            <div className={styles.sidebarMenuSection}>
+                                                                <div className={styles.sidebarSectionLabel}>Management</div>
+                                                                {canOpenAdminManagement && (
                                                                 <Button
                                                                     variant="text"
                                                                     startIcon={<FeedIcon />}
@@ -1718,24 +1740,23 @@ const Chat = () => {
                                                                 >
                                                                     Admin Management
                                                                 </Button>
-                                                            )}
+                                                                )}
 
-                                                        {hasPermission({
-                                                            is_sys_admin: userData ? userData?.is_sys_admin : false,
-                                                            permissions: selectTeamData ? selectTeamData?.permissions : [],
-                                                            sys_permissions: sysPers ? sysPers : [],
-                                                            requiredPermissions: ["Manage team uploads", "Manage global uploads"]
-                                                        }) && (
-                                                                <>
-                                                                    <GlobalUpload
-                                                                        className={styles.menuItem}
-                                                                        disabled={!loggedIn}
-                                                                        dialogRef={globalUploadDialogRef}
-                                                                    />
-                                                                    <ScrapData className={styles.menuItem} disabled={!loggedIn} dialogRef={scrapDataDialogRef} />
-                                                                </>
-                                                            )}
+                                                                {canManageUploads && (
+                                                                    <>
+                                                                        <GlobalUpload
+                                                                            className={styles.menuItem}
+                                                                            disabled={!loggedIn}
+                                                                            dialogRef={globalUploadDialogRef}
+                                                                        />
+                                                                        <ScrapData className={styles.menuItem} disabled={!loggedIn} dialogRef={scrapDataDialogRef} />
+                                                                    </>
+                                                                )}
+                                                            </div>
+                                                        )}
 
+                                                        <div className={styles.sidebarMenuSection}>
+                                                            <div className={styles.sidebarSectionLabel}>Insights</div>
                                                         <Dashboard
                                                             className={styles.menuItem}
                                                             disabled={!loggedIn}
@@ -1752,12 +1773,7 @@ const Chat = () => {
                                                             )}
                                                         />
 
-                                                        {hasPermission({
-                                                            is_sys_admin: userData ? userData?.is_sys_admin : false,
-                                                            permissions: selectTeamData ? selectTeamData?.permissions : [],
-                                                            sys_permissions: sysPers ? sysPers : [],
-                                                            requiredPermissions: ["View feedback dashboard"]
-                                                        }) && (
+                                                        {canViewFeedbackDashboard && (
                                                                 <Button
                                                                     variant="text"
                                                                     startIcon={<FeedIcon />}
@@ -1767,12 +1783,14 @@ const Chat = () => {
                                                                     Feedback Dashboard
                                                                 </Button>
                                                             )}
+                                                        </div>
                                                     </>
                                                 )}
                                             </div>
 
                                             {/* Scroll ได้เฉพาะ History */}
                                             <div className={styles.historyContent}>
+                                                <div className={styles.historySectionLabel}>Recent chats</div>
                                                 <HistoryList
                                                     key={historyOwnerId ?? "history-owner-unavailable"}
                                                     provider={historyProvider}

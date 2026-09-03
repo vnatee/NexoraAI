@@ -9,7 +9,7 @@ logs, credentials, attachments, or repetitive conversational text.
 ## Repository state
 
 - Workspace: `/workspaces/NexoraAI`
-- Branch: `feature/usage-quotas`
+- Branch: `feature/chat-workspace-polish`
 - Base checkpoint: `09eef3e feat: add private chat document workflows`.
 - Implementation checkpoint: `eff68fb feat: recover interrupted document
   processing`. It adds private Chat document extraction recovery and managed OCR
@@ -1026,11 +1026,11 @@ See `docs/usage-analytics.md`.
 
 See `docs/usage-quotas.md`.
 
-### Settings navigation — current working tree
+### Settings navigation
 
-- Branch `feature/settings-navigation` starts from the accepted durable quota
-  checkpoint `fa3fe65` so the previous horizontal-tab interface remains easy
-  to recover or compare.
+- Checkpoint `66d0595 feat: organize settings navigation` starts from the
+  accepted durable quota checkpoint `fa3fe65`, so the previous horizontal-tab
+  interface remains easy to recover or compare.
 - The settings dialog now uses stable page identifiers and a categorized,
   collapsible desktop sidebar instead of one overflowing horizontal tab row.
   Team pages are grouped under **People & access**, **AI workspace**, and
@@ -1048,10 +1048,40 @@ See `docs/usage-quotas.md`.
   Integrations, Guardrail Policy, and Usage Quotas, which own their content
   spacing. This keeps page headings and primary actions away from dialog edges
   across every current menu.
+- Frontend TypeScript validation and the memory-safe production build passed.
+  The product owner manually accepted the Settings Navigation layout and page
+  gutters before checkpointing.
+
+### Chat workspace polish — current working tree
+
+- Branch `feature/chat-workspace-polish` starts from the accepted Settings
+  Navigation checkpoint `66d0595`.
+- The shared Chat/Ask context selector now presents Agent, model, active Team,
+  and selected data scope together, with a visible Change affordance. Selection
+  state, authorization, and request payload behavior are unchanged.
+- The Chat sidebar retains all existing permission checks and actions while
+  grouping them into **Workspace**, **Management**, and **Insights**. Empty
+  Management sections are not rendered, and chat history has an explicit
+  **Recent chats** heading.
+- Users without Team/System analytics permission see the dashboard entry and
+  dialog as **My Usage**. Personal scope continues to be enforced by the
+  backend and no longer renders the redundant Users breakdown; Models, Agents,
+  and the current user's own Team attribution remain available. Authorized
+  Team/System analytics retain the broader Usage Analytics views.
+- Document Processing analytics now has domain-specific Provider, Profile,
+  File type, and Document scope filters and breakdowns. Authorized Team/System
+  views add By User, and System view adds By Team. Personal scope omits both
+  identity breakdowns. Legacy records without an immutable application user
+  remain excluded from Personal scope and are labeled `Unknown / legacy` in
+  authorized aggregate views rather than being matched from historical email.
+- The empty Chat state is more compact and the composer/context spacing is
+  tightened without changing Chat, attachment, Vision, history, or RAG logic.
 - Frontend TypeScript validation and the memory-safe production build pass.
-  Manual checks are still required for System Admin, restricted Team Admin,
-  Team creation, collapsed navigation, and the compact/mobile selector before
-  checkpointing this branch.
+  Focused usage analytics, route authorization, document usage, and quota tests
+  pass (`29 passed`).
+  Manual checks remain for expanded/collapsed sidebar, System Admin and normal
+  user menus, Team switching, context selection, Chat/Ask send, and a narrow
+  viewport before checkpointing.
 
 ## Other next work
 

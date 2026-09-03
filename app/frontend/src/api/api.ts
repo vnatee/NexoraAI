@@ -810,6 +810,9 @@ export type UsageAnalyticsParams = {
     agent_id?: string;
     provider?: string;
     model?: string;
+    profile_id?: string;
+    file_type?: string;
+    document_scope?: string;
     from?: string;
     to?: string;
     bucket?: "day" | "week" | "month";

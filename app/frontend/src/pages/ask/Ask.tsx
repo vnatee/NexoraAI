@@ -934,6 +934,7 @@ export function Component(): JSX.Element {
                                 <AgentSelectionSummary
                                     agentName={selectedAgent?.agent_name}
                                     modelName={selectedAgentModelName}
+                                    teamName={selectTeamData?.name}
                                     selectedScopes={selectedScopes}
                                     selectedDataGroups={selectedDataGroupNames}
                                     onClick={setAgentAnchorEl}
