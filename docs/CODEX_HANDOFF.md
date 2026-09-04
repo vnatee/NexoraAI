@@ -9,7 +9,7 @@ logs, credentials, attachments, or repetitive conversational text.
 ## Repository state
 
 - Workspace: `/workspaces/NexoraAI`
-- Branch: `feature/chat-workspace-polish`
+- Branch: `feature/local-backup-restore`
 - Base checkpoint: `09eef3e feat: add private chat document workflows`.
 - Implementation checkpoint: `eff68fb feat: recover interrupted document
   processing`. It adds private Chat document extraction recovery and managed OCR
@@ -926,6 +926,42 @@ described below.
   volumes; the product owner still needs to run the documented clean-deployment
   smoke test.
 
+### Local backup and restore — current working tree
+
+- Branch `feature/local-backup-restore` starts from accepted checkpoint
+  `c617141 feat: refine chat workspace and usage analytics`.
+- `scripts/local_runtime_backup.py` provides `backup`, `validate`, and
+  destructive `restore --confirm-restore` commands for the portable Compose
+  runtime. It stops only the application writer when necessary and returns it
+  to its previous running state.
+- One versioned archive contains a logical gzip MongoDB dump, MinIO Knowledge
+  objects with metadata/tags, and native snapshots for every Qdrant collection.
+  The manifest allowlists components and records sizes, SHA-256 checksums,
+  non-secret runtime compatibility values, and only a fingerprint of the
+  Fernet key.
+- Credentials, the environment file, `APP_DATA_ENCRYPTION_KEY`, bootstrap/API
+  tokens, Ollama's reproducible model cache, browser history, and temporary Chat
+  attachments are excluded. The deployment operator must protect the stable
+  Fernet key separately.
+- Restore requires matching database, bucket, configured Qdrant collection,
+  embedding model/dimensions, and Fernet fingerprint. MinIO and Qdrant are
+  restored before MongoDB metadata is restored with `mongorestore --drop`.
+  Only Qdrant collections present in the backup are replaced; unrelated
+  collections remain. The cross-product operation is not atomic; failure
+  leaves the app stopped and requires rerunning the same validated archive.
+- `app/backend/core/local_backup_io.py` performs bounded-memory MinIO archive
+  streaming and Qdrant snapshot streaming. Qdrant multipart restore does not
+  load the full snapshot into process memory.
+- Unit coverage validates archive checksums/allowlists, rejects unexpected
+  members, preserves MinIO metadata/tags while removing stale objects, replaces
+  Qdrant collections from snapshots, and verifies bounded streaming upload.
+  Focused validation passes (`7 passed`), the complete service-free backend
+  suite passes (`777 passed, 1 deselected`), frontend TypeScript/build passes,
+  and the local Compose schema renders successfully. A real backup/restore
+  drill remains required on a disposable local runtime.
+- See `docs/local-backup-restore.md` for operator commands, exclusions,
+  compatibility requirements, and post-restore ACL/citation verification.
+
 ### Usage analytics dashboard — current working tree
 
 - Branch `feature/usage-analytics-dashboard` starts from checkpoint `af326ba
@@ -1052,10 +1088,10 @@ See `docs/usage-quotas.md`.
   The product owner manually accepted the Settings Navigation layout and page
   gutters before checkpointing.
 
-### Chat workspace polish — current working tree
+### Chat workspace polish
 
-- Branch `feature/chat-workspace-polish` starts from the accepted Settings
-  Navigation checkpoint `66d0595`.
+- Checkpoint `c617141 feat: refine chat workspace and usage analytics` starts
+  from the accepted Settings Navigation checkpoint `66d0595`.
 - The shared Chat/Ask context selector now presents Agent, model, active Team,
   and selected data scope together, with a visible Change affordance. Selection
   state, authorization, and request payload behavior are unchanged.
@@ -1079,9 +1115,9 @@ See `docs/usage-quotas.md`.
 - Frontend TypeScript validation and the memory-safe production build pass.
   Focused usage analytics, route authorization, document usage, and quota tests
   pass (`29 passed`).
-  Manual checks remain for expanded/collapsed sidebar, System Admin and normal
-  user menus, Team switching, context selection, Chat/Ask send, and a narrow
-  viewport before checkpointing.
+  The product owner manually accepted the expanded/collapsed sidebar, scoped
+  My Usage/Usage Analytics behavior, and document-processing breakdowns before
+  checkpointing.
 
 ## Other next work
 
@@ -1096,14 +1132,14 @@ See `docs/usage-quotas.md`.
 
 ### Platform roadmap
 
-- **Immediate next slice:** manually smoke-test the portable Compose runtime on
-  a clean project/volume set, then add production ingress/TLS and executable,
-  provider-consistent backup/restore automation. Design verified-channel
+- **Immediate next slice:** complete a disposable backup/restore drill for the
+  portable Compose runtime, then add production ingress/TLS. Design verified-channel
   forgotten-password recovery and decide
   whether production deployments should move the local bearer from
   `sessionStorage` to an HttpOnly cookie/BFF flow before production hardening.
-- Docker Compose for the complete application, persistent volumes, health/readiness,
-  secret injection, backup/restore, and then Helm/Kubernetes.
+- Docker Compose for the complete application, persistent volumes,
+  health/readiness, secret injection, tested backup/restore, and then
+  Helm/Kubernetes.
 - AI guardrails.
 - Agent Invocation API.
 - Extend usage analytics with a versioned pricing catalog, estimated cost,
