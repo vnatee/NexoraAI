@@ -105,6 +105,13 @@ deployment whose data must be retained. Back up MongoDB, MinIO, and Qdrant as a
 consistent set before an upgrade. Source objects and vector records alone are
 not a replacement for MongoDB authorization metadata.
 
+Use the validated backup/restore workflow in
+[`local-backup-restore.md`](local-backup-restore.md). It briefly stops the
+application writer, creates logical MongoDB and MinIO backups plus native
+Qdrant snapshots, and validates a checksummed manifest. Credentials and
+`APP_DATA_ENCRYPTION_KEY` are deliberately excluded and must be protected
+separately.
+
 Changing the embedding model or dimension requires a new Qdrant collection
 and re-indexing. Changing storage or search providers does not migrate data
 automatically.

@@ -279,6 +279,7 @@ You can find extensive documentation in the [docs](docs/README.md) folder:
 - [Local Knowledge vector search](docs/local-vector-search.md)
 - [Local text embeddings](docs/local-embeddings.md)
 - [Portable local runtime](docs/local-runtime.md)
+- [Local backup and restore](docs/local-backup-restore.md)
 - [Local MongoDB](docs/local-mongodb.md)
 - [Customizing the app](docs/customization.md)
 - [HTTP Protocol](docs/http_protocol.md)

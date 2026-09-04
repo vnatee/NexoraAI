@@ -22,6 +22,7 @@ These are advanced topics that are not necessary for a basic deployment.
 - [Local development](localdev.md)
 - [Local and Microsoft Entra authentication](local-authentication.md)
 - [Local MongoDB](local-mongodb.md)
+- [Local backup and restore](local-backup-restore.md)
 - [Local Knowledge object storage](local-knowledge-storage.md)
 - [Local Knowledge vector search](local-vector-search.md)
 - [Local text embeddings](local-embeddings.md)
