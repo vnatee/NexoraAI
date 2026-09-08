@@ -98,6 +98,12 @@ docker compose --env-file .env.local-runtime \
 The bootstrap endpoint remains closed after the first local identity exists,
 but removing the token reduces exposure and prevents accidental reuse.
 
+The loopback HTTP address is for installation and host-local maintenance. Before
+allowing remote users, enable the production TLS gateway described in
+[`production-tls.md`](production-tls.md). It uses a certificate supplied by the
+deployment operator, redirects HTTP to HTTPS, and leaves the stateful services
+on the private Compose network.
+
 The Integration Controller is also started on day one but publishes no host
 port and creates no Azure MCP instances until a System Administrator enables a
 managed Azure connection. It is the only service with Docker socket access.
@@ -155,7 +161,8 @@ The Compose stack can run unchanged on an Azure VM. For a production VM:
 1. Keep MongoDB, Qdrant, Ollama, and the MinIO API on the private Compose
    network, as this file does by default.
 2. Put HTTPS ingress (Application Gateway, Front Door plus a private origin, or
-   a hardened reverse proxy) in front of port 50505.
+   the provided [`production-tls.md`](production-tls.md) Compose gateway) in
+   front of the application.
 3. Set `NEXORA_BIND_ADDRESS` only when the host firewall and network security
    group restrict access appropriately. Do not expose MinIO Console publicly.
 4. Store the env file in a protected location or inject secrets from a secret
@@ -167,8 +174,9 @@ The Compose stack can run unchanged on an Azure VM. For a production VM:
 
 For multi-node/high-availability operation, move stateful services to managed
 or clustered equivalents and deploy the application image to an orchestrator.
-This single-host Compose file does not provide database replication, automatic
-failover, TLS termination, or zero-downtime upgrades.
+This single-host runtime does not provide database replication, automatic
+failover, or zero-downtime upgrades. TLS termination is available through the
+optional production overlay; it is not enabled by the base Compose file.
 
 ## Smoke test
 
