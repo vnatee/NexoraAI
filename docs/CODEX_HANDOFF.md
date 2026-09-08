@@ -1248,6 +1248,24 @@ See `docs/usage-quotas.md`.
   build passes, the merged Compose schema renders, and a temporary real Nginx
   container passed HTTPS proxy, security-header, and HTTP-redirect smoke tests.
 
+### Product licensing foundation
+
+- `core/licensing.py` defines version 1 entitlement claims and a deterministic,
+  side-effect-free evaluator for unlicensed, active, grace, expired, revoked,
+  and invalid states. Claims cover stable license/customer/product/issuer/key
+  identifiers, edition, timezone-aware validity, bounded grace, feature flags,
+  capacity ceilings, and optional stable installation binding.
+- This slice performs schema validation only after a future caller has verified
+  a license document. It deliberately provides no signature verifier,
+  persistence, Portal import/status API, feature gates, or enforcement, so an
+  unsigned document cannot accidentally become an authorization boundary and
+  existing installations do not change behavior.
+- The focused deterministic licensing suite passes (`20 passed`), the complete
+  service-free backend suite passes (`896 passed, 1 deselected`), Ruff passes
+  for the new Python files, and the frontend production build passes. Signed
+  offline verification and stable installation identity are the next licensing
+  slice; see `docs/licensing.md`.
+
 ### Chat workspace polish
 
 - Checkpoint `c617141 feat: refine chat workspace and usage analytics` starts
