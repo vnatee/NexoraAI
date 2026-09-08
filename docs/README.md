@@ -5,6 +5,8 @@ These are advanced topics that are not necessary for a basic deployment.
 
 - [Current Codex engineering handoff](CODEX_HANDOFF.md)
 - [Product backlog](product-backlog.md)
+- [NexoraAI User Manual](user-manual.md)
+- [NexoraAI Administrator Manual](admin-manual.md)
 
 - Deploying:
   - [Troubleshooting deployment](docs/deploy_troubleshooting.md)
