@@ -391,6 +391,7 @@ from core.integration_controller import (
     IntegrationControllerClient,
     IntegrationControllerError,
 )
+from core.system_health import build_system_health_snapshot
 from core.mcp_auth import EntraClientCredentials
 from core.runtime_settings import LLMProviderSettings, ModelProvider, RuntimeSettings, parse_model_provider
 from agent_runtime.policy import normalize_tool_policy
@@ -3892,6 +3893,18 @@ async def admin_agent_audit_events(auth_claims: dict[str, Any]):
     except ValueError:
         return jsonify({"error": "hours and limit must be integers"}), 400
     return jsonify({"events": events})
+
+
+@bp.get("/admin/system-health")
+@authenticated
+async def admin_system_health(auth_claims: dict[str, Any]):
+    """Return a secret-free operational snapshot for System Admins."""
+
+    _require_system_admin(auth_claims)
+    snapshot = await build_system_health_snapshot(
+        get_database(), current_app.config, os.environ
+    )
+    return jsonify(snapshot)
 
 
 @bp.route("/config", methods=["GET"])

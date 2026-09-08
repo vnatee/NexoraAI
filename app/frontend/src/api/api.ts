@@ -19,6 +19,7 @@ import {
     ManagedMCPServer,
     MCPServerPayload,
     IntegrationConnectionSummary,
+    SystemHealthSnapshot,
     AgentAuditEvent,
     User,
     RegisterUserPayload,
@@ -1957,6 +1958,13 @@ export async function listIntegrationConnectionsApi(teamId: string, idToken: str
     const query = new URLSearchParams({ team_id: teamId });
     const response = await fetch(`/admin/integration-connections?${query}`, { headers: await getHeaders(idToken) });
     return (await parseMCPResponse(response)).connections ?? [];
+}
+
+export async function getSystemHealthApi(idToken: string): Promise<SystemHealthSnapshot> {
+    const response = await fetch("/admin/system-health", { headers: await getHeaders(idToken) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to load system health");
+    return data;
 }
 
 export async function listMCPServersApi(teamId: string, idToken: string): Promise<ManagedMCPServer[]> {

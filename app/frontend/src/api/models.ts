@@ -312,6 +312,34 @@ export interface IntegrationConnectionSummary {
     agent_usage_count: number;
 }
 
+export type SystemHealthStatus = "healthy" | "configured" | "degraded" | "unavailable" | "not_configured" | "running" | "stopped" | "unknown";
+
+export interface SystemHealthService {
+    id: string;
+    name: string;
+    status: SystemHealthStatus;
+    detail: string;
+    provider: string;
+    latency_ms?: number;
+}
+
+export interface SystemHealthSnapshot {
+    status: "healthy" | "degraded";
+    checked_at: string;
+    services: SystemHealthService[];
+    integrations: {
+        total: number;
+        enabled: number;
+        disabled: number;
+        attention: number;
+        by_kind: Array<{ kind: IntegrationKind; total: number; enabled: number; attention: number }>;
+    };
+    jobs: {
+        ingestion: { queued: number; processing: number; failed: number; worker_status: SystemHealthStatus };
+        attachments: { queued: number; processing: number; failed: number; worker_status: SystemHealthStatus; cleanup_status: SystemHealthStatus };
+    };
+}
+
 export interface AgentToolPolicy {
     max_total_calls: number;
     max_calls_per_tool: number;

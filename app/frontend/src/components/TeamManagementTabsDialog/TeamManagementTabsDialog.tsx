@@ -48,6 +48,7 @@ import { AgentAuditManagement } from "../AgentAuditManagement";
 import { GuardrailPolicyPage } from "./Tabs/GuardrailPolicyPage";
 import { UsageQuotaPolicyPage } from "./Tabs/UsageQuotaPolicyPage";
 import { ChatHistoryPolicyPage } from "./Tabs/ChatHistoryPolicyPage";
+import { SystemHealthManagement } from "../SystemHealthManagement/SystemHealthManagement";
 
 interface Props {
     open: boolean;
@@ -215,6 +216,14 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             permission: ["Manage users"],
             group: "user-team",
             element: <UserPermissionPanel />
+        },
+        {
+            id: "system-health",
+            label: "System health",
+            permission: [],
+            group: "system",
+            systemAdminOnly: true,
+            element: <SystemHealthManagement />
         },
         {
             id: "llm-providers",
