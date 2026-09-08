@@ -1229,6 +1229,25 @@ See `docs/usage-quotas.md`.
   passes (`874 passed, 1 deselected`), and the frontend TypeScript/production
   build passes.
 
+### Production TLS ingress
+
+- `docker-compose.local-tls.yml` is an opt-in overlay for the portable local
+  runtime. It adds an Nginx gateway on ports 80/443, redirects HTTP to HTTPS,
+  proxies streaming/API traffic to the private application service, and mounts
+  operator-supplied `fullchain.pem` and `privkey.pem` files read-only from a
+  directory outside the repository.
+- The gateway accepts TLS 1.2/1.3, adds baseline HSTS, MIME-sniffing,
+  same-origin framing, referrer and browser-permission headers, disables
+  response buffering for Chat streams, and retains the base application's
+  loopback-only port for host maintenance. Stateful services remain private.
+- Certificate issuance/ACME automation, physical firewall/DNS configuration,
+  an HttpOnly Local Auth cookie/BFF flow, and product entitlement licensing are
+  deliberately separate follow-up slices. See `docs/production-tls.md`.
+- The focused TLS/Compose tests pass (`2 passed`), the complete service-free
+  backend suite passes (`876 passed, 1 deselected`), the frontend production
+  build passes, the merged Compose schema renders, and a temporary real Nginx
+  container passed HTTPS proxy, security-header, and HTTP-redirect smoke tests.
+
 ### Chat workspace polish
 
 - Checkpoint `c617141 feat: refine chat workspace and usage analytics` starts
