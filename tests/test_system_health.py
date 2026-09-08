@@ -86,6 +86,7 @@ async def test_health_snapshot_contains_safe_service_integration_and_job_counts(
             "KNOWLEDGE_SEARCH_PROVIDER": "qdrant",
             "QDRANT_URL": "http://qdrant:6333",
             "INTEGRATION_CONTROLLER_URL": "http://integration-controller:8080",
+            "NEXORA_TLS_GATEWAY_HEALTH_URL": "http://tls-gateway:8081",
             "USE_USER_UPLOAD": "true",
             "CHAT_ATTACHMENT_STORE": "local",
             "SECRET_VALUE": "must-not-leak",
@@ -109,6 +110,14 @@ async def test_health_snapshot_contains_safe_service_integration_and_job_counts(
     }
     assert snapshot["jobs"]["ingestion"]["processing"] == 1
     assert snapshot["jobs"]["attachments"]["failed"] == 1
+    assert next(item for item in snapshot["services"] if item["id"] == "tls_gateway") == {
+        "id": "tls_gateway",
+        "name": "HTTPS gateway",
+        "status": "healthy",
+        "detail": "Health endpoint responded",
+        "provider": "Nginx",
+        "latency_ms": 12,
+    }
     assert "must-not-leak" not in str(snapshot)
 
 
@@ -145,6 +154,26 @@ def test_resource_thresholds():
     assert system_health._resource_status(79.9) == "healthy"
     assert system_health._resource_status(80) == "warning"
     assert system_health._resource_status(90) == "critical"
+
+
+@pytest.mark.asyncio
+async def test_health_snapshot_omits_tls_gateway_when_overlay_is_not_configured(monkeypatch):
+    monkeypatch.setattr(
+        system_health,
+        "_resource_snapshot",
+        lambda: {"scope": "runtime_environment", "scope_label": "Runtime", "status": "healthy"},
+    )
+    snapshot = await system_health.build_system_health_snapshot(
+        _Database(),
+        {"llm_profiles": {}},
+        {
+            "KNOWLEDGE_STORAGE_PROVIDER": "azure",
+            "KNOWLEDGE_SEARCH_PROVIDER": "azure",
+            "INTEGRATION_CONTROLLER_URL": "",
+        },
+    )
+
+    assert all(item["id"] != "tls_gateway" for item in snapshot["services"])
 
 
 @pytest.mark.asyncio

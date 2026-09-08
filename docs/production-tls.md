@@ -110,6 +110,8 @@ openssl s_client -connect <your-hostname>:443 -servername <your-hostname>
 Confirm that:
 
 - the certificate chain and hostname validate without `--insecure`;
+- **System administration → System health** lists **HTTPS gateway · Nginx** as
+  healthy while this overlay is enabled;
 - HTTP redirects to the expected HTTPS hostname;
 - sign-in, Chat streaming, uploads, downloads, and Draw.io artifacts work;
 - response headers include `Strict-Transport-Security`;

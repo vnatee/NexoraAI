@@ -1240,6 +1240,12 @@ See `docs/usage-quotas.md`.
   same-origin framing, referrer and browser-permission headers, disables
   response buffering for Chat streams, and retains the base application's
   loopback-only port for host maintenance. Stateful services remain private.
+- Enabling the TLS overlay also registers its internal Nginx liveness endpoint
+  with System Health, where it appears as **HTTPS gateway · Nginx**. The base
+  runtime omits this component when the overlay is not enabled. Certificate
+  expiry inspection and warning thresholds remain follow-up work. The combined
+  System Health/TLS regression suite passes (`8 passed`) and the merged Compose
+  schema exposes the probe only on the private runtime network.
 - Certificate issuance/ACME automation, physical firewall/DNS configuration,
   an HttpOnly Local Auth cookie/BFF flow, and product entitlement licensing are
   deliberately separate follow-up slices. See `docs/production-tls.md`.

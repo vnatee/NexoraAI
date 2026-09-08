@@ -11,7 +11,6 @@ from urllib.parse import urlparse
 import aiohttp
 import psutil
 
-
 INTEGRATION_COLLECTIONS = {
     "rest_api": "external_apis",
     "database": "external_databases",
@@ -306,14 +305,18 @@ async def build_system_health_snapshot(
         "Managed containers",
         controller_url,
     )
-    services.extend(
-        await asyncio.gather(
-            storage_check,
-            search_check,
-            model_service_check,
-            controller_check,
+    service_checks = [storage_check, search_check, model_service_check, controller_check]
+    gateway_url = _safe_http_url(str(settings.get("NEXORA_TLS_GATEWAY_HEALTH_URL", "")), "/gateway-healthz")
+    if gateway_url:
+        service_checks.append(
+            _http_service(
+                "tls_gateway",
+                "HTTPS gateway",
+                "Nginx",
+                gateway_url,
+            )
         )
-    )
+    services.extend(await asyncio.gather(*service_checks))
 
     required_failures = [item for item in services if item["status"] == "unavailable"]
     resource_attention = resources["status"] in {"warning", "critical", "unavailable"}
