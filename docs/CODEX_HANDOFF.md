@@ -1338,7 +1338,9 @@ explicit audit-mode comparison slice. See `docs/licensing.md`.
   `docs/NexoraAI-Administrator-Manual.docx` are the formatted Word deliverables.
   They include screenshot placeholders rather than environment-specific images.
   Regenerate them with `.venv/bin/python scripts/build_manual_docx.py` whenever
-  either Markdown source changes.
+  either Markdown source changes. `tests/test_manual_docx.py` verifies that both
+  packages remain readable, retain their expected placeholders, and keep TOC
+  and page-number fields inside OOXML runs for Microsoft Word compatibility.
 - When the product owner says **update manual**, update these existing files in
   place according to the affected audience. A feature that changes both the
   user workflow and its administration must update both manuals. Keep examples
