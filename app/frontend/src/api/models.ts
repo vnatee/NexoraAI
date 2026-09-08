@@ -327,6 +327,16 @@ export interface SystemHealthSnapshot {
     status: "healthy" | "degraded";
     checked_at: string;
     services: SystemHealthService[];
+    resources: {
+        scope: "runtime_environment";
+        scope_label: string;
+        status: "healthy" | "warning" | "critical" | "unavailable";
+        cpu?: { usage_percent: number; logical_cores: number; load_average_1m: number | null };
+        memory?: { used_bytes: number; total_bytes: number; available_bytes: number; usage_percent: number };
+        disk?: { mount: string; used_bytes: number; total_bytes: number; free_bytes: number; usage_percent: number };
+        process?: { resident_memory_bytes: number };
+        thresholds?: { warning_percent: number; critical_percent: number };
+    };
     integrations: {
         total: number;
         enabled: number;

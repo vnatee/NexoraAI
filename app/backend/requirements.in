@@ -28,6 +28,8 @@ PyMuPDF
 python-docx
 openpyxl
 python-pptx
+psutil
+pymongo
 beautifulsoup4
 types-beautifulsoup4
 msgraph-sdk

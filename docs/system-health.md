@@ -17,8 +17,14 @@ application itself is down.
 - ingestion and temporary attachment queue, processing, failure, recovery
   worker, and cleanup worker status.
 
-The browser refreshes the snapshot every 30 seconds. HTTP probes have a short
-timeout. The response contains provider names and controlled status messages,
+The browser loads one snapshot when the page opens and refreshes only when a
+System Administrator selects **Refresh**; there is no continuous browser
+polling. The snapshot also includes CPU, memory, root-disk, logical-core/load,
+and application resident-memory values from the runtime environment visible to
+the application process. In a container deployment these values may describe
+the container namespace/runtime rather than the physical host's capacity.
+
+HTTP probes have a short timeout. The response contains provider names and controlled status messages,
 but never configured URLs, exception text, credentials, prompts, tool output,
 or document content.
 
@@ -31,7 +37,7 @@ partial results when a dependency is unavailable.
 
 ## Follow-up
 
-Add host/container CPU, memory, disk, restart count, request latency/error-rate
+Add explicit host/container metrics, restart count, request latency/error-rate
 time series, alert rules, and external Prometheus/Grafana or Datadog monitoring.
 External alerts remain mandatory for production because they can detect a full
 NexoraAI outage.

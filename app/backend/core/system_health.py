@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
+import psutil
 
 
 INTEGRATION_COLLECTIONS = {
@@ -165,6 +166,59 @@ def _ollama_health_url(environ: Mapping[str, str]) -> str | None:
     return None
 
 
+def _resource_status(percent: float) -> str:
+    if percent >= 90:
+        return "critical"
+    if percent >= 80:
+        return "warning"
+    return "healthy"
+
+
+def _resource_snapshot() -> dict[str, Any]:
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+    cpu_percent = round(float(psutil.cpu_percent(interval=0.1)), 1)
+    process = psutil.Process()
+    process_memory = process.memory_info()
+    statuses = [
+        _resource_status(cpu_percent),
+        _resource_status(float(memory.percent)),
+        _resource_status(float(disk.percent)),
+    ]
+    status = "critical" if "critical" in statuses else "warning" if "warning" in statuses else "healthy"
+    try:
+        load_average_1m = round(float(os.getloadavg()[0]), 2)
+    except (AttributeError, OSError):
+        load_average_1m = None
+    return {
+        "scope": "runtime_environment",
+        "scope_label": "Runtime environment visible to the application",
+        "status": status,
+        "cpu": {
+            "usage_percent": cpu_percent,
+            "logical_cores": int(psutil.cpu_count(logical=True) or 0),
+            "load_average_1m": load_average_1m,
+        },
+        "memory": {
+            "used_bytes": int(memory.used),
+            "total_bytes": int(memory.total),
+            "available_bytes": int(memory.available),
+            "usage_percent": round(float(memory.percent), 1),
+        },
+        "disk": {
+            "mount": "/",
+            "used_bytes": int(disk.used),
+            "total_bytes": int(disk.total),
+            "free_bytes": int(disk.free),
+            "usage_percent": round(float(disk.percent), 1),
+        },
+        "process": {
+            "resident_memory_bytes": int(process_memory.rss),
+        },
+        "thresholds": {"warning_percent": 80, "critical_percent": 90},
+    }
+
+
 async def build_system_health_snapshot(
     database: Any,
     config: Mapping[str, Any],
@@ -172,6 +226,14 @@ async def build_system_health_snapshot(
 ) -> dict[str, Any]:
     settings = os.environ if environ is None else environ
     services = [_service("application", "NexoraAI application", "healthy", "System Health API is responding")]
+    try:
+        resources = _resource_snapshot()
+    except Exception:
+        resources = {
+            "scope": "runtime_environment",
+            "scope_label": "Runtime environment visible to the application",
+            "status": "unavailable",
+        }
 
     try:
         started = time.perf_counter()
@@ -254,11 +316,13 @@ async def build_system_health_snapshot(
     )
 
     required_failures = [item for item in services if item["status"] == "unavailable"]
-    status = "healthy" if not required_failures else "degraded"
+    resource_attention = resources["status"] in {"warning", "critical", "unavailable"}
+    status = "healthy" if not required_failures and not resource_attention else "degraded"
     return {
         "status": status,
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "services": services,
+        "resources": resources,
         "integrations": integrations,
         "jobs": jobs,
     }

@@ -344,7 +344,9 @@ prompty==0.1.50
 propcache==0.2.0
     # via yarl
 psutil==5.9.8
-    # via azure-monitor-opentelemetry-exporter
+    # via
+    #   -r requirements.in
+    #   azure-monitor-opentelemetry-exporter
 pycparser==2.22
     # via cffi
 pycryptodome==3.23.0
@@ -454,3 +456,4 @@ yarl==1.17.2
 zipp==3.21.0
     # via importlib-metadata
 pymongo
+    # via -r requirements.in
