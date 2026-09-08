@@ -234,6 +234,14 @@ See `docs/ai-guardrails.md`.
   currently accept an encrypted OAuth bearer access token. Browser-driven
   OAuth authorization and refresh-token rotation remain follow-up work; see
   `docs/jira-servicenow-mcp.md`.
+- The Administration integration landing page now consumes a provider-neutral,
+  secret-free connection projection across native and MCP collections. It
+  displays all configured connections together with `Native` or `MCP`, status,
+  provider, and Agent usage, while provider-specific editors and storage remain
+  intact. Agent Management places MCP assignments inside the shared
+  **Integrations** tab. A compatibility binding projection reads all existing
+  binding collections plus legacy `mcp_server_ids`; no credential or binding
+  data migration has been performed. See `docs/integration-control-plane.md`.
 - After a successful MCP connection test, the connected/tool-count badge opens
   a searchable dialog containing the discovered tool names and descriptions.
   This discovery result is held only in the current frontend session and is not

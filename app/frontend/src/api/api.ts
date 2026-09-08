@@ -18,6 +18,7 @@ import {
     ManagedLLMProvider,
     ManagedMCPServer,
     MCPServerPayload,
+    IntegrationConnectionSummary,
     AgentAuditEvent,
     User,
     RegisterUserPayload,
@@ -1950,6 +1951,12 @@ async function parseMCPResponse(response: Response): Promise<any> {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `MCP request failed (${response.status})`);
     return data;
+}
+
+export async function listIntegrationConnectionsApi(teamId: string, idToken: string): Promise<IntegrationConnectionSummary[]> {
+    const query = new URLSearchParams({ team_id: teamId });
+    const response = await fetch(`/admin/integration-connections?${query}`, { headers: await getHeaders(idToken) });
+    return (await parseMCPResponse(response)).connections ?? [];
 }
 
 export async function listMCPServersApi(teamId: string, idToken: string): Promise<ManagedMCPServer[]> {

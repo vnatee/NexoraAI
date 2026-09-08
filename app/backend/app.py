@@ -112,7 +112,11 @@ from mongo_table_connecters.external_apis import insert_apis, delete_apis_by_id,
 from mongo_table_connecters.agent_bindings import insert_agent_binding, get_all_agent_bindings_by_agent_id, delete_agent_binding_by_id, update_agent_binding,get_agent_binding_by_apisid_and_endpointname
 from mongo_table_connecters.fixed_promts import insert_fixed_prompt, get_all_fixed_prompt
 from mongo_table_connecters.external_database import insert_external_database, get_external_database_by_id, get_external_databases_by_team_id, get_all_external_databases, update_external_database, delete_external_database_by_id, serialize_external_database
-from mongo_table_connecters.integration_catalog import IntegrationAssignmentError, assign_unassigned_integration
+from mongo_table_connecters.integration_catalog import (
+    IntegrationAssignmentError,
+    assign_unassigned_integration,
+    list_integration_connections,
+)
 from mongo_table_connecters.integration_lifecycle_events import insert_integration_lifecycle_event
 from mongo_table_connecters.database_binding import insert_database_binding, get_database_binding_by_id, get_database_bindings_by_agent_id, get_all_database_bindings, update_database_binding, delete_database_binding_by_id
 # ⭐ CHART CAPABILITY: import chart binding functions
@@ -7658,6 +7662,17 @@ async def assign_integration_team(auth_claims: dict[str, Any]):
         return jsonify({"error": str(error)}), 400
     except AccessControlError as error:
         return error_response(error, "/assign_integration_team")
+
+
+@bp.get("/admin/integration-connections")
+@authenticated
+async def admin_list_integration_connections(auth_claims: dict[str, Any]):
+    try:
+        team_id = str(request.args.get("team_id") or "").strip()
+        _require_integration_catalog_access(auth_claims, team_id)
+        return jsonify({"connections": list_integration_connections(team_id)})
+    except AccessControlError as error:
+        return error_response(error, "/admin/integration-connections")
 
 async def insert_first_limit_size(global_limit, team_limit, personal_limit):
     try:

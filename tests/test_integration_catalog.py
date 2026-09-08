@@ -20,23 +20,51 @@ class _Collection:
             return None
         return dict(document)
 
-    def count_documents(self, query):
-        def value_at_path(document, path):
-            value = document
-            for part in path.split("."):
-                if not isinstance(value, dict):
-                    return None
-                value = value.get(part)
-            return value
+    @staticmethod
+    def _value_at_path(document, path):
+        value = document
+        for part in path.split("."):
+            if not isinstance(value, dict):
+                return None
+            value = value.get(part)
+        return value
 
+    @classmethod
+    def _matches(cls, document, query):
+        for key, expected in query.items():
+            actual = cls._value_at_path(document, key)
+            if isinstance(expected, dict) and "$in" in expected:
+                if actual not in expected["$in"]:
+                    return False
+            elif isinstance(actual, list):
+                if expected not in actual:
+                    return False
+            elif actual != expected:
+                return False
+        return True
+
+    def find(self, query):
+        return [
+            dict(document)
+            for document in self.documents.values()
+            if self._matches(document, query)
+        ]
+
+    def distinct(self, field, query):
+        return list(
+            {
+                self._value_at_path(document, field)
+                for document in self.documents.values()
+                if self._matches(document, query)
+                and self._value_at_path(document, field) is not None
+            }
+        )
+
+    def count_documents(self, query):
         return sum(
             1
             for document in self.documents.values()
-            if all(
-                (expected in actual if isinstance(actual, list) else actual == expected)
-                for key, expected in query.items()
-                for actual in [value_at_path(document, key)]
-            )
+            if self._matches(document, query)
         )
 
     def update_one(self, query, update):
@@ -163,6 +191,108 @@ def test_assign_unassigned_business_document_connection_to_team(monkeypatch):
     assert database["business_document_connections"].documents["documents-1"]["team_id"] == "team-1"
 
 
+def test_unified_connection_projection_reads_legacy_collections_without_secrets(
+    monkeypatch,
+):
+    database = _Database(
+        {
+            "mcp_servers": _Collection(
+                [
+                    {
+                        "_id": "mcp-1",
+                        "team_id": "team-1",
+                        "name": "Jira",
+                        "vendor": "atlassian",
+                        "url": "https://mcp.atlassian.com/v1/mcp/authv2",
+                        "headers_ciphertext": "secret",
+                        "enabled": True,
+                        "provisioning_status": "external",
+                        "delete_at": None,
+                    }
+                ]
+            ),
+            "business_document_connections": _Collection(
+                [
+                    {
+                        "_id": "docs-1",
+                        "team_id": "team-1",
+                        "name": "Sales SharePoint",
+                        "provider": "microsoft365",
+                        "public_config": {"drive_id": "drive-1"},
+                        "secrets_ciphertext": "secret",
+                        "enabled": True,
+                        "delete_at": None,
+                    }
+                ]
+            ),
+            "agents": _Collection(
+                [
+                    {
+                        "_id": "agent-1",
+                        "delete_at": None,
+                        "config": {"tool_settings": {"mcp_server_ids": ["mcp-1"]}},
+                    }
+                ]
+            ),
+            "business_document_bindings": _Collection(
+                [
+                    {
+                        "_id": "binding-1",
+                        "agent_id": "agent-1",
+                        "connection_id": "docs-1",
+                        "delete_at": None,
+                    }
+                ]
+            ),
+        }
+    )
+    monkeypatch.setattr(integration_catalog, "get_database", lambda: database)
+
+    connections = integration_catalog.list_integration_connections("team-1")
+
+    assert [(item["id"], item["connection_type"]) for item in connections] == [
+        ("mcp-1", "mcp"),
+        ("docs-1", "native"),
+    ]
+    assert connections[0]["agent_usage_count"] == 1
+    assert connections[1]["agent_usage_count"] == 1
+    assert "ciphertext" not in str(connections)
+
+
+def test_unified_binding_projection_includes_legacy_mcp_and_native_bindings(
+    monkeypatch,
+):
+    database = _Database(
+        {
+            "mail_bindings": _Collection(
+                [
+                    {
+                        "_id": "mail-binding-1",
+                        "agent_id": "agent-1",
+                        "email_id": "mail-1",
+                        "enabled": True,
+                        "delete_at": None,
+                    }
+                ]
+            )
+        }
+    )
+    monkeypatch.setattr(integration_catalog, "get_database", lambda: database)
+
+    bindings = integration_catalog.list_agent_integration_bindings(
+        "agent-1",
+        agent_document={
+            "_id": "agent-1",
+            "config": {"tool_settings": {"mcp_server_ids": ["mcp-1"]}},
+        },
+    )
+
+    assert {(item["kind"], item["connection_id"]) for item in bindings} == {
+        ("mail", "mail-1"),
+        ("mcp", "mcp-1"),
+    }
+
+
 def test_mcp_assignment_rejects_connection_used_by_legacy_agent(monkeypatch):
     database = _Database(
         {
@@ -215,6 +345,41 @@ def test_team_catalog_delegates_to_team_permission_check(monkeypatch):
     backend_app._require_integration_catalog_access({"sub": "user-1"}, "team-1")
 
     assert calls == [({"sub": "user-1"}, "team-1", "Manage integrations")]
+
+
+@pytest.mark.asyncio
+async def test_unified_connection_endpoint_is_team_scoped(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        backend_app,
+        "_require_integration_catalog_access",
+        lambda claims, team_id, **_kwargs: calls.append((claims, team_id)),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "list_integration_connections",
+        lambda team_id: [
+            {
+                "id": "mcp-1",
+                "kind": "mcp",
+                "connection_type": "mcp",
+                "provider": "atlassian",
+                "name": "Jira",
+                "team_id": team_id,
+                "enabled": True,
+                "status": "enabled",
+                "detail": "https://mcp.atlassian.com/v1/mcp/authv2",
+                "agent_usage_count": 1,
+            }
+        ],
+    )
+
+    response = await client.get("/admin/integration-connections?team_id=team-1")
+
+    assert response.status_code == 200
+    payload = await response.get_json()
+    assert payload["connections"][0]["team_id"] == "team-1"
+    assert calls[0][1] == "team-1"
 
 
 def test_safe_binding_catalog_allows_agent_manager(monkeypatch):

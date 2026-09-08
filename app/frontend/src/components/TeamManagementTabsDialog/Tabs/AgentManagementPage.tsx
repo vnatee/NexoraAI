@@ -451,8 +451,8 @@ function AgentDialog({
     const isCreate = mode === "new";
 
     // Tab state — always reset to "info" when dialog opens
-    const [activeTab, setActiveTab] = useState<"info" | "integrations" | "mcp">("info");
-    const [integrationSection, setIntegrationSection] = useState<"rest" | "database" | "mail" | "documents" | "messaging" | "visualization">("rest");
+    const [activeTab, setActiveTab] = useState<"info" | "integrations">("info");
+    const [integrationSection, setIntegrationSection] = useState<"rest" | "database" | "mail" | "documents" | "messaging" | "mcp" | "visualization">("rest");
 
     useEffect(() => {
         if (open) {
@@ -758,7 +758,6 @@ function AgentDialog({
                         disabled={integrationsTabDisabled}
                         title={integrationsTabDisabled ? "Save the agent first to manage integrations" : undefined}
                     />
-                    <Tab label="MCP Tools" value="mcp" />
                 </Tabs>
             </Box>
 
@@ -1390,12 +1389,28 @@ function AgentDialog({
                     </Stack>
                 )}
 
-                {/* ══════════════════════════════════
-                    TAB 3 — MCP Tools
-                    Connections and credentials remain
-                    centrally managed by administrators.
-                ══════════════════════════════════ */}
-                {activeTab === "mcp" && (
+                {activeTab === "integrations" && !isCreate && (
+                    <Paper variant="outlined" sx={{ mb: 3 }}>
+                        <Tabs
+                            value={integrationSection}
+                            onChange={(_, value) => setIntegrationSection(value)}
+                            variant="scrollable"
+                            scrollButtons="auto"
+                            aria-label="agent integration categories"
+                        >
+                            <Tab label={`REST APIs (${apiBindings.length})`} value="rest" />
+                            <Tab label={`Databases (${databaseBindings.length})`} value="database" />
+                            <Tab label={`Mail (${mailBindings.length})`} value="mail" />
+                            <Tab label={`Documents (${documentBindings.length})`} value="documents" />
+                            <Tab label={`Messaging (${messagingBindings.length})`} value="messaging" />
+                            <Tab label={`MCP (${config.tool_settings?.mcp_server_ids?.length ?? 0})`} value="mcp" />
+                            <Tab label={`Visualization (${chartBindings.length})`} value="visualization" />
+                        </Tabs>
+                    </Paper>
+                )}
+
+                {/* MCP remains a distinct runtime adapter but is managed in the same Integration context. */}
+                {activeTab === "integrations" && integrationSection === "mcp" && !isCreate && (
                     <Stack spacing={3}>
                         {config.runtime !== "langgraph" && (
                             <Alert severity="warning">MCP tools require the LangGraph runtime. Change Agent Runtime in Agent Info before use.</Alert>
@@ -1587,25 +1602,8 @@ function AgentDialog({
                     Designed to be extensible: add new
                     integration sections here as needed.
                 ══════════════════════════════════ */}
-                {activeTab === "integrations" && !isCreate && (
+                {activeTab === "integrations" && integrationSection !== "mcp" && !isCreate && (
                     <Stack spacing={3}>
-                        <Paper variant="outlined">
-                            <Tabs
-                                value={integrationSection}
-                                onChange={(_, value) => setIntegrationSection(value)}
-                                variant="scrollable"
-                                scrollButtons="auto"
-                                aria-label="agent integration categories"
-                            >
-                                <Tab label={`REST APIs (${apiBindings.length})`} value="rest" />
-                                <Tab label={`Databases (${databaseBindings.length})`} value="database" />
-                                <Tab label={`Mail (${mailBindings.length})`} value="mail" />
-                                <Tab label={`Documents (${documentBindings.length})`} value="documents" />
-                                <Tab label={`Messaging (${messagingBindings.length})`} value="messaging" />
-                                <Tab label={`Visualization (${chartBindings.length})`} value="visualization" />
-                            </Tabs>
-                        </Paper>
-
                         <Alert severity="info">
                             Integration bindings are saved immediately. Credentials and connection definitions remain centrally managed and are not copied into
                             the Agent configuration.
@@ -2262,8 +2260,8 @@ function AgentDialog({
                 <Button onClick={onClose} disabled={isSaving}>
                     Close
                 </Button>
-                {/* Integrations persist their bindings directly; Agent Info and MCP settings save with the agent config. */}
-                {!isViewMode && activeTab !== "integrations" && (
+                {/* Native bindings persist directly; Agent Info and MCP policy remain part of the Agent config. */}
+                {!isViewMode && (activeTab !== "integrations" || integrationSection === "mcp") && (
                     <Button
                         variant="contained"
                         disabled={!agentName || isSaving}

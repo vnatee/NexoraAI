@@ -297,6 +297,21 @@ export interface MCPServerPayload {
 
 export type MCPCategory = "observability" | "diagram_collaboration" | "cloud_platform" | "developer_tools" | "business_workflows" | "data_search" | "custom";
 
+export type IntegrationKind = "rest_api" | "database" | "mail" | "messaging" | "mcp" | "business_documents";
+
+export interface IntegrationConnectionSummary {
+    id: string;
+    kind: IntegrationKind;
+    connection_type: "mcp" | "native";
+    provider: string;
+    name: string;
+    team_id: string;
+    enabled: boolean;
+    status: string;
+    detail: string;
+    agent_usage_count: number;
+}
+
 export interface AgentToolPolicy {
     max_total_calls: number;
     max_calls_per_tool: number;
