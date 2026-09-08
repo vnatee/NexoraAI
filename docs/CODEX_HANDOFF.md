@@ -1328,6 +1328,21 @@ explicit audit-mode comparison slice. See `docs/licensing.md`.
   My Usage/Usage Analytics behavior, and document-processing breakdowns before
   checkpointing.
 
+### Product manuals
+
+- `docs/user-manual.md` and `docs/admin-manual.md` are the stable English
+  user-facing manuals, first established against the 2026-09-08 interface.
+  They document current navigation, permission-dependent visibility, fields,
+  examples, safety notes, troubleshooting, and links to specialist guides.
+- When the product owner says **update manual**, update these existing files in
+  place according to the affected audience. A feature that changes both the
+  user workflow and its administration must update both manuals. Keep examples
+  fictitious and never copy credentials, raw prompts, tool output, or customer
+  data into documentation.
+- Prefer exact current UI labels and text-based procedures. Screenshots are
+  optional release assets and must be refreshed when labels/layout change; they
+  are not the primary source of truth.
+
 ## Other next work
 
 ### Near-term document work
