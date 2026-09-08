@@ -78,7 +78,7 @@ export class IndexedDBProvider implements IHistoryProvider {
         return loadedItems;
     }
 
-    async addItem(id: string, answers: Answers): Promise<void> {
+    async addItem(id: string, answers: Answers, _idToken?: string, _teamId?: string, _conversationId?: string): Promise<void> {
         if (!answers.length || !answers[answers.length - 1][0].trim()) {
             return;
         }

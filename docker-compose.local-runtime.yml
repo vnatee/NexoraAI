@@ -14,6 +14,8 @@ services:
         condition: service_healthy
       ollama-models:
         condition: service_completed_successfully
+      integration-controller:
+        condition: service_healthy
     environment:
       APP_RUNTIME_MODE: local
       APP_DATA_ENCRYPTION_KEY: ${APP_DATA_ENCRYPTION_KEY:?Set APP_DATA_ENCRYPTION_KEY}
@@ -55,10 +57,15 @@ services:
       USE_LOCAL_PDF_PARSER: "true"
       USE_LOCAL_HTML_PARSER: "true"
       USE_CHAT_HISTORY_COSMOS: "false"
-      USE_CHAT_HISTORY_BROWSER: "true"
+      USE_CHAT_HISTORY_DATABASE: "true"
+      USE_CHAT_HISTORY_BROWSER: "false"
+      CHAT_HISTORY_RETENTION_DAYS: ${CHAT_HISTORY_RETENTION_DAYS:-90}
+      CHAT_HISTORY_CLEANUP_INTERVAL_SECONDS: ${CHAT_HISTORY_CLEANUP_INTERVAL_SECONDS:-3600}
       CHAT_ATTACHMENT_STORE: local
       CHAT_ATTACHMENT_LOCAL_PATH: /data/chat-attachments
       MAX_UPLOAD_SIZE_BYTES: ${MAX_UPLOAD_SIZE_BYTES:-104857600}
+      INTEGRATION_CONTROLLER_URL: http://integration-controller:8080
+      INTEGRATION_CONTROLLER_TOKEN: ${INTEGRATION_CONTROLLER_TOKEN:-}
     ports:
       - "${NEXORA_BIND_ADDRESS:-127.0.0.1}:${NEXORA_APP_PORT:-50505}:8000"
     volumes:
@@ -73,6 +80,34 @@ services:
       timeout: 8s
       retries: 20
       start_period: 60s
+
+  integration-controller:
+    build:
+      context: .
+      dockerfile: services/integration-controller/Dockerfile
+    image: ${NEXORA_INTEGRATION_CONTROLLER_IMAGE:-nexoraai-integration-controller:local}
+    restart: unless-stopped
+    environment:
+      INTEGRATION_CONTROLLER_TOKEN: ${INTEGRATION_CONTROLLER_TOKEN:-}
+      AZURE_MCP_IMAGE: ${AZURE_MCP_IMAGE:-}
+      AZURE_MCP_DOCKER_NETWORK: ${NEXORA_RUNTIME_NETWORK:-nexoraai_runtime}
+      AZURE_MCP_CPU_LIMIT: ${AZURE_MCP_CPU_LIMIT:-0.5}
+      AZURE_MCP_MEMORY_LIMIT: ${AZURE_MCP_MEMORY_LIMIT:-512m}
+      AZURE_MCP_STARTUP_TIMEOUT_SECONDS: ${AZURE_MCP_STARTUP_TIMEOUT_SECONDS:-60}
+      AZURE_MCP_COLLECT_TELEMETRY: ${AZURE_MCP_COLLECT_TELEMETRY:-false}
+      ALLOW_UNPINNED_AZURE_MCP_IMAGE: ${ALLOW_UNPINNED_AZURE_MCP_IMAGE:-false}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   mongodb:
     image: ${NEXORA_MONGO_IMAGE:-mongo:8.0}
@@ -175,3 +210,7 @@ volumes:
   nexora_qdrant_data:
   nexora_ollama_data:
   nexora_chat_attachments:
+
+networks:
+  default:
+    name: ${NEXORA_RUNTIME_NETWORK:-nexoraai_runtime}

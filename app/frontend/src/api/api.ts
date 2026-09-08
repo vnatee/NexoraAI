@@ -31,7 +31,8 @@ import {
     AgentGuardrailPolicy,
     UsageQuotaPolicy,
     UsageQuotaSettingsResponse,
-    GuardrailSettingsResponse
+    GuardrailSettingsResponse,
+    ChatHistoryRetentionSettingsResponse
 } from "./models";
 import { useLogin, getToken, isUsingAppServicesLogin } from "../authConfig";
 
@@ -107,6 +108,37 @@ export async function updateGuardrailSettings(
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Unable to save guardrail settings");
+    return data;
+}
+
+export async function getChatHistoryRetentionSettings(
+    idToken: string,
+    teamId?: string
+): Promise<ChatHistoryRetentionSettingsResponse> {
+    const path = teamId
+        ? `/teams/${encodeURIComponent(teamId)}/chat-history-retention`
+        : "/admin/chat-history-retention";
+    const response = await fetch(path, { headers: await getHeaders(idToken) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to load chat history retention settings");
+    return data;
+}
+
+export async function updateChatHistoryRetentionSettings(
+    retentionDays: number,
+    idToken: string,
+    teamId?: string
+): Promise<ChatHistoryRetentionSettingsResponse> {
+    const path = teamId
+        ? `/teams/${encodeURIComponent(teamId)}/chat-history-retention`
+        : "/admin/chat-history-retention";
+    const response = await fetch(path, {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ retention_days: retentionDays })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to save chat history retention settings");
     return data;
 }
 
@@ -1920,13 +1952,16 @@ async function parseMCPResponse(response: Response): Promise<any> {
     return data;
 }
 
-export async function listMCPServersApi(idToken: string): Promise<ManagedMCPServer[]> {
-    const response = await fetch("/admin/mcp-servers", { headers: await getHeaders(idToken) });
+export async function listMCPServersApi(teamId: string, idToken: string): Promise<ManagedMCPServer[]> {
+    const query = new URLSearchParams({ team_id: teamId });
+    const response = await fetch(`/admin/mcp-servers?${query}`, { headers: await getHeaders(idToken) });
     return (await parseMCPResponse(response)).servers;
 }
 
-export async function listAvailableMCPServersApi(idToken: string): Promise<ManagedMCPServer[]> {
-    const response = await fetch("/mcp-servers/available", { headers: await getHeaders(idToken) });
+export async function listAvailableMCPServersApi(teamId: string, idToken: string, agentId?: string): Promise<ManagedMCPServer[]> {
+    const query = new URLSearchParams({ team_id: teamId });
+    if (agentId) query.set("agent_id", agentId);
+    const response = await fetch(`/mcp-servers/available?${query}`, { headers: await getHeaders(idToken) });
     return (await parseMCPResponse(response)).servers;
 }
 
@@ -1956,7 +1991,7 @@ export async function deleteMCPServerApi(serverId: string, idToken: string): Pro
     await parseMCPResponse(response);
 }
 
-export async function testMCPServerApi(serverId: string, idToken: string): Promise<{ success: boolean; tools: Array<{ name: string; description?: string }> }> {
+export async function testMCPServerApi(serverId: string, idToken: string): Promise<{ success: boolean; blocked_tool_count?: number; tools: Array<{ name: string; description?: string }> }> {
     const response = await fetch(`/admin/mcp-servers/${serverId}/test`, {
         method: "POST",
         headers: await getHeaders(idToken)
@@ -2047,7 +2082,7 @@ export async function get_integrations_by_team(team_id: string, idToken: string)
     return dataResponse;
 }
 
-export type IntegrationCatalogType = "rest_api" | "database" | "mail" | "messaging";
+export type IntegrationCatalogType = "rest_api" | "database" | "mail" | "messaging" | "mcp" | "business_documents";
 
 export async function assign_integration_team(
     integration_type: IntegrationCatalogType,
@@ -2222,6 +2257,83 @@ export async function test_mail_connection(config_id: string, idToken: string): 
     });
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || `test mail connection failed: ${response.statusText}`);
+    return result;
+}
+
+// ─── Microsoft 365 Documents / Google Workspace ────────────────────────────
+
+import { BusinessDocumentBindingData, BusinessDocumentConnection } from "./models";
+
+export async function get_business_document_connections(team_id: string, idToken: string): Promise<BusinessDocumentConnection[]> {
+    const response = await fetch(`/business_document_connections?team_id=${encodeURIComponent(team_id)}`, {
+        headers: await getHeaders(idToken)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `get document connections failed: ${response.statusText}`);
+    return result;
+}
+
+export async function save_business_document_connection(payload: Record<string, unknown>, idToken: string): Promise<SimpleAPIResponse> {
+    const response = await fetch("/save_business_document_connection", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `save document connection failed: ${response.statusText}`);
+    return result;
+}
+
+export async function test_business_document_connection(connection_id: string, idToken: string): Promise<{ ok: boolean; message: string }> {
+    const response = await fetch("/test_business_document_connection", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ connection_id })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `test document connection failed: ${response.statusText}`);
+    return result;
+}
+
+export async function delete_business_document_connection(connection_id: string, idToken: string): Promise<SimpleAPIResponse> {
+    const response = await fetch("/delete_business_document_connection", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ connection_id })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `delete document connection failed: ${response.statusText}`);
+    return result;
+}
+
+export async function get_business_document_bindings(agent_id: string, idToken: string): Promise<BusinessDocumentBindingData[]> {
+    const response = await fetch(`/business_document_bindings?agent_id=${encodeURIComponent(agent_id)}`, {
+        headers: await getHeaders(idToken)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `get document bindings failed: ${response.statusText}`);
+    return result;
+}
+
+export async function save_business_document_binding(payload: Record<string, unknown>, idToken: string): Promise<SimpleAPIResponse> {
+    const response = await fetch("/save_business_document_binding", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `save document binding failed: ${response.statusText}`);
+    return result;
+}
+
+export async function delete_business_document_binding(binding_id: string, idToken: string): Promise<SimpleAPIResponse> {
+    const response = await fetch("/delete_business_document_binding", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ binding_id })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `delete document binding failed: ${response.statusText}`);
     return result;
 }
 

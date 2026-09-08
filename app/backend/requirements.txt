@@ -8,6 +8,9 @@ psycopg[binary]==3.3.4
 pymysql==1.2.0
 pymssql==2.3.13
 sqlglot==30.17.0
+python-docx==1.2.0
+openpyxl==3.1.5
+python-pptx==1.0.2
 aiofiles==24.1.0
     # via
     #   prompty

@@ -147,8 +147,8 @@ class ToolRegistry:
                 or spec.source.startswith(f"{source_prefix}:")
             ):
                 continue
-            alias = spec.source.rsplit(":", 1)[-1].strip().casefold()
-            if len(alias) >= 3 and alias in normalized_query:
+            aliases = [part.strip().casefold() for part in spec.source.split(":")[1:]]
+            if any(len(alias) >= 3 and alias in normalized_query for alias in aliases):
                 return True
         return False
 

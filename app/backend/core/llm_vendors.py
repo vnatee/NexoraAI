@@ -137,6 +137,14 @@ def apply_llm_vendor_chat_policy(vendor_id: str | None, params: dict[str, Any]) 
     if not normalized.get("stream") or not vendor.supports_stream_usage:
         normalized.pop("stream_options", None)
 
+    if vendor.id == "ollama" and normalized.get("tools"):
+        # Thinking-capable Qwen models can spend the entire completion budget
+        # on hidden reasoning after a tool result and return empty content.
+        # Ollama supports this top-level OpenAI-compatible extension.
+        extra_body = dict(normalized.get("extra_body") or {})
+        extra_body.setdefault("think", False)
+        normalized["extra_body"] = extra_body
+
     temperature = normalized.get("temperature")
     if isinstance(temperature, (int, float)):
         if vendor.max_temperature is not None:
@@ -145,6 +153,32 @@ def apply_llm_vendor_chat_policy(vendor_id: str | None, params: dict[str, Any]) 
             normalized["temperature"] = 1e-8
 
     return {key: value for key, value in normalized.items() if value is not None}
+
+
+def apply_llm_vendor_message_policy(
+    vendor_id: str | None,
+    messages: list[Any],
+    *,
+    tools_enabled: bool,
+) -> list[Any]:
+    """Apply vendor-specific message controls without mutating caller input."""
+    normalized = [dict(message) if isinstance(message, dict) else message for message in messages]
+    if get_llm_vendor(vendor_id or "openai").id != "ollama" or not tools_enabled:
+        return normalized
+
+    for index in range(len(normalized) - 1, -1, -1):
+        message = normalized[index]
+        if (
+            isinstance(message, dict)
+            and message.get("role") == "user"
+            and isinstance(message.get("content"), str)
+        ):
+            content = str(message["content"]).rstrip()
+            if "/no_think" not in content:
+                normalized[index] = {**message, "content": f"{content}\n/no_think"}
+            return normalized
+
+    return [*normalized, {"role": "user", "content": "/no_think"}]
 
 
 def infer_llm_vendor(document: dict[str, Any]) -> LLMVendor:

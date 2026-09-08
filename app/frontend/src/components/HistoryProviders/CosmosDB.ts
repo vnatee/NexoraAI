@@ -34,8 +34,8 @@ export class CosmosDBProvider implements IHistoryProvider {
         }
     }
 
-    async addItem(id: string, answers: Answers, idToken?: string): Promise<void> {
-        await postChatHistoryApi({ id, answers }, idToken || "");
+    async addItem(id: string, answers: Answers, idToken?: string, teamId?: string, conversationId?: string): Promise<void> {
+        await postChatHistoryApi({ id, answers, team_id: teamId, conversation_id: conversationId }, idToken || "");
         return;
     }
 

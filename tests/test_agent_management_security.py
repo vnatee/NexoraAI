@@ -37,6 +37,43 @@ async def test_create_agent_requires_manage_agents_for_target_team(client, monke
 
 
 @pytest.mark.asyncio
+async def test_create_agent_rejects_cross_team_mcp_connection(client, monkeypatch):
+    monkeypatch.setattr(
+        backend_app,
+        "_require_team_access",
+        lambda *args, **kwargs: (
+            {"_id": "user-1"},
+            {"_id": "team-1", "agent_id": []},
+        ),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_validate_agent_model_config",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "get_mcp_server",
+        lambda _server_id: {"_id": "mcp-2", "team_id": "team-2"},
+    )
+
+    response = await client.post(
+        "/create_agent",
+        json={
+            "team_id": "team-1",
+            "agent_name": "Unsafe Agent",
+            "config": {"tool_settings": {"mcp_server_ids": ["mcp-2"]}},
+            "prompt": {},
+        },
+    )
+
+    assert response.status_code == 403
+    assert (await response.get_json())["error"] == (
+        "MCP connection is not assigned to the Agent's team"
+    )
+
+
+@pytest.mark.asyncio
 async def test_edit_agent_rejects_agent_from_another_team(client, monkeypatch):
     monkeypatch.setattr(
         backend_app,
@@ -119,3 +156,50 @@ async def test_team_guardrail_settings_are_normalized_before_save(client, monkey
     payload = await response.get_json()
     assert payload["policy"]["max_input_chars"] == 1234
     assert payload["policy"]["pii_output_action"] == "block"
+
+
+@pytest.mark.asyncio
+async def test_team_chat_history_retention_requires_manage_agents(client, monkeypatch):
+    calls = []
+
+    def require_access(claims, team_id, *, permission=None):
+        calls.append((team_id, permission))
+        return {"_id": "user-1"}, {"_id": team_id}
+
+    monkeypatch.setattr(backend_app, "_require_team_access", require_access)
+    monkeypatch.setattr(
+        backend_app,
+        "configured_chat_history_retention_days",
+        lambda team_id=None: 14 if team_id else 30,
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "effective_chat_history_retention_days",
+        lambda team_id=None: 14 if team_id else 30,
+    )
+
+    response = await client.get("/teams/team-1/chat-history-retention")
+
+    assert response.status_code == 200
+    assert calls == [("team-1", "Manage agents")]
+    assert (await response.get_json())["effective_days"] == 14
+
+
+@pytest.mark.asyncio
+async def test_system_chat_history_retention_requires_system_admin(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        backend_app,
+        "_require_system_admin",
+        lambda claims: calls.append(claims) or {"_id": "admin"},
+    )
+    monkeypatch.setattr(backend_app, "save_chat_history_retention_days", lambda value: int(value))
+
+    response = await client.put(
+        "/admin/chat-history-retention",
+        json={"retention_days": 90},
+    )
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert (await response.get_json()) == {"configured_days": 90, "effective_days": 90}

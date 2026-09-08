@@ -9,6 +9,7 @@ import {
     DialogContent,
     DialogTitle,
     Divider,
+    IconButton,
     List,
     ListItemButton,
     ListItemIcon,
@@ -25,20 +26,29 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import PolicyOutlinedIcon from "@mui/icons-material/PolicyOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import { useMsal } from "@azure/msal-react";
 
 import { TeamUserManagementPage } from "./Tabs/TeamUserManagementPage";
 import { AgentManagementPage } from "./Tabs/AgentManagementPage";
 import { DataGroupManagementPage } from "./Tabs/DataGroupManagementPage";
 import { RBACManagementPage } from "./Tabs/RBACManagementPage";
-import { ManageUserTabs } from "./Tabs/ManageUserTabs";
+import { UserManagementPage } from "./Tabs/UserManagementPage";
+import { UserPermissionPanel } from "./Tabs/UserPermissionPanel";
+import { AuthenticationSettingsPage } from "./Tabs/AuthenticationSettingsPage";
 import { hasPermission } from "../../utill/hasPermission";
 import { TeamProfile } from "../../api/models";
+import { edit_team_name } from "../../api";
+import { getToken } from "../../authConfig";
+import { useNotification } from "../../utill/NotificationProvider";
+import { TeamManagement } from "../TeamManagement/TeamManagement";
 import { IntegrationManagementPage } from "./Tabs/IntegrationManagementPage";
 import { LLMProviderManagement } from "../LLMProviderManagement";
-import { MCPServerManagement } from "../MCPServerManagement";
 import { AgentAuditManagement } from "../AgentAuditManagement";
 import { GuardrailPolicyPage } from "./Tabs/GuardrailPolicyPage";
 import { UsageQuotaPolicyPage } from "./Tabs/UsageQuotaPolicyPage";
+import { ChatHistoryPolicyPage } from "./Tabs/ChatHistoryPolicyPage";
 
 interface Props {
     open: boolean;
@@ -50,7 +60,7 @@ interface Props {
     onTeamChanged?: (team: TeamProfile) => void;
 }
 
-type MenuGroup = "people" | "workspace" | "governance" | "system";
+type MenuGroup = "people" | "workspace" | "governance" | "user-team" | "system";
 
 interface SettingsPage {
     id: string;
@@ -64,23 +74,36 @@ interface SettingsPage {
 }
 
 const GROUP_DETAILS: Record<MenuGroup, { label: string; icon: React.ReactNode }> = {
-    people: { label: "People & access", icon: <GroupsOutlinedIcon fontSize="small" /> },
+    people: { label: "Current team", icon: <GroupsOutlinedIcon fontSize="small" /> },
     workspace: { label: "AI workspace", icon: <SmartToyOutlinedIcon fontSize="small" /> },
     governance: { label: "Governance", icon: <PolicyOutlinedIcon fontSize="small" /> },
+    "user-team": { label: "Organization", icon: <GroupsOutlinedIcon fontSize="small" /> },
     system: { label: "System administration", icon: <AdminPanelSettingsOutlinedIcon fontSize="small" /> }
 };
 
+const COLLAPSED_GROUPS: Record<MenuGroup, boolean> = {
+    people: false,
+    workspace: false,
+    governance: false,
+    "user-team": false,
+    system: false
+};
+
 export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTeamData, sys_permissions, onAgentsChanged, onTeamChanged }: Props) {
+    const { instance } = useMsal();
+    const { showNotification } = useNotification();
     const theme = useTheme();
     const compactNavigation = useMediaQuery(theme.breakpoints.down("md"));
     const [selectedPageId, setSelectedPageId] = useState("members");
     const [managedTeam, setManagedTeam] = useState<TeamProfile | null>(selectTeamData);
-    const [expandedGroups, setExpandedGroups] = useState<Record<MenuGroup, boolean>>({
-        people: true,
-        workspace: true,
-        governance: true,
-        system: false
-    });
+    const [renameOpen, setRenameOpen] = useState(false);
+    const [teamNameDraft, setTeamNameDraft] = useState("");
+    const [renaming, setRenaming] = useState(false);
+    const [expandedGroups, setExpandedGroups] = useState<Record<MenuGroup, boolean>>(() => ({ ...COLLAPSED_GROUPS }));
+
+    useEffect(() => {
+        if (open) setExpandedGroups({ ...COLLAPSED_GROUPS });
+    }, [open]);
 
     useEffect(() => {
         setManagedTeam(selectTeamData);
@@ -90,6 +113,46 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
         setManagedTeam(team);
         onTeamChanged?.(team);
         setSelectedPageId("data-access");
+    };
+
+    const handleTeamManage = (team: TeamProfile) => {
+        setManagedTeam(team);
+        setSelectedPageId("members");
+    };
+
+    const canManageTeams = hasPermission({
+        is_sys_admin,
+        permissions: managedTeam?.permissions ?? [],
+        sys_permissions: sys_permissions ?? [],
+        requiredPermissions: ["Manage teams"]
+    });
+
+    const canManageUsers = hasPermission({
+        is_sys_admin,
+        permissions: managedTeam?.permissions ?? [],
+        sys_permissions: sys_permissions ?? [],
+        requiredPermissions: ["Manage users"]
+    });
+
+    const saveTeamName = async () => {
+        const normalizedName = teamNameDraft.trim();
+        if (!managedTeam || !normalizedName) return;
+        try {
+            setRenaming(true);
+            const token = await getToken(instance);
+            if (!token) return;
+            await edit_team_name(managedTeam._id, normalizedName, token);
+            const updatedTeam = { ...managedTeam, name: normalizedName };
+            setManagedTeam(updatedTeam);
+            onTeamChanged?.(updatedTeam);
+            setRenameOpen(false);
+            showNotification("Team name updated successfully", "success");
+        } catch (error) {
+            console.error("Failed to rename team", error);
+            showNotification("Failed to update team name", "error");
+        } finally {
+            setRenaming(false);
+        }
     };
 
     const pages: SettingsPage[] = [
@@ -102,20 +165,20 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             element: <TeamUserManagementPage team={managedTeam} />
         },
         {
-            id: "data-access",
-            label: "Data access",
-            permission: ["Manage team data groups"],
-            group: "people",
-            teamScoped: true,
-            element: <DataGroupManagementPage team={managedTeam} />
-        },
-        {
             id: "roles",
             label: "Roles & permissions",
             permission: ["Manage team permissions"],
             group: "people",
             teamScoped: true,
             element: <RBACManagementPage team={managedTeam} />
+        },
+        {
+            id: "data-access",
+            label: "Data access",
+            permission: ["Manage team data groups"],
+            group: "people",
+            teamScoped: true,
+            element: <DataGroupManagementPage team={managedTeam} />
         },
         {
             id: "agents",
@@ -134,11 +197,25 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             element: <IntegrationManagementPage team={managedTeam} isSystemAdmin={is_sys_admin} />
         },
         {
-            id: "user-directory",
-            label: "User directory",
-            permission: ["Manage users", "Manage teams"],
-            group: "system",
-            element: <ManageUserTabs selectedTeam={managedTeam} onTeamCreated={handleTeamCreated} />
+            id: "teams",
+            label: "Teams",
+            permission: ["Manage teams"],
+            group: "user-team",
+            element: <TeamManagement onTeamCreated={handleTeamCreated} onTeamManage={handleTeamManage} />
+        },
+        {
+            id: "users",
+            label: "Users",
+            permission: ["Manage users"],
+            group: "user-team",
+            element: <UserManagementPage />
+        },
+        {
+            id: "system-permissions",
+            label: "User permissions",
+            permission: ["Manage users"],
+            group: "user-team",
+            element: <UserPermissionPanel />
         },
         {
             id: "llm-providers",
@@ -147,14 +224,6 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             group: "system",
             systemAdminOnly: true,
             element: <LLMProviderManagement />
-        },
-        {
-            id: "mcp-servers",
-            label: "MCP servers",
-            permission: ["Manage users", "Manage teams"],
-            group: "system",
-            systemAdminOnly: true,
-            element: <MCPServerManagement />
         },
         {
             id: "agent-audit",
@@ -181,6 +250,32 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             systemAdminOnly: !managedTeam,
             selfPadded: true,
             element: <UsageQuotaPolicyPage team={managedTeam} isSystemAdmin={is_sys_admin} />
+        },
+        {
+            id: "team-chat-history",
+            label: "Team chat history",
+            permission: ["Manage agents"],
+            group: "governance",
+            teamScoped: true,
+            selfPadded: true,
+            element: <ChatHistoryPolicyPage team={managedTeam} />
+        },
+        {
+            id: "system-chat-history",
+            label: "System chat history",
+            permission: [],
+            group: "governance",
+            systemAdminOnly: true,
+            selfPadded: true,
+            element: <ChatHistoryPolicyPage team={null} />
+        },
+        {
+            id: "authentication",
+            label: "Sign-in & authentication",
+            permission: [],
+            group: "system",
+            systemAdminOnly: true,
+            element: <AuthenticationSettingsPage />
         }
     ];
 
@@ -197,8 +292,15 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             })
     );
     const groupOrder: MenuGroup[] = managedTeam
-        ? ["people", "workspace", "governance", "system"]
-        : ["system", "governance"];
+        ? ["people", "workspace", "governance", "user-team", "system"]
+        : ["user-team", "governance", "system"];
+    const groupDetails: Record<MenuGroup, { label: string; icon: React.ReactNode }> = {
+        ...GROUP_DETAILS,
+        people: {
+            ...GROUP_DETAILS.people,
+            label: managedTeam?.name || GROUP_DETAILS.people.label
+        }
+    };
     const groupedPages = useMemo(
         () => groupOrder
             .map(group => ({ group, pages: allowedPages.filter(page => page.group === group) }))
@@ -213,14 +315,6 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
         }
     }, [allowedPages, selectedPageId]);
 
-    useEffect(() => {
-        if (selectedPage) {
-            setExpandedGroups(current => current[selectedPage.group]
-                ? current
-                : { ...current, [selectedPage.group]: true });
-        }
-    }, [selectedPage?.group]);
-
     const selectPage = (page: SettingsPage) => {
         setSelectedPageId(page.id);
         setExpandedGroups(current => ({ ...current, [page.group]: true }));
@@ -229,15 +323,58 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
     return (
         <Dialog open={open} onClose={onClose} maxWidth="xl" fullWidth>
             <DialogTitle sx={{ pb: 2 }}>
-                <Box display="flex" alignItems="center" gap={1.5} flexWrap="wrap">
-                    <Typography variant="h6">{managedTeam ? `Team settings · ${managedTeam.name}` : "Administration"}</Typography>
-                    <Chip size="small" variant="outlined" color={managedTeam ? "primary" : "default"} label={managedTeam ? "Team" : "System"} />
+                <Box display="flex" alignItems="flex-start" justifyContent="space-between" gap={2} flexWrap="wrap">
+                    <Box>
+                        <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
+                            <Typography variant="h6">{managedTeam ? `Team settings · ${managedTeam.name}` : "Administration"}</Typography>
+                            {managedTeam && canManageTeams && (
+                                <IconButton
+                                    size="small"
+                                    aria-label={`Rename ${managedTeam.name}`}
+                                    title="Rename team"
+                                    onClick={() => {
+                                        setTeamNameDraft(managedTeam.name);
+                                        setRenameOpen(true);
+                                    }}
+                                >
+                                    <EditOutlinedIcon fontSize="small" />
+                                </IconButton>
+                            )}
+                            <Chip size="small" variant="outlined" color={managedTeam ? "primary" : "default"} label={managedTeam ? "Team" : "System"} />
+                        </Box>
+                        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                            {managedTeam
+                                ? "Manage people, AI workspace, governance, and authorized system settings."
+                                : "Manage platform identity, providers, integrations, governance, and operational policy."}
+                        </Typography>
+                    </Box>
+                    {managedTeam && (canManageUsers || canManageTeams) && (
+                        <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<ArrowBackIcon />}
+                            onClick={() => {
+                                setManagedTeam(null);
+                                setSelectedPageId(canManageUsers ? "users" : "teams");
+                                setExpandedGroups({ ...COLLAPSED_GROUPS });
+                            }}
+                        >
+                            Administration
+                        </Button>
+                    )}
+                    {!managedTeam && selectTeamData && (
+                        <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={() => {
+                                setManagedTeam(selectTeamData);
+                                setSelectedPageId("members");
+                            }}
+                        >
+                            Team settings
+                        </Button>
+                    )}
                 </Box>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                    {managedTeam
-                        ? "Manage people, AI workspace, governance, and authorized system settings."
-                        : "Manage platform identity, providers, integrations, governance, and operational policy."}
-                </Typography>
             </DialogTitle>
 
             <DialogContent dividers sx={{ height: "72vh", p: 0, overflow: "hidden" }}>
@@ -256,7 +393,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
                                 }}
                             >
                                 {groupedPages.map(section => [
-                                    <MenuItem key={`${section.group}-heading`} disabled>{GROUP_DETAILS[section.group].label}</MenuItem>,
+                                    <MenuItem key={`${section.group}-heading`} disabled>{groupDetails[section.group].label}</MenuItem>,
                                     ...section.pages.map(page => <MenuItem key={page.id} value={page.id}>{page.label}</MenuItem>)
                                 ])}
                             </TextField>
@@ -275,9 +412,16 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
                             {groupedPages.map((section, index) => <React.Fragment key={section.group}>
                                 {index > 0 && <Divider sx={{ my: 1 }} />}
                                 <List disablePadding>
-                                    <ListItemButton onClick={() => setExpandedGroups(current => ({ ...current, [section.group]: !current[section.group] }))} sx={{ px: 2, py: 1 }}>
-                                        <ListItemIcon sx={{ minWidth: 36, color: "text.secondary" }}>{GROUP_DETAILS[section.group].icon}</ListItemIcon>
-                                        <ListItemText primary={GROUP_DETAILS[section.group].label} primaryTypographyProps={{ variant: "overline", fontWeight: 700, color: "text.secondary" }} />
+                                    <ListItemButton
+                                        title={section.group === "people" ? groupDetails[section.group].label : undefined}
+                                        onClick={() => setExpandedGroups(current => ({ ...current, [section.group]: !current[section.group] }))}
+                                        sx={{ px: 2, py: 1 }}
+                                    >
+                                        <ListItemIcon sx={{ minWidth: 36, color: "text.secondary" }}>{groupDetails[section.group].icon}</ListItemIcon>
+                                        <ListItemText
+                                            primary={groupDetails[section.group].label}
+                                            primaryTypographyProps={{ variant: "overline", fontWeight: 700, color: "text.secondary", noWrap: true }}
+                                        />
                                         {expandedGroups[section.group] ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
                                     </ListItemButton>
                                     <Collapse in={expandedGroups[section.group]} timeout="auto" unmountOnExit>
@@ -301,6 +445,30 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
                     </Box>
                 )}
             </DialogContent>
+
+            <Dialog open={renameOpen} onClose={() => !renaming && setRenameOpen(false)} maxWidth="xs" fullWidth>
+                <DialogTitle>Rename team</DialogTitle>
+                <DialogContent>
+                    <TextField
+                        autoFocus
+                        fullWidth
+                        label="Team name"
+                        value={teamNameDraft}
+                        onChange={event => setTeamNameDraft(event.target.value)}
+                        sx={{ mt: 1 }}
+                    />
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setRenameOpen(false)} disabled={renaming}>Cancel</Button>
+                    <Button
+                        variant="contained"
+                        disabled={!teamNameDraft.trim() || teamNameDraft.trim() === managedTeam?.name || renaming}
+                        onClick={() => void saveTeamName()}
+                    >
+                        {renaming ? "Saving..." : "Save"}
+                    </Button>
+                </DialogActions>
+            </Dialog>
 
             <DialogActions>
                 <Button onClick={onClose}>Close</Button>

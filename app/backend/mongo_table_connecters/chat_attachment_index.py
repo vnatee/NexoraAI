@@ -7,11 +7,10 @@ from datetime import datetime, timezone
 
 from pymongo.errors import PyMongoError
 
-from core.attachment_extraction import ExtractedChunk, MAX_CHUNK_CHARACTERS
+from core.attachment_extraction import MAX_CHUNK_CHARACTERS, ExtractedChunk
 from core.attachment_index import AttachmentIndex, AttachmentSearchResult
 from core.attachment_store import AttachmentRecord
 from mongo_table_connecters.mongo_connector import get_database
-
 
 collection = get_database()["chat_attachment_chunks"]
 
@@ -165,6 +164,13 @@ def delete_attachment_chunks(
             "owner_id": owner_id,
             "conversation_id": conversation_id,
         }
+    )
+    return int(result.deleted_count)
+
+
+def delete_conversation_attachment_chunks(*, owner_id: str, conversation_id: str) -> int:
+    result = collection.delete_many(
+        {"owner_id": owner_id, "conversation_id": conversation_id}
     )
     return int(result.deleted_count)
 

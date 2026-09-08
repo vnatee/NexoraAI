@@ -93,6 +93,12 @@ export type ResponseContext = {
     actions?: ActionButton[];
     chartUrl?: string;
     chart?: ChartSpec; // ⭐ CHART CAPABILITY: mui-x-charts native props spec ที่ backend คืนมา
+    diagram?: {
+        format: "drawio" | "mermaid";
+        filename: string;
+        mime_type: string;
+        content: string;
+    };
 };
 
 export type ChatAppResponseOrError = {
@@ -162,6 +168,7 @@ export type Config = {
     showSpeechOutputAzure: boolean;
     showChatHistoryBrowser: boolean;
     showChatHistoryCosmos: boolean;
+    showChatHistoryDatabase: boolean;
     showAgenticRetrievalOption: boolean;
     chatDocumentAttachmentsEnabled: boolean;
     maxUploadSizeBytes: number;
@@ -235,34 +242,60 @@ export type LLMProviderPayload = Omit<ManagedLLMProvider, "_id" | "vendor_label"
 
 export interface ManagedMCPServer {
     _id: string;
+    team_id: string;
     name: string;
     url: string;
-    vendor: "generic" | "datadog";
+    vendor: "generic" | "datadog" | "azure" | "drawio" | "atlassian" | "servicenow";
     category: MCPCategory;
-    auth_type: "headers" | "bearer" | "datadog_keys";
+    auth_type: "headers" | "bearer" | "datadog_keys" | "entra_client_credentials";
+    deployment_mode: "external" | "managed";
+    operation_mode: "read_only" | "read_write";
     enabled: boolean;
     allowed_tools: string[];
     timeout_seconds: number;
     has_headers: boolean;
+    entra_tenant_id?: string;
+    entra_client_id?: string;
+    entra_scope?: string;
+    has_entra_client_secret?: boolean;
+    azure_tenant_id?: string;
+    azure_client_id?: string;
+    azure_subscription_ids?: string[];
+    has_azure_client_secret?: boolean;
+    provisioning_status?: "external" | "pending" | "ready" | "stopped" | "stop_pending" | "cleanup_pending" | "failed" | "deleted";
+    provisioning_error?: string;
     agent_usage_count?: number;
     create_at?: string;
     update_at?: string;
 }
 
 export interface MCPServerPayload {
+    team_id: string;
     name: string;
     url: string;
-    vendor: "generic" | "datadog";
+    vendor: "generic" | "datadog" | "azure" | "drawio" | "atlassian" | "servicenow";
     category: MCPCategory;
-    auth_type: "headers" | "bearer" | "datadog_keys";
+    auth_type: "headers" | "bearer" | "datadog_keys" | "entra_client_credentials";
+    deployment_mode: "external" | "managed";
+    operation_mode: "read_only" | "read_write";
     enabled: boolean;
     allowed_tools: string[];
     timeout_seconds: number;
     headers?: Record<string, string>;
     clear_headers?: boolean;
+    entra_tenant_id?: string;
+    entra_client_id?: string;
+    entra_client_secret?: string;
+    clear_entra_client_secret?: boolean;
+    entra_scope?: string;
+    azure_tenant_id?: string;
+    azure_client_id?: string;
+    azure_client_secret?: string;
+    clear_azure_client_secret?: boolean;
+    azure_subscription_ids?: string[];
 }
 
-export type MCPCategory = "observability" | "diagram_collaboration" | "cloud_platform" | "developer_tools" | "data_search" | "custom";
+export type MCPCategory = "observability" | "diagram_collaboration" | "cloud_platform" | "developer_tools" | "business_workflows" | "data_search" | "custom";
 
 export interface AgentToolPolicy {
     max_total_calls: number;
@@ -560,6 +593,12 @@ export interface GuardrailSettingsResponse {
     effective_policy?: AgentGuardrailPolicy;
 }
 
+export interface ChatHistoryRetentionSettingsResponse {
+    configured_days: number | null;
+    effective_days: number;
+    system_days?: number;
+}
+
 export interface LLMTokenQuotaRule {
     dimension: "provider" | "profile";
     target_id: string;
@@ -615,6 +654,7 @@ export interface AgentToolSettings {
     external_database: boolean;
     rest_integrations: boolean;
     mail: boolean;
+    business_documents: boolean;
     messaging: boolean;
     mcp: boolean;
     mcp_execution: "auto" | "required";
@@ -916,6 +956,33 @@ export interface MailEmailConfig {
     enabled: boolean;
     has_credentials?: boolean;
     agent_usage_count?: number;
+}
+
+export type BusinessDocumentProvider = "microsoft365" | "google_workspace";
+export interface BusinessDocumentPublicConfig {
+    tenant_id?: string;
+    client_id?: string;
+    drive_id?: string;
+    root_folder_id?: string;
+    shared_drive_id?: string;
+}
+export interface BusinessDocumentConnection {
+    _id: string;
+    team_id: string;
+    name: string;
+    provider: BusinessDocumentProvider;
+    public_config: BusinessDocumentPublicConfig;
+    operation_mode: "read_only" | "read_write";
+    enabled: boolean;
+    has_credentials?: boolean;
+    agent_usage_count?: number;
+}
+export interface BusinessDocumentBindingData {
+    _id: string;
+    agent_id: string;
+    connection_id: string;
+    enabled: boolean;
+    permissions: Array<"read" | "create">;
 }
 
 export type MessagingProvider = "line" | "slack" | "discord";

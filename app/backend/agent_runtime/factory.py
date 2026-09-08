@@ -7,6 +7,7 @@ from agent_runtime.adapters import (
     MCPServerConfig,
     SubagentSpec,
     register_chart_tool,
+    register_business_document_tools,
     register_database_tools,
     register_external_api_tools,
     register_mail_tools,
@@ -25,11 +26,13 @@ from core.attachment_retrieval import (
     ATTACHMENT_SECURITY_INSTRUCTION,
     REQUIREMENTS_EVIDENCE_MATRIX_INSTRUCTION,
 )
+from core.mcp_auth import EntraClientCredentials
 from mongo_table_connecters.agent_bindings import get_all_agent_bindings_by_agent_id
 from mongo_table_connecters.agents import get_agent_by_id
 from mongo_table_connecters.chart_binding import get_enabled_chart_bindings_by_agent_id
 from mongo_table_connecters.guardrail_settings import effective_guardrail_policy
 from mongo_table_connecters.mcp_servers import (
+    decrypt_mcp_entra_client_secret,
     decrypt_mcp_headers,
     get_mcp_server,
 )
@@ -45,6 +48,13 @@ def _effective_mcp_allowed_tools(
         overlap = tuple(tool for tool in agent_allowed if tool in admin_allowed_set)
         return overlap or None
     return agent_allowed or admin_allowed
+
+
+def _mcp_connection_matches_team(
+    document: dict[str, Any], team_id: str | None
+) -> bool:
+    connection_team_id = str(document.get("team_id") or "")
+    return not connection_team_id or connection_team_id == str(team_id or "")
 
 
 async def create_agent_runtime(
@@ -104,6 +114,8 @@ async def create_agent_runtime(
         )
     if tool_settings.get("mail", True) is not False:
         register_mail_tools(registry, agent_id)
+    if tool_settings.get("business_documents", True) is not False:
+        register_business_document_tools(registry, agent_id)
     if tool_settings.get("messaging", True) is not False:
         register_messaging_tools(registry, agent_id)
     if tool_settings.get("mcp", True) is not False:
@@ -117,6 +129,23 @@ async def create_agent_runtime(
                 document = get_mcp_server(str(server_id))
                 if not document or document.get("enabled") is False:
                     continue
+                if (
+                    document.get("deployment_mode") == "managed"
+                    and document.get("provisioning_status") != "ready"
+                ):
+                    continue
+                connection_team_id = str(document.get("team_id") or "")
+                if not _mcp_connection_matches_team(document, team_id):
+                    logging.warning(
+                        "Skipping MCP server %s because it belongs to another team",
+                        server_id,
+                    )
+                    continue
+                if not connection_team_id:
+                    logging.warning(
+                        "Using legacy unassigned MCP server %s; assign it to a team before creating new bindings",
+                        server_id,
+                    )
                 admin_allowed = tuple(document.get("allowed_tools") or ())
                 agent_allowed = tuple(agent_mcp_allowlists.get(str(server_id)) or ())
                 effective_allowed = _effective_mcp_allowed_tools(
@@ -133,7 +162,25 @@ async def create_agent_runtime(
                         server_id=str(document["_id"]),
                         name=str(document["name"]),
                         url=str(document["url"]),
+                        vendor=str(document.get("vendor") or "generic"),
+                        operation_mode=(
+                            "read_only"
+                            if str(document.get("vendor") or "generic") == "azure"
+                            else str(document.get("operation_mode") or "read_write")
+                        ),
                         headers=decrypt_mcp_headers(document),
+                        entra_credentials=(
+                            EntraClientCredentials(
+                                tenant_id=str(document.get("entra_tenant_id") or ""),
+                                client_id=str(document.get("entra_client_id") or ""),
+                                client_secret=decrypt_mcp_entra_client_secret(document),
+                                scope=str(document.get("entra_scope") or ""),
+                            )
+                            if document.get("auth_type") == "entra_client_credentials"
+                            and document.get("deployment_mode") != "managed"
+                            else None
+                        ),
+                        managed=document.get("deployment_mode") == "managed",
                         allowed_tools=effective_allowed,
                         timeout_seconds=min(
                             float(document.get("timeout_seconds") or 60),
@@ -291,6 +338,16 @@ Use integration, database, MCP, or sub-agent tools when relevant. If a tool retu
         effective_system_prompt = (
             f"{effective_system_prompt}\n\nChart tool rules:\n{chart_rule}"
         )
+    mcp_sources = {
+        spec.source for spec in registry.specs() if spec.source.startswith("mcp:")
+    }
+    if any(":azure:" in source for source in mcp_sources) and any(
+        ":drawio:" in source for source in mcp_sources
+    ):
+        effective_system_prompt = f"""{effective_system_prompt}
+
+Azure-to-Draw.io rules:
+When the user asks for an Azure diagram, first collect the requested Azure inventory. Then call Draw.io search_shapes using the exact distinct Azure service names and use the returned Azure-library style strings for resource nodes. Prefer Azure matches over similarly named AWS or generic shapes, put each resource name below its icon, and use a labelled generic box only when no icon is found. Finally call create_diagram using XML so NexoraAI can expose a downloadable .drawio file; do not merely print XML in the answer. Preserve each Azure resource ID as a custom mxCell attribute. Use solid connectors for relationships evidenced by resource IDs or returned properties. Azure inventory may not expose a complete dependency graph; when explicit links are absent, draw only reasonable conventional architecture links as dashed connectors labelled inferred, include a legend, and clearly distinguish them from observed relationships. Do not refuse to draw all connectors solely because explicit dependency data is incomplete. In the written summary, format Markdown tables with a single short separator row such as `| --- | --- |`; never size separator dashes to match cell content."""
 
     return AgentRuntime(
         completion_factory,

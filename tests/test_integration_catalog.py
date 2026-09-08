@@ -21,10 +21,22 @@ class _Collection:
         return dict(document)
 
     def count_documents(self, query):
+        def value_at_path(document, path):
+            value = document
+            for part in path.split("."):
+                if not isinstance(value, dict):
+                    return None
+                value = value.get(part)
+            return value
+
         return sum(
             1
             for document in self.documents.values()
-            if all(document.get(key) == value for key, value in query.items())
+            if all(
+                (expected in actual if isinstance(actual, list) else actual == expected)
+                for key, expected in query.items()
+                for actual in [value_at_path(document, key)]
+            )
         )
 
     def update_one(self, query, update):
@@ -109,6 +121,72 @@ def test_assignment_rejects_integration_with_agent_binding(monkeypatch):
     ):
         integration_catalog.assign_unassigned_integration(
             "database", "db-1", "team-1"
+        )
+
+
+def test_assign_unassigned_mcp_connection_to_team(monkeypatch):
+    database = _Database(
+        {
+            "mcp_servers": _Collection(
+                [{"_id": "mcp-1", "team_id": "", "delete_at": None}]
+            ),
+            "agents": _Collection(),
+        }
+    )
+    monkeypatch.setattr(integration_catalog, "get_database", lambda: database)
+
+    result = integration_catalog.assign_unassigned_integration(
+        "mcp", "mcp-1", "team-1"
+    )
+
+    assert result["team_id"] == "team-1"
+    assert database["mcp_servers"].documents["mcp-1"]["team_id"] == "team-1"
+    assert "update_at" in database["mcp_servers"].documents["mcp-1"]
+
+
+def test_assign_unassigned_business_document_connection_to_team(monkeypatch):
+    database = _Database(
+        {
+            "business_document_connections": _Collection(
+                [{"_id": "documents-1", "team_id": "", "delete_at": None}]
+            ),
+            "business_document_bindings": _Collection(),
+        }
+    )
+    monkeypatch.setattr(integration_catalog, "get_database", lambda: database)
+
+    result = integration_catalog.assign_unassigned_integration(
+        "business_documents", "documents-1", "team-1"
+    )
+
+    assert result["team_id"] == "team-1"
+    assert database["business_document_connections"].documents["documents-1"]["team_id"] == "team-1"
+
+
+def test_mcp_assignment_rejects_connection_used_by_legacy_agent(monkeypatch):
+    database = _Database(
+        {
+            "mcp_servers": _Collection(
+                [{"_id": "mcp-1", "team_id": "", "delete_at": None}]
+            ),
+            "agents": _Collection(
+                [
+                    {
+                        "_id": "agent-1",
+                        "delete_at": None,
+                        "config": {"tool_settings": {"mcp_server_ids": ["mcp-1"]}},
+                    }
+                ]
+            ),
+        }
+    )
+    monkeypatch.setattr(integration_catalog, "get_database", lambda: database)
+
+    with pytest.raises(
+        integration_catalog.IntegrationAssignmentError, match="Remove Agent bindings"
+    ):
+        integration_catalog.assign_unassigned_integration(
+            "mcp", "mcp-1", "team-1"
         )
 
 

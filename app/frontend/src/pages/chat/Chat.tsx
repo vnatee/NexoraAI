@@ -167,6 +167,7 @@ const Chat = () => {
     const [showSpeechOutputAzure, setShowSpeechOutputAzure] = useState<boolean>(false);
     const [showChatHistoryBrowser, setShowChatHistoryBrowser] = useState<boolean>(false);
     const [showChatHistoryCosmos, setShowChatHistoryCosmos] = useState<boolean>(false);
+    const [showChatHistoryDatabase, setShowChatHistoryDatabase] = useState<boolean>(false);
     const [showAgenticRetrievalOption, setShowAgenticRetrievalOption] = useState<boolean>(false);
     const [useAgenticRetrieval, setUseAgenticRetrieval] = useState<boolean>(false);
     const [llmProfiles, setLlmProfiles] = useState<LLMProfile[]>([]);
@@ -422,6 +423,7 @@ const Chat = () => {
             setShowSpeechOutputAzure(config.showSpeechOutputAzure);
             setShowChatHistoryBrowser(config.showChatHistoryBrowser);
             setShowChatHistoryCosmos(config.showChatHistoryCosmos);
+            setShowChatHistoryDatabase(config.showChatHistoryDatabase ?? false);
             setShowAgenticRetrievalOption(config.showAgenticRetrievalOption);
             setUseAgenticRetrieval(config.showAgenticRetrievalOption);
             if (config.showAgenticRetrievalOption) {
@@ -484,7 +486,7 @@ const Chat = () => {
     };
 
     const historyProvider: HistoryProviderOptions = (() => {
-        if (useLogin && showChatHistoryCosmos) return HistoryProviderOptions.CosmosDB;
+        if (useLogin && (showChatHistoryDatabase || showChatHistoryCosmos)) return HistoryProviderOptions.CosmosDB;
         if (showChatHistoryBrowser) return HistoryProviderOptions.IndexedDB;
         return HistoryProviderOptions.None;
     })();
@@ -734,7 +736,12 @@ const Chat = () => {
                         ...(seed !== null ? { seed: activeAgent ? (activeAgent?.config == null ? seed : activeAgent?.config?.seed) : seed } : {})
                     }
                 },
-                session_state: answers.length ? answers[answers.length - 1][1].session_state : null
+                session_state:
+                    answers.length
+                        ? answers[answers.length - 1][1].session_state
+                        : historyProvider !== HistoryProviderOptions.None
+                          ? conversationIdRef.current
+                          : null
             };
 
             request["team_id"] = selectTeamData ? selectTeamData?._id : null;
@@ -760,7 +767,13 @@ const Chat = () => {
                 setAnswers([...answers, [question, finalResponse]]);
                 if (typeof finalResponse.session_state === "string" && finalResponse.session_state !== "") {
                     const token = client ? await getToken(client) : undefined;
-                    historyManager.addItem(finalResponse.session_state, [...answers, [question, finalResponse]], token);
+                    void historyManager.addItem(
+                        finalResponse.session_state,
+                        [...answers, [question, finalResponse]],
+                        token,
+                        selectTeamData?._id,
+                        conversationIdRef.current
+                    );
                 }
             } else {
                 const parsedResponse: ChatAppResponseOrError = await response.json();
@@ -774,7 +787,13 @@ const Chat = () => {
                 setAnswers([...answers, [question, finalResponse as ChatAppResponse]]);
                 if (typeof finalResponse.session_state === "string" && finalResponse.session_state !== "") {
                     const token = client ? await getToken(client) : undefined;
-                    historyManager.addItem(finalResponse.session_state, [...answers, [question, finalResponse as ChatAppResponse]], token);
+                    historyManager.addItem(
+                        finalResponse.session_state,
+                        [...answers, [question, finalResponse as ChatAppResponse]],
+                        token,
+                        selectTeamData?._id,
+                        conversationIdRef.current
+                    );
                 }
             }
             setSpeechUrls([...speechUrls, null]);
@@ -1000,18 +1019,10 @@ const Chat = () => {
         return check.includes(roles);
     };
 
-    const startNewChat = async () => {
-        if (answers.length === 0) {
-            // 👉 ถ้าแชทว่าง: แค่เคลียร์ state, ไม่ต้องสร้าง history ใหม่
-            clearChat();
-            return;
-        }
-
-        // 👉 ถ้าไม่ว่าง: เก็บ history ปัจจุบัน แล้วเริ่ม session ใหม่
+    const startNewChat = () => {
+        // The current conversation is persisted after every completed answer.
+        // Do not create an empty synthetic history record here.
         clearChat();
-        const newSessionId = `session-${Date.now()}`;
-        const token = client ? await getToken(client) : undefined;
-        historyManager.addItem(newSessionId, [], token);
     };
 
     const collectSearchableText = (item: any): string => {
@@ -1656,7 +1667,7 @@ const Chat = () => {
                     />
                 )}
 
-                {((useLogin && showChatHistoryCosmos) || showChatHistoryBrowser) && (
+                {((useLogin && (showChatHistoryDatabase || showChatHistoryCosmos)) || showChatHistoryBrowser) && (
                     <>
                         <div className={`${styles.sidebar} ${isHistoryCollapsed ? styles.sidebarCollapsed : styles.sidebarExpanded}`}>
                             {/* ปุ่ม toggle */}

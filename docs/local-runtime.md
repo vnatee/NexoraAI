@@ -9,6 +9,7 @@ Azure Linux VM:
 - MinIO for Knowledge source objects
 - Qdrant for vector retrieval
 - Ollama with BGE-M3 embeddings and a local chat model
+- Integration Controller for System Admin-managed Azure MCP instances
 - optional Docling service for configured document-processing profiles
 
 Azure remains supported. This Compose file is one deployment option; the
@@ -16,11 +17,28 @@ provider environment variables can still point NexoraAI at Azure OpenAI,
 Azure AI Search, Azure Storage, and Cosmos DB in a different deployment.
 
 The single-host local stack disables the optional Azure Cosmos-native Chat
-History provider and enables the browser history provider. Conversation history
-is therefore stored in IndexedDB on the signed-in user's browser and isolated by
-application user ID. It is not synchronized between browsers or devices. A
-server-side local history provider is separate future work; MongoDB continues
-to store the platform records listed above.
+History provider and enables the MongoDB-backed server history provider.
+Conversation history is synchronized between browsers and is isolated by the
+stable authenticated application user ID. Records include an absolute
+`expires_at` value and are removed by a periodic application cleanup worker.
+The worker removes attachment objects, extracted chunks, attachment metadata,
+and then the conversation. Citations and Draw.io artifacts are stored inside
+the conversation and disappear with it. A MongoDB TTL index is deliberately
+not used for conversation rows because it could remove the parent before those
+dependencies. The default is 90 days from the latest conversation update.
+
+System Administrators can change the platform maximum under
+**Administration → System chat history**. Team administrators with `Manage
+agents` can choose a shorter Team period under **Team settings → Team chat
+history**, but cannot extend it beyond the System policy. Available values are
+30, 90, 180, 365 days, and **No expiry** where the parent policy permits it.
+Lowering a policy recalculates expiry
+for existing affected conversations. `CHAT_HISTORY_RETENTION_DAYS` supplies the
+initial System default and `CHAT_HISTORY_CLEANUP_INTERVAL_SECONDS` controls the
+cleanup interval; saved Portal settings survive restarts in MongoDB.
+User deletion runs the same cascade immediately. A separate 365-day audit
+collection stores only actor, time, reason, and deleted conversation/attachment
+counts; it never stores removed content.
 
 ## Prepare secrets
 
@@ -38,12 +56,15 @@ openssl rand -hex 24
 openssl rand -hex 24
 openssl rand -hex 32
 openssl rand -hex 32
+openssl rand -hex 32
 .venv/bin/python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
 Use the generated values for the MongoDB root password, MongoDB application
-password, MinIO access key, MinIO secret key, one-time local-auth bootstrap
-token, and `APP_DATA_ENCRYPTION_KEY`, respectively. Keep the Fernet key stable
+password, MinIO access key, MinIO secret key, Integration Controller token,
+one-time local-auth bootstrap token, and `APP_DATA_ENCRYPTION_KEY`, respectively.
+Set `AZURE_MCP_IMAGE` to a verified digest of Microsoft's official image during
+initial installation; the image is not pulled until Azure is enabled. Keep the Fernet key stable
 for the lifetime of the deployment; changing it makes stored provider and Entra
 secrets unreadable.
 
@@ -77,6 +98,12 @@ docker compose --env-file .env.local-runtime \
 The bootstrap endpoint remains closed after the first local identity exists,
 but removing the token reduces exposure and prevents accidental reuse.
 
+The Integration Controller is also started on day one but publishes no host
+port and creates no Azure MCP instances until a System Administrator enables a
+managed Azure connection. It is the only service with Docker socket access.
+Protect `INTEGRATION_CONTROLLER_TOKEN`; do not reuse the Fernet key or another
+application credential. See [`azure-drawio-mcp.md`](azure-drawio-mcp.md).
+
 ## Optional OCR service
 
 Start Docling only when a processing profile needs it:
@@ -99,11 +126,16 @@ docker compose --env-file .env.local-runtime \
   -f docker-compose.local-runtime.yml down
 ```
 
-Application state is held in five named volumes: MongoDB, MinIO, Qdrant,
-Ollama, and temporary chat attachments. Never use `down --volumes` against a
+Application state is held in five named volumes: MongoDB (including Chat
+history), MinIO, Qdrant, Ollama, and temporary chat attachments. Never use
+`down --volumes` against a
 deployment whose data must be retained. Back up MongoDB, MinIO, and Qdrant as a
 consistent set before an upgrade. Source objects and vector records alone are
 not a replacement for MongoDB authorization metadata.
+
+During shutdown the controller removes the ephemeral Azure MCP instances.
+Enabled managed connections are recreated from encrypted MongoDB configuration
+after the stack starts again.
 
 Use the validated backup/restore workflow in
 [`local-backup-restore.md`](local-backup-restore.md). It briefly stops the
@@ -151,3 +183,7 @@ failover, TLS termination, or zero-downtime upgrades.
 5. Restart the full stack without deleting volumes and repeat retrieval.
 6. Delete one source and confirm both its object and vector results disappear.
 7. Test backup restore on a disposable deployment before production use.
+8. Create a Chat, reload it from **Recent chats** in another browser session,
+   then set a short test retention period in **Administration → System chat history**
+   and confirm owner isolation and expiry cleanup. Restore the intended policy
+   after the test.

@@ -94,6 +94,12 @@ async def test_langgraph_runtime_executes_registered_tool():
     assert handler.await_args.args[0] == {"value": 41}
     assert "search_knowledge" in model.await_args_list[0].args[0][0]["content"]
     second_messages = model.await_args_list[1].args[0]
+    assistant_tool_message = next(
+        message
+        for message in second_messages
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    )
+    assert assistant_tool_message["content"] == ""
     assert any(
         message.get("role") == "tool" and "42" in message.get("content", "")
         for message in second_messages
@@ -155,6 +161,23 @@ async def test_explicit_mcp_request_requires_mcp_tool_on_first_iteration():
     assert first_tool_names == {"mcp_datadog_search_datadog_monitors"}
     assert model.await_args_list[1].args[2] is None
     mcp_handler.assert_awaited_once()
+
+
+def test_mcp_vendor_name_triggers_automatic_mcp_selection():
+    registry = ToolRegistry(
+        ToolRuntimeContext(agent_id="agent-1", auth_claims={"oid": "user-1"})
+    )
+    registry.register(
+        ToolSpec(
+            name="mcp_azure_inventory_list_resources",
+            description="List Azure resources",
+            input_schema={"type": "object", "properties": {}},
+            handler=AsyncMock(return_value={}),
+            source="mcp:server-1:azure:Microsoft Azure",
+        )
+    )
+
+    assert registry.query_mentions_source("mcp", "Create a diagram from Azure")
 
 
 @pytest.mark.asyncio
@@ -370,6 +393,24 @@ def test_load_mcp_servers_applies_allowlist_and_disabled_filter():
     assert len(servers) == 1
     assert servers[0].name == "drawio"
     assert servers[0].allowed_tools == ("draw",)
+
+
+def test_load_mcp_servers_forces_azure_vendor_to_read_only():
+    servers = load_mcp_servers(
+        json.dumps(
+            [
+                {
+                    "name": "Azure inventory",
+                    "url": "https://example.test/mcp",
+                    "vendor": "azure",
+                    "operation_mode": "read_write",
+                }
+            ]
+        )
+    )
+
+    assert servers[0].vendor == "azure"
+    assert servers[0].operation_mode == "read_only"
 
 
 @pytest.mark.asyncio

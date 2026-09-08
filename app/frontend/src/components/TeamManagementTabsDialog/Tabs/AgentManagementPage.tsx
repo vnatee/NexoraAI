@@ -43,6 +43,8 @@ import {
     DatabaseBindingData,
     MailBindingData,
     MailEmailConfig,
+    BusinessDocumentBindingData,
+    BusinessDocumentConnection,
     ChartBindingData,
     ManagedMCPServer,
     LLMProfile,
@@ -54,6 +56,7 @@ import { useNotification } from "../../../utill/NotificationProvider";
 import { AgentBindingDialog } from "../dialog/AgentBindingDialog";
 import { DatabaseBindingDialog, DatabaseBindingInput } from "../dialog/DatabaseBindingDialog";
 import { MailBindingDialog, MailBindingInput } from "../dialog/MailBindingDialog";
+import { BusinessDocumentBindingDialog } from "../dialog/BusinessDocumentBindingDialog";
 import { MessagingBindingDialog } from "../dialog/MessagingBindingDialog";
 import { ChartBindingDialog, ChartBindingInput } from "../dialog/ChartBindingDialog";
 import { getIntegrationIcon } from "../utils/integrationIcons";
@@ -83,7 +86,9 @@ import {
     update_chart_binding,
     listAvailableMCPServersApi,
     test_db_connection
-    ,get_messaging_connections, get_messaging_bindings, save_messaging_binding, delete_messaging_binding
+    ,get_messaging_connections, get_messaging_bindings, save_messaging_binding, delete_messaging_binding,
+    get_business_document_connections, get_business_document_bindings,
+    save_business_document_binding, delete_business_document_binding
 } from "../../../api/api";
 
 const DEFAULT_TOOL_POLICY = {
@@ -101,6 +106,7 @@ const DEFAULT_AGENT_TOOL_SETTINGS = {
     external_database: true,
     rest_integrations: true,
     mail: true,
+    business_documents: true,
     messaging: true,
     mcp: true,
     mcp_execution: "auto" as const,
@@ -154,6 +160,7 @@ type Binding = BindingInput & {
 export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfile | null; onAgentsChanged?: () => void }) {
     const { instance } = useMsal();
     const [agents, setAgents] = useState<Agent[]>([]);
+    const [llmProfiles, setLlmProfiles] = useState<LLMProfile[]>([]);
     const [loading, setLoading] = useState(false);
     const [openDialog, setOpenDialog] = useState(false);
     const [mode, setMode] = useState<AgentDialogMode>("new");
@@ -192,6 +199,12 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
 
         loadAgents();
     }, [team, instance]);
+
+    useEffect(() => {
+        configApi()
+            .then(appConfig => setLlmProfiles(appConfig.llmProfiles ?? []))
+            .catch(error => console.error("load LLM profiles failed", error));
+    }, []);
 
     /* =========================
        ACTIONS
@@ -271,6 +284,23 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
         return agents.filter(agent => agent.agent_name.toLowerCase().includes(search.toLowerCase()));
     }, [agents, search]);
 
+    const llmProfilesById = useMemo(() => new Map(llmProfiles.map(profile => [profile.id, profile])), [llmProfiles]);
+
+    const getAgentModelDisplay = (agent: Agent) => {
+        const profileId = agent.config.llm_profile_id ?? "system";
+        const profile = llmProfilesById.get(profileId);
+        if (!profile) {
+            return {
+                label: profileId === "system" ? "System default" : "Unavailable profile",
+                title: profileId === "system" ? "System default model" : "The configured LLM profile is no longer available"
+            };
+        }
+        return {
+            label: profile.label || profile.model,
+            title: `${profile.model} (${profile.provider})`
+        };
+    };
+
     /* =========================
        RENDER
     ========================= */
@@ -302,48 +332,51 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
                     <Typography color="text.secondary">No agents found</Typography>
                 ) : (
                     <Stack spacing={1}>
-                        {filteredAgents.map(agent => (
-                            <Paper
-                                key={agent._id}
-                                variant="outlined"
-                                sx={{
-                                    p: 2,
-                                    display: "flex",
-                                    justifyContent: "space-between",
-                                    alignItems: "center"
-                                }}
-                            >
-                                <Box>
-                                    <Typography fontWeight={600}>{agent.agent_name}</Typography>
-                                    <Box mt={0.5}>
-                                        <Chip size="small" label={`Temp: ${agent.config.temperature}`} sx={{ mr: 1 }} />
-                                        <Chip size="small" label={`Max tokens: ${agent.config.max_tokens}`} sx={{ mr: 1 }} />
-                                        <Chip size="small" label={`Min Search Score: ${agent.config.min_search_score}`} sx={{ mr: 1 }} />
-                                        <Chip size="small" label={`Max Search Results: ${agent.config.max_search_results}`} />
-                                        <Chip size="small" label={`Model: ${agent.config.llm_profile_id ?? "system"}`} sx={{ ml: 1 }} />
+                        {filteredAgents.map(agent => {
+                            const modelDisplay = getAgentModelDisplay(agent);
+                            return (
+                                <Paper
+                                    key={agent._id}
+                                    variant="outlined"
+                                    sx={{
+                                        p: 2,
+                                        display: "flex",
+                                        justifyContent: "space-between",
+                                        alignItems: "center"
+                                    }}
+                                >
+                                    <Box>
+                                        <Typography fontWeight={600}>{agent.agent_name}</Typography>
+                                        <Box mt={0.5}>
+                                            <Chip size="small" label={`Temp: ${agent.config.temperature}`} sx={{ mr: 1 }} />
+                                            <Chip size="small" label={`Max tokens: ${agent.config.max_tokens}`} sx={{ mr: 1 }} />
+                                            <Chip size="small" label={`Min Search Score: ${agent.config.min_search_score}`} sx={{ mr: 1 }} />
+                                            <Chip size="small" label={`Max Search Results: ${agent.config.max_search_results}`} />
+                                            <Chip size="small" label={`Model: ${modelDisplay.label}`} title={modelDisplay.title} sx={{ ml: 1 }} />
+                                        </Box>
                                     </Box>
-                                </Box>
 
-                                <Box>
-                                    <IconButton onClick={() => openView(agent)}>
-                                        <VisibilityIcon />
-                                    </IconButton>
-                                    <IconButton onClick={() => openEdit(agent)}>
-                                        <EditIcon />
-                                    </IconButton>
-                                    <IconButton
-                                        color="error"
-                                        onClick={() => {
-                                            setAgentToDelete(agent);
-                                            setConfirmOpen(true);
-                                        }}
-                                        disabled={deletingId === agent._id}
-                                    >
-                                        <DeleteIcon />
-                                    </IconButton>
-                                </Box>
-                            </Paper>
-                        ))}
+                                    <Box>
+                                        <IconButton onClick={() => openView(agent)}>
+                                            <VisibilityIcon />
+                                        </IconButton>
+                                        <IconButton onClick={() => openEdit(agent)}>
+                                            <EditIcon />
+                                        </IconButton>
+                                        <IconButton
+                                            color="error"
+                                            onClick={() => {
+                                                setAgentToDelete(agent);
+                                                setConfirmOpen(true);
+                                            }}
+                                            disabled={deletingId === agent._id}
+                                        >
+                                            <DeleteIcon />
+                                        </IconButton>
+                                    </Box>
+                                </Paper>
+                            );
+                        })}
                     </Stack>
                 )}
             </Box>
@@ -419,7 +452,7 @@ function AgentDialog({
 
     // Tab state — always reset to "info" when dialog opens
     const [activeTab, setActiveTab] = useState<"info" | "integrations" | "mcp">("info");
-    const [integrationSection, setIntegrationSection] = useState<"rest" | "database" | "mail" | "messaging" | "visualization">("rest");
+    const [integrationSection, setIntegrationSection] = useState<"rest" | "database" | "mail" | "documents" | "messaging" | "visualization">("rest");
 
     useEffect(() => {
         if (open) {
@@ -441,10 +474,10 @@ function AgentDialog({
     useEffect(() => {
         if (!open) return;
         getToken(instance)
-            .then(token => (token ? listAvailableMCPServersApi(token) : []))
+            .then(token => (token && teamId ? listAvailableMCPServersApi(teamId, token, agent?._id) : []))
             .then(setMcpServers)
             .catch(error => console.error("load MCP servers failed", error));
-    }, [open, instance]);
+    }, [open, instance, teamId, agent?._id]);
 
     const [agentName, setAgentName] = useState("");
 
@@ -481,15 +514,18 @@ function AgentDialog({
     const [bindings, setBindings] = useState<Binding[]>([]);
     const [databaseBindings, setDatabaseBindings] = useState<DatabaseBindingData[]>([]);
     const [mailBindings, setMailBindings] = useState<MailBindingData[]>([]);
+    const [documentBindings, setDocumentBindings] = useState<BusinessDocumentBindingData[]>([]);
     const [messagingBindings, setMessagingBindings] = useState<MessagingBindingData[]>([]);
     const [chartBindings, setChartBindings] = useState<ChartBindingData[]>([]); // ⭐ CHART CAPABILITY
     const [bindingDialogOpen, setBindingDialogOpen] = useState(false);
     const [databaseBindingDialogOpen, setDatabaseBindingDialogOpen] = useState(false);
     const [selectedDatabaseBinding, setSelectedDatabaseBinding] = useState<DatabaseBindingData | null>(null);
     const [mailBindingDialogOpen, setMailBindingDialogOpen] = useState(false);
+    const [documentBindingDialogOpen, setDocumentBindingDialogOpen] = useState(false);
     const [messagingBindingDialogOpen, setMessagingBindingDialogOpen] = useState(false);
     const [selectedMessagingBinding, setSelectedMessagingBinding] = useState<MessagingBindingData | null>(null);
     const [selectedMailBinding, setSelectedMailBinding] = useState<MailBindingData | null>(null);
+    const [selectedDocumentBinding, setSelectedDocumentBinding] = useState<BusinessDocumentBindingData | null>(null);
     const [chartBindingDialogOpen, setChartBindingDialogOpen] = useState(false); // ⭐ CHART CAPABILITY
     const [selectedChartBinding, setSelectedChartBinding] = useState<ChartBindingData | null>(null); // ⭐ CHART CAPABILITY
     const [bindingSaving, setBindingSaving] = useState(false);
@@ -498,12 +534,14 @@ function AgentDialog({
     const [deletingDatabaseBindingId, setDeletingDatabaseBindingId] = useState<string | null>(null);
     const [testingDatabaseConnectionId, setTestingDatabaseConnectionId] = useState<string | null>(null);
     const [deletingMailBindingId, setDeletingMailBindingId] = useState<string | null>(null);
+    const [deletingDocumentBindingId, setDeletingDocumentBindingId] = useState<string | null>(null);
     const [deletingChartBindingId, setDeletingChartBindingId] = useState<string | null>(null); // ⭐ CHART CAPABILITY
     const { showNotification } = useNotification();
 
     const [integrations, setIntegrations] = useState<Integration[]>([]);
     const [databaseConnections, setDatabaseConnections] = useState<DatabaseConnection[]>([]);
     const [mailConfigs, setMailConfigs] = useState<MailEmailConfig[]>([]);
+    const [documentConnections, setDocumentConnections] = useState<BusinessDocumentConnection[]>([]);
     const [messagingConnections, setMessagingConnections] = useState<MessagingConnection[]>([]);
 
     useEffect(() => {
@@ -556,6 +594,21 @@ function AgentDialog({
     }, [open, teamId, instance]);
 
     useEffect(() => {
+        const loadDocumentConnections = async () => {
+            if (open && teamId) {
+                try {
+                    const token = await getToken(instance);
+                    if (!token) return;
+                    setDocumentConnections(await get_business_document_connections(teamId, token));
+                } catch (error) {
+                    console.error("load business document connections failed", error);
+                }
+            }
+        };
+        loadDocumentConnections();
+    }, [open, teamId, instance]);
+
+    useEffect(() => {
         if (!open || !teamId) return;
         getToken(instance).then(token => token ? get_messaging_connections(teamId, token) : []).then(setMessagingConnections).catch(e => console.error("load messaging connections failed", e));
     }, [open, teamId, instance]);
@@ -591,6 +644,13 @@ function AgentDialog({
                     setMailBindings([]);
                 }
                 try {
+                    const documentRes = await get_business_document_bindings(agent._id, token);
+                    setDocumentBindings(Array.isArray(documentRes) ? documentRes : []);
+                } catch (documentError) {
+                    console.error("load business document bindings error", documentError);
+                    setDocumentBindings([]);
+                }
+                try {
                     const messageRes = await get_messaging_bindings(agent._id, token);
                     setMessagingBindings(Array.isArray(messageRes) ? messageRes : []);
                 } catch (messageErr) {
@@ -615,6 +675,7 @@ function AgentDialog({
             setBindings([]);
             setDatabaseBindings([]);
             setMailBindings([]);
+            setDocumentBindings([]);
             setMessagingBindings([]);
             setChartBindings([]); // ⭐ CHART CAPABILITY
         }
@@ -1050,6 +1111,7 @@ function AgentDialog({
                                                 ["external_database", "External Database"],
                                                 ["rest_integrations", "REST Integrations"],
                                                 ["mail", "Mail"],
+                                                ["business_documents", "Business Documents"],
                                                 ["messaging", "Messaging & Chat"],
                                                 ["mcp", "MCP Tools"],
                                                 ["subagents", "Sub-agents"]
@@ -1060,7 +1122,7 @@ function AgentDialog({
                                                         <Switch
                                                             disabled={isFieldDisabled}
                                                             checked={Boolean(
-                                                                config.tool_settings?.[key as "external_database" | "rest_integrations" | "mail" | "messaging" | "mcp" | "subagents"]
+                                                                config.tool_settings?.[key as "external_database" | "rest_integrations" | "mail" | "business_documents" | "messaging" | "mcp" | "subagents"]
                                                             )}
                                                             onChange={(_, checked) =>
                                                                 setConfig({
@@ -1538,6 +1600,7 @@ function AgentDialog({
                                 <Tab label={`REST APIs (${apiBindings.length})`} value="rest" />
                                 <Tab label={`Databases (${databaseBindings.length})`} value="database" />
                                 <Tab label={`Mail (${mailBindings.length})`} value="mail" />
+                                <Tab label={`Documents (${documentBindings.length})`} value="documents" />
                                 <Tab label={`Messaging (${messagingBindings.length})`} value="messaging" />
                                 <Tab label={`Visualization (${chartBindings.length})`} value="visualization" />
                             </Tabs>
@@ -1926,6 +1989,51 @@ function AgentDialog({
                                         </Stack>
                                     </Box>
                                 )}
+                            </Paper>
+                        )}
+
+                        {integrationSection === "documents" && (
+                            <Paper variant="outlined" sx={{ p: 2 }}>
+                                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                    <Box>
+                                        <Typography fontWeight={600}>Business Documents</Typography>
+                                        <Typography variant="body2" color="text.secondary">Microsoft 365 and Google Workspace libraries available to this Agent</Typography>
+                                    </Box>
+                                    {!isViewMode && <Button size="small" onClick={() => { setSelectedDocumentBinding(null); setDocumentBindingDialogOpen(true); }}>+ Add Documents</Button>}
+                                </Stack>
+                                {!config.tool_settings?.business_documents && <Alert severity="warning" sx={{ mt: 2 }}>Business Document tools are disabled in Agent Info.</Alert>}
+                                {documentBindings.some(binding => binding.permissions.includes("create")) && <Alert severity="warning" sx={{ mt: 2 }}>At least one binding can create cloud documents. The Agent must act only on an explicit user request.</Alert>}
+                                <Stack spacing={2} mt={2}>
+                                    {documentBindings.length === 0 ? <Typography variant="body2" color="text.secondary">No document libraries linked</Typography> : documentBindings.map(binding => {
+                                        const connection = documentConnections.find(item => item._id === binding.connection_id);
+                                        return <Paper key={binding._id} variant="outlined" sx={{ p: 2 }}>
+                                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                                                <Box>
+                                                    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                                                        <Typography fontWeight={600}>{connection?.name ?? binding.connection_id}</Typography>
+                                                        <Chip size="small" label={connection?.provider === "microsoft365" ? "Microsoft 365" : "Google Workspace"} color="primary" variant="outlined" />
+                                                        <Chip size="small" label={binding.permissions.join(" / ")} color={binding.permissions.includes("create") ? "warning" : "success"} variant="outlined" />
+                                                    </Stack>
+                                                </Box>
+                                                {!isViewMode && <Stack direction="row">
+                                                    <IconButton size="small" onClick={() => { setSelectedDocumentBinding(binding); setDocumentBindingDialogOpen(true); }}><EditIcon fontSize="small" /></IconButton>
+                                                    <IconButton size="small" color="error" disabled={deletingDocumentBindingId === binding._id} onClick={async () => {
+                                                        if (!window.confirm("Delete this document binding?")) return;
+                                                        try {
+                                                            setDeletingDocumentBindingId(binding._id);
+                                                            const token = await getToken(instance);
+                                                            if (!token) return;
+                                                            await delete_business_document_binding(binding._id, token);
+                                                            await loadBindings();
+                                                        } catch (error) {
+                                                            showNotification(error instanceof Error ? error.message : "Delete failed", "error");
+                                                        } finally { setDeletingDocumentBindingId(null); }
+                                                    }}>{deletingDocumentBindingId === binding._id ? <CircularProgress size={20} /> : <DeleteIcon fontSize="small" />}</IconButton>
+                                                </Stack>}
+                                            </Stack>
+                                        </Paper>;
+                                    })}
+                                </Stack>
                             </Paper>
                         )}
 
@@ -2322,6 +2430,31 @@ function AgentDialog({
                     } finally {
                         setBindingSaving(false);
                     }
+                }}
+            />
+            <BusinessDocumentBindingDialog
+                open={documentBindingDialogOpen}
+                saving={bindingSaving}
+                connections={documentConnections}
+                binding={selectedDocumentBinding}
+                onClose={() => { setDocumentBindingDialogOpen(false); setSelectedDocumentBinding(null); }}
+                onSave={async binding => {
+                    try {
+                        setBindingSaving(true);
+                        const token = await getToken(instance);
+                        if (!token || !agent?._id) return;
+                        await save_business_document_binding({
+                            ...binding,
+                            binding_id: selectedDocumentBinding?._id,
+                            agent_id: agent._id
+                        }, token);
+                        await loadBindings();
+                        setDocumentBindingDialogOpen(false);
+                        setSelectedDocumentBinding(null);
+                        showNotification("Business document binding saved", "success");
+                    } catch (error) {
+                        showNotification(error instanceof Error ? error.message : "Save failed", "error");
+                    } finally { setBindingSaving(false); }
                 }}
             />
             {/* ⭐ CHART CAPABILITY: Chart binding dialog */}

@@ -1,6 +1,9 @@
 import pytest
 
-from core.llm_vendors import apply_llm_vendor_chat_policy
+from core.llm_vendors import (
+    apply_llm_vendor_chat_policy,
+    apply_llm_vendor_message_policy,
+)
 
 
 def _params(**overrides):
@@ -36,6 +39,39 @@ def test_ollama_uses_seed_but_omits_undocumented_n():
 
     assert result["seed"] == 42
     assert "n" not in result
+    assert "extra_body" not in result
+
+
+def test_ollama_disables_thinking_when_tools_are_available():
+    result = apply_llm_vendor_chat_policy(
+        "ollama", _params(tools=[{"type": "function"}])
+    )
+
+    assert result["extra_body"] == {"think": False}
+
+
+def test_ollama_adds_no_think_to_latest_tool_enabled_user_message():
+    messages = [
+        {"role": "system", "content": "Use the available tools."},
+        {"role": "user", "content": "List subscriptions"},
+    ]
+
+    result = apply_llm_vendor_message_policy(
+        "ollama", messages, tools_enabled=True
+    )
+
+    assert result[0]["content"] == "Use the available tools."
+    assert result[1]["content"] == "List subscriptions\n/no_think"
+    assert messages[0]["content"] == "Use the available tools."
+    assert messages[1]["content"] == "List subscriptions"
+
+
+def test_non_ollama_messages_are_not_given_vendor_directives():
+    messages = [{"role": "user", "content": "Hello"}]
+
+    assert apply_llm_vendor_message_policy(
+        "openai", messages, tools_enabled=True
+    ) == messages
 
 
 def test_mistral_maps_seed_to_random_seed_and_omits_stream_usage_option():

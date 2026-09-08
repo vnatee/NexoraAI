@@ -53,7 +53,10 @@ def _to_openai_message(message: BaseMessage) -> dict[str, Any]:
     if isinstance(message, AIMessage):
         result: dict[str, Any] = {
             "role": "assistant",
-            "content": message.content or None,
+            # Some Azure OpenAI deployments reject JSON null here even though
+            # the assistant message contains a valid tool call. An empty string
+            # is accepted by Azure and other OpenAI-compatible providers.
+            "content": message.content if message.content is not None else "",
         }
         if message.tool_calls:
             result["tool_calls"] = [

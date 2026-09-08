@@ -1,4 +1,5 @@
 from agent_runtime.adapters.chart import register_chart_tool
+from agent_runtime.adapters.business_documents import register_business_document_tools
 from agent_runtime.adapters.database import register_database_tools
 from agent_runtime.adapters.external_api import register_external_api_tools
 from agent_runtime.adapters.mcp import MCPServerConfig, register_mcp_tools
@@ -12,6 +13,7 @@ __all__ = [
     "SubagentSpec",
     "register_database_tools",
     "register_chart_tool",
+    "register_business_document_tools",
     "register_external_api_tools",
     "register_mcp_tools",
     "register_mail_tools",

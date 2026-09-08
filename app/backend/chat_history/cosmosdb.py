@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 from typing import Any, Union
@@ -7,21 +8,144 @@ from azure.identity.aio import AzureDeveloperCliCredential, ManagedIdentityCrede
 from quart import Blueprint, current_app, jsonify, make_response, request
 
 from config import (
+    CONFIG_CHAT_ATTACHMENT_STORE,
     CONFIG_CHAT_HISTORY_COSMOS_ENABLED,
+    CONFIG_CHAT_HISTORY_DATABASE_ENABLED,
     CONFIG_COSMOS_HISTORY_CLIENT,
     CONFIG_COSMOS_HISTORY_CONTAINER,
     CONFIG_COSMOS_HISTORY_VERSION,
     CONFIG_CREDENTIAL,
 )
+from core.attachment_store import AttachmentNotFoundError, AttachmentStore
 from decorators import authenticated
 from error import error_response
+from mongo_table_connecters.chat_attachment_index import (
+    delete_conversation_attachment_chunks,
+)
+from mongo_table_connecters.chat_attachment_metadata import (
+    delete_conversation_attachment_metadata,
+    list_conversation_attachment_metadata,
+)
+from mongo_table_connecters.chat_history import (
+    delete_session,
+    ensure_indexes,
+    get_session,
+    insert_deletion_audit,
+    list_expired_sessions,
+    list_sessions,
+    upsert_session,
+)
 
 chat_history_cosmosdb_bp = Blueprint("chat_history_cosmos", __name__, static_folder="static")
+_mongo_cleanup_task: asyncio.Task | None = None
+
+
+def _owner_id(auth_claims: dict[str, Any]) -> str:
+    return str(
+        auth_claims.get("oid")
+        or auth_claims.get("sub")
+        or auth_claims.get("preferred_username")
+        or ""
+    )
+
+
+async def _delete_conversation_dependencies(owner_id: str, conversation_id: str) -> int:
+    items = await asyncio.to_thread(
+        list_conversation_attachment_metadata,
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+    )
+    store: AttachmentStore | None = current_app.config.get(CONFIG_CHAT_ATTACHMENT_STORE)
+    if items and store is None:
+        raise RuntimeError("Chat attachment storage is unavailable for conversation cleanup")
+    for item in items:
+        assert store is not None
+        try:
+            await store.delete(
+                str(item["_id"]),
+                owner_id=owner_id,
+                conversation_id=conversation_id,
+            )
+        except AttachmentNotFoundError:
+            pass
+    await asyncio.to_thread(
+        delete_conversation_attachment_chunks,
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+    )
+    await asyncio.to_thread(
+        delete_conversation_attachment_metadata,
+        owner_id=owner_id,
+        conversation_id=conversation_id,
+    )
+    return len(items)
+
+
+async def _delete_database_history_session(
+    session: dict[str, Any], *, actor_id: str, reason: str
+) -> bool:
+    session_id = str(session.get("_id") or "")
+    owner_id = str(session.get("owner_id") or "")
+    conversation_id = str(session.get("conversation_id") or session_id)
+    attachment_count = await _delete_conversation_dependencies(owner_id, conversation_id)
+    deleted = await asyncio.to_thread(delete_session, session_id, owner_id)
+    if deleted:
+        await asyncio.to_thread(
+            insert_deletion_audit,
+            actor_id=actor_id,
+            reason=reason,
+            conversation_count=1,
+            attachment_count=attachment_count,
+        )
+    return deleted
+
+
+async def _mongo_cleanup_loop(interval_seconds: float) -> None:
+    while True:
+        try:
+            expired = await asyncio.to_thread(list_expired_sessions)
+            deleted = 0
+            for session in expired:
+                try:
+                    if await _delete_database_history_session(
+                        session, actor_id="system", reason="retention"
+                    ):
+                        deleted += 1
+                except Exception:
+                    current_app.logger.exception(
+                        "Unable to cascade expired Chat history session cleanup"
+                    )
+            if deleted:
+                current_app.logger.info("Expired Chat history sessions removed: %d", deleted)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            current_app.logger.exception("Unable to clean expired Chat history")
+        await asyncio.sleep(interval_seconds)
 
 
 @chat_history_cosmosdb_bp.post("/chat_history")
 @authenticated
 async def post_chat_history(auth_claims: dict[str, Any]):
+    if current_app.config.get(CONFIG_CHAT_HISTORY_DATABASE_ENABLED):
+        try:
+            payload = await request.get_json()
+            owner_id = _owner_id(auth_claims)
+            if not owner_id:
+                return jsonify({"error": "User identity not found"}), 401
+            await asyncio.to_thread(
+                upsert_session,
+                str(payload.get("id") or ""),
+                owner_id,
+                payload.get("answers"),
+                str(payload.get("team_id") or "") or None,
+                str(payload.get("conversation_id") or "") or None,
+            )
+            return jsonify({}), 201
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
+        except Exception as error:
+            return error_response(error, "/chat_history")
     if not current_app.config[CONFIG_CHAT_HISTORY_COSMOS_ENABLED]:
         return jsonify({"error": "Chat history not enabled"}), 400
 
@@ -79,6 +203,20 @@ async def post_chat_history(auth_claims: dict[str, Any]):
 @chat_history_cosmosdb_bp.get("/chat_history/sessions")
 @authenticated
 async def get_chat_history_sessions(auth_claims: dict[str, Any]):
+    if current_app.config.get(CONFIG_CHAT_HISTORY_DATABASE_ENABLED):
+        try:
+            owner_id = _owner_id(auth_claims)
+            if not owner_id:
+                return jsonify({"error": "User identity not found"}), 401
+            count = max(1, min(int(request.args.get("count", 10)), 100))
+            sessions, token = await asyncio.to_thread(
+                list_sessions, owner_id, count, request.args.get("continuation_token")
+            )
+            return jsonify({"sessions": sessions, "continuation_token": token}), 200
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
+        except Exception as error:
+            return error_response(error, "/chat_history/sessions")
     if not current_app.config[CONFIG_CHAT_HISTORY_COSMOS_ENABLED]:
         return jsonify({"error": "Chat history not enabled"}), 400
 
@@ -132,6 +270,17 @@ async def get_chat_history_sessions(auth_claims: dict[str, Any]):
 @chat_history_cosmosdb_bp.get("/chat_history/sessions/<session_id>")
 @authenticated
 async def get_chat_history_session(auth_claims: dict[str, Any], session_id: str):
+    if current_app.config.get(CONFIG_CHAT_HISTORY_DATABASE_ENABLED):
+        try:
+            owner_id = _owner_id(auth_claims)
+            if not owner_id:
+                return jsonify({"error": "User identity not found"}), 401
+            item = await asyncio.to_thread(get_session, session_id, owner_id)
+            if not item:
+                return jsonify({"error": "Chat history session not found"}), 404
+            return jsonify({"id": session_id, "answers": item.get("answers") or []}), 200
+        except Exception as error:
+            return error_response(error, f"/chat_history/sessions/{session_id}")
     if not current_app.config[CONFIG_CHAT_HISTORY_COSMOS_ENABLED]:
         return jsonify({"error": "Chat history not enabled"}), 400
 
@@ -179,6 +328,19 @@ async def get_chat_history_session(auth_claims: dict[str, Any], session_id: str)
 @chat_history_cosmosdb_bp.delete("/chat_history/sessions/<session_id>")
 @authenticated
 async def delete_chat_history_session(auth_claims: dict[str, Any], session_id: str):
+    if current_app.config.get(CONFIG_CHAT_HISTORY_DATABASE_ENABLED):
+        try:
+            owner_id = _owner_id(auth_claims)
+            if not owner_id:
+                return jsonify({"error": "User identity not found"}), 401
+            item = await asyncio.to_thread(get_session, session_id, owner_id)
+            if item:
+                await _delete_database_history_session(
+                    item, actor_id=owner_id, reason="user"
+                )
+            return await make_response("", 204)
+        except Exception as error:
+            return error_response(error, f"/chat_history/sessions/{session_id}")
     if not current_app.config[CONFIG_CHAT_HISTORY_COSMOS_ENABLED]:
         return jsonify({"error": "Chat history not enabled"}), 400
 
@@ -214,6 +376,11 @@ async def delete_chat_history_session(auth_claims: dict[str, Any], session_id: s
 
 @chat_history_cosmosdb_bp.before_app_serving
 async def setup_clients():
+    global _mongo_cleanup_task
+    if os.getenv("USE_CHAT_HISTORY_DATABASE", "").lower() == "true":
+        await asyncio.to_thread(ensure_indexes)
+        interval = max(60.0, float(os.getenv("CHAT_HISTORY_CLEANUP_INTERVAL_SECONDS", "3600")))
+        _mongo_cleanup_task = asyncio.create_task(_mongo_cleanup_loop(interval))
     USE_CHAT_HISTORY_COSMOS = os.getenv("USE_CHAT_HISTORY_COSMOS", "").lower() == "true"
     AZURE_COSMOSDB_ACCOUNT = os.getenv("AZURE_COSMOSDB_ACCOUNT")
     AZURE_CHAT_HISTORY_DATABASE = os.getenv("AZURE_CHAT_HISTORY_DATABASE")
@@ -244,6 +411,14 @@ async def setup_clients():
 
 @chat_history_cosmosdb_bp.after_app_serving
 async def close_clients():
+    global _mongo_cleanup_task
+    if _mongo_cleanup_task:
+        _mongo_cleanup_task.cancel()
+        try:
+            await _mongo_cleanup_task
+        except asyncio.CancelledError:
+            pass
+        _mongo_cleanup_task = None
     if current_app.config.get(CONFIG_COSMOS_HISTORY_CLIENT):
         cosmos_client: CosmosClient = current_app.config[CONFIG_COSMOS_HISTORY_CLIENT]
         await cosmos_client.close()
