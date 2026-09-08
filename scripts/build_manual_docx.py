@@ -96,7 +96,10 @@ def add_field(paragraph, instruction: str) -> None:
     separate.set(qn("w:fldCharType"), "separate")
     end = OxmlElement("w:fldChar")
     end.set(qn("w:fldCharType"), "end")
-    paragraph._p.extend((begin, text, separate, end))
+    for element in (begin, text, separate, end):
+        run = OxmlElement("w:r")
+        run.append(element)
+        paragraph._p.append(run)
 
 
 def add_hyperlink(paragraph, label: str, target: str) -> None:
