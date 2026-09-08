@@ -1215,17 +1215,18 @@ See `docs/usage-quotas.md`.
 ### System Health
 
 - System Administrators have a **System administration → System health** page
-  backed by `GET /admin/system-health`. It refreshes every 30 seconds and shows
-  a secret-free snapshot of core services, aggregate integration health, and
-  ingestion/attachment queues and workers.
+  backed by `GET /admin/system-health`. It loads on entry and refreshes only on
+  explicit request; there is no continuous browser polling. It shows a
+  secret-free snapshot of CPU, memory, disk, application RSS, core services,
+  aggregate integration health, and ingestion/attachment queues and workers.
 - MongoDB and configured local MinIO, Qdrant, Ollama, and Integration Controller
   endpoints receive short read-only liveness probes. Azure and other remote
   clients are reported as initialized/configured rather than making potentially
   costly provider calls on every refresh. Full host metrics, time-series,
   alerting, and externally hosted outage detection remain follow-up work; see
   `docs/system-health.md`.
-- Focused System Health tests pass (`4 passed`), the complete service-free suite
-  passes (`873 passed, 1 deselected`), and the frontend TypeScript/production
+- Focused System Health tests pass (`5 passed`), the complete service-free suite
+  passes (`874 passed, 1 deselected`), and the frontend TypeScript/production
   build passes.
 
 ### Chat workspace polish

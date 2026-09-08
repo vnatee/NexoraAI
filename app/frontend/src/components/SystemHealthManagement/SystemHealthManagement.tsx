@@ -15,6 +15,7 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import StorageOutlinedIcon from "@mui/icons-material/StorageOutlined";
 import HubOutlinedIcon from "@mui/icons-material/HubOutlined";
 import WorkHistoryOutlinedIcon from "@mui/icons-material/WorkHistoryOutlined";
+import MemoryOutlinedIcon from "@mui/icons-material/MemoryOutlined";
 import { useMsal } from "@azure/msal-react";
 
 import { getSystemHealthApi } from "../../api/api";
@@ -35,6 +36,19 @@ const statusColor = (status: SystemHealthStatus | "degraded") => {
     if (["degraded", "stopped"].includes(status)) return "warning" as const;
     if (status === "unavailable") return "error" as const;
     return "default" as const;
+};
+
+const resourceColor = (status: "healthy" | "warning" | "critical" | "unavailable") => {
+    if (status === "healthy") return "success" as const;
+    if (status === "warning") return "warning" as const;
+    return "error" as const;
+};
+
+const formatBytes = (value: number) => {
+    if (!Number.isFinite(value) || value <= 0) return "0 B";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    const index = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+    return `${(value / 1024 ** index).toFixed(index >= 3 ? 1 : 0)} ${units[index]}`;
 };
 
 function Metric({ label, value, tone = "default" }: { label: string; value: number; tone?: "default" | "warning" | "error" }) {
@@ -70,8 +84,6 @@ export function SystemHealthManagement() {
 
     useEffect(() => {
         void load();
-        const timer = window.setInterval(() => void load(false), 30_000);
-        return () => window.clearInterval(timer);
     }, [load]);
 
     return (
@@ -80,7 +92,7 @@ export function SystemHealthManagement() {
                 <Box>
                     <Typography variant="h6">System Health</Typography>
                     <Typography variant="body2" color="text.secondary">
-                        System-wide operational status. Refreshes every 30 seconds and never exposes credentials or raw error details.
+                        On-demand system-wide snapshot. Data changes only when this page opens or you select Refresh.
                     </Typography>
                 </Box>
                 <Button startIcon={<RefreshIcon />} variant="outlined" onClick={() => void load()} disabled={loading}>Refresh</Button>
@@ -97,6 +109,46 @@ export function SystemHealthManagement() {
                             Last checked {new Date(snapshot.checked_at).toLocaleString()}
                         </Typography>
                     </Stack>
+
+                    <Card variant="outlined">
+                        <CardContent>
+                            <Stack direction="row" spacing={1} alignItems="center" mb={0.5}>
+                                <MemoryOutlinedIcon color="primary" />
+                                <Typography fontWeight={700}>Runtime resources</Typography>
+                                <Chip size="small" color={resourceColor(snapshot.resources.status)} label={snapshot.resources.status} sx={{ ml: "auto", textTransform: "capitalize" }} />
+                            </Stack>
+                            <Typography variant="caption" color="text.secondary" display="block" mb={2}>
+                                {snapshot.resources.scope_label}. Container deployments may differ from physical host capacity.
+                            </Typography>
+                            {snapshot.resources.cpu && snapshot.resources.memory && snapshot.resources.disk ? (
+                                <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 1.5 }}>
+                                    <ResourceMetric
+                                        label="CPU"
+                                        percent={snapshot.resources.cpu.usage_percent}
+                                        detail={`${snapshot.resources.cpu.logical_cores} logical cores${snapshot.resources.cpu.load_average_1m === null ? "" : ` · Load ${snapshot.resources.cpu.load_average_1m}`}`}
+                                    />
+                                    <ResourceMetric
+                                        label="Memory"
+                                        percent={snapshot.resources.memory.usage_percent}
+                                        detail={`${formatBytes(snapshot.resources.memory.used_bytes)} / ${formatBytes(snapshot.resources.memory.total_bytes)}`}
+                                    />
+                                    <ResourceMetric
+                                        label="Disk /"
+                                        percent={snapshot.resources.disk.usage_percent}
+                                        detail={`${formatBytes(snapshot.resources.disk.used_bytes)} / ${formatBytes(snapshot.resources.disk.total_bytes)}`}
+                                    />
+                                    <Card variant="outlined">
+                                        <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
+                                            <Typography variant="h5" fontWeight={700}>{formatBytes(snapshot.resources.process?.resident_memory_bytes ?? 0)}</Typography>
+                                            <Typography variant="body2" color="text.secondary">Application memory</Typography>
+                                        </CardContent>
+                                    </Card>
+                                </Box>
+                            ) : (
+                                <Alert severity="warning">Runtime resource metrics are unavailable.</Alert>
+                            )}
+                        </CardContent>
+                    </Card>
 
                     <Card variant="outlined">
                         <CardContent>
@@ -157,6 +209,22 @@ export function SystemHealthManagement() {
                 </>
             )}
         </Stack>
+    );
+}
+
+function ResourceMetric({ label, percent, detail }: { label: string; percent: number; detail: string }) {
+    const tone = percent >= 90 ? "error" : percent >= 80 ? "warning" : "success";
+    return (
+        <Card variant="outlined">
+            <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
+                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                    <Typography variant="h5" fontWeight={700}>{percent.toFixed(1)}%</Typography>
+                    <Chip size="small" color={tone} label={percent >= 90 ? "Critical" : percent >= 80 ? "Warning" : "Healthy"} />
+                </Stack>
+                <Typography variant="body2" fontWeight={600}>{label}</Typography>
+                <Typography variant="caption" color="text.secondary">{detail}</Typography>
+            </CardContent>
+        </Card>
     );
 }
 

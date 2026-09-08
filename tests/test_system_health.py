@@ -67,6 +67,11 @@ async def test_health_snapshot_contains_safe_service_integration_and_job_counts(
         return 12
 
     monkeypatch.setattr(system_health, "_http_probe", successful_probe)
+    monkeypatch.setattr(
+        system_health,
+        "_resource_snapshot",
+        lambda: {"scope": "runtime_environment", "scope_label": "Runtime", "status": "healthy"},
+    )
     snapshot = await system_health.build_system_health_snapshot(
         _Database(),
         {
@@ -115,6 +120,11 @@ async def test_health_snapshot_degrades_without_database_or_controller(monkeypat
         raise RuntimeError("Bearer secret")
 
     monkeypatch.setattr(system_health, "_http_probe", failed_probe)
+    monkeypatch.setattr(
+        system_health,
+        "_resource_snapshot",
+        lambda: {"scope": "runtime_environment", "scope_label": "Runtime", "status": "healthy"},
+    )
 
     snapshot = await system_health.build_system_health_snapshot(
         database,
@@ -129,6 +139,12 @@ async def test_health_snapshot_degrades_without_database_or_controller(monkeypat
     assert snapshot["status"] == "degraded"
     assert next(item for item in snapshot["services"] if item["id"] == "mongodb")["status"] == "unavailable"
     assert "secret" not in str(snapshot).lower()
+
+
+def test_resource_thresholds():
+    assert system_health._resource_status(79.9) == "healthy"
+    assert system_health._resource_status(80) == "warning"
+    assert system_health._resource_status(90) == "critical"
 
 
 @pytest.mark.asyncio
