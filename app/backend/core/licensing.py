@@ -1,23 +1,33 @@
-"""Versioned product-entitlement claims and deterministic state evaluation.
+"""Signed product-entitlement claims and deterministic state evaluation.
 
-This module deliberately does not verify signatures or enforce entitlements.
-Only a future signature-verification boundary may construct claims from an
-imported license document before passing them to ``evaluate_verified_claims``.
+NX1 imports are authenticated with trusted Ed25519 public keys before claims
+are parsed. Enforcement remains separate so callers can evaluate and display
+entitlements without accidentally turning this module into an authorization
+boundary.
 """
 
 from __future__ import annotations
 
+import base64
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 PRODUCT_ID = "nexoraai"
 SUPPORTED_SCHEMA_VERSION = 1
 MAX_CLAIM_ENTRIES = 128
 MAX_GRACE_DAYS = 90
+MAX_LICENSE_KEY_BYTES = 64 * 1024
+LICENSE_KEY_PREFIX = "NX1"
 
 LicenseState = Literal["unlicensed", "active", "grace", "expired", "revoked", "invalid"]
 
@@ -44,6 +54,10 @@ _CLAIM_FIELDS = frozenset(
 
 class LicenseClaimsError(ValueError):
     """Raised when a verified document does not match the claims schema."""
+
+
+class LicenseVerificationError(ValueError):
+    """Raised when a signed license cannot be authenticated safely."""
 
 
 @dataclass(frozen=True)
@@ -164,6 +178,89 @@ def parse_verified_claims(payload: Mapping[str, Any]) -> EntitlementClaims:
         capacities=_capacity_claims(payload.get("capacities", {})),
         installation_id=installation_id,
     )
+
+
+def load_verification_keys(directory: str | Path | None) -> Mapping[str, Ed25519PublicKey]:
+    """Load bounded Ed25519 public keys indexed by their filename stem."""
+
+    if not directory:
+        return MappingProxyType({})
+    path = Path(directory)
+    if not path.is_dir():
+        raise LicenseVerificationError("license verification key directory is unavailable")
+    key_files = sorted(path.glob("*.pem"))
+    if len(key_files) > 16:
+        raise LicenseVerificationError("license verification key directory contains too many PEM keys")
+
+    keys: dict[str, Ed25519PublicKey] = {}
+    for key_file in key_files:
+        key_id = _identifier(key_file.stem, "key_id")
+        encoded = key_file.read_bytes()
+        if len(encoded) > 16 * 1024:
+            raise LicenseVerificationError("license verification key file is too large")
+        try:
+            public_key = serialization.load_pem_public_key(encoded)
+        except (TypeError, ValueError) as error:
+            raise LicenseVerificationError("license verification key is invalid") from error
+        if not isinstance(public_key, Ed25519PublicKey):
+            raise LicenseVerificationError("license verification key must use Ed25519")
+        keys[key_id] = public_key
+    return MappingProxyType(keys)
+
+
+def verify_license_key(
+    license_key: str,
+    verification_keys: Mapping[str, Ed25519PublicKey],
+) -> EntitlementClaims:
+    """Authenticate an NX1 license and then validate its claims."""
+
+    if not isinstance(license_key, str) or not license_key.strip():
+        raise LicenseVerificationError("license key is required")
+    normalized = license_key.strip()
+    if len(normalized.encode("utf-8")) > MAX_LICENSE_KEY_BYTES:
+        raise LicenseVerificationError("license key is too large")
+    parts = normalized.split(".")
+    if len(parts) != 3 or parts[0] != LICENSE_KEY_PREFIX:
+        raise LicenseVerificationError("license key format is invalid")
+    try:
+        payload_bytes = _decode_base64url(parts[1])
+        signature = _decode_base64url(parts[2])
+        payload = json.loads(payload_bytes.decode("utf-8"), object_pairs_hook=_unique_json_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise LicenseVerificationError("license key payload is invalid") from error
+    if not isinstance(payload, dict):
+        raise LicenseVerificationError("license key payload is invalid")
+
+    key_id = payload.get("key_id")
+    if not isinstance(key_id, str) or not _IDENTIFIER.fullmatch(key_id):
+        raise LicenseVerificationError("license key ID is invalid")
+    public_key = verification_keys.get(key_id)
+    if public_key is None:
+        raise LicenseVerificationError("license signing key is not trusted")
+    try:
+        public_key.verify(signature, parts[1].encode("ascii"))
+    except (InvalidSignature, ValueError) as error:
+        raise LicenseVerificationError("license signature is invalid") from error
+    try:
+        return parse_verified_claims(payload)
+    except LicenseClaimsError as error:
+        raise LicenseVerificationError(str(error)) from error
+
+
+def _decode_base64url(value: str) -> bytes:
+    if not value or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise ValueError("invalid base64url")
+    padding = "=" * (-len(value) % 4)
+    return base64.b64decode(value + padding, altchars=b"-_", validate=True)
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON field")
+        result[key] = value
+    return result
 
 
 def unlicensed_evaluation(*, now: datetime | None = None) -> LicenseEvaluation:

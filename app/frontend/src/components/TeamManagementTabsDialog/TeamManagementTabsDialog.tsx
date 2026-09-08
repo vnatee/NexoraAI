@@ -49,6 +49,7 @@ import { GuardrailPolicyPage } from "./Tabs/GuardrailPolicyPage";
 import { UsageQuotaPolicyPage } from "./Tabs/UsageQuotaPolicyPage";
 import { ChatHistoryPolicyPage } from "./Tabs/ChatHistoryPolicyPage";
 import { SystemHealthManagement } from "../SystemHealthManagement/SystemHealthManagement";
+import { LicenseSettingsPage } from "./Tabs/LicenseSettingsPage";
 
 interface Props {
     open: boolean;
@@ -276,6 +277,14 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             systemAdminOnly: true,
             selfPadded: true,
             element: <ChatHistoryPolicyPage team={null} />
+        },
+        {
+            id: "license",
+            label: "License",
+            permission: [],
+            group: "system",
+            systemAdminOnly: true,
+            element: <LicenseSettingsPage />
         },
         {
             id: "authentication",

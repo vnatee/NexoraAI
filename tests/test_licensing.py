@@ -1,12 +1,18 @@
+import base64
+import json
 from datetime import datetime, timezone
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from core.licensing import (
     LicenseClaimsError,
+    LicenseVerificationError,
     evaluate_verified_claims,
+    load_verification_keys,
     parse_verified_claims,
     unlicensed_evaluation,
+    verify_license_key,
 )
 
 
@@ -128,3 +134,54 @@ def test_naive_evaluation_time_is_rejected():
 
     with pytest.raises(LicenseClaimsError, match="timezone"):
         evaluate_verified_claims(claims, installation_id="installation-001", now=datetime(2026, 6, 1))
+
+
+def _signed_license(payload=None):
+    private_key = Ed25519PrivateKey.generate()
+    value = payload or _payload()
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(value, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).rstrip(b"=").decode("ascii")
+    signature = base64.urlsafe_b64encode(private_key.sign(encoded.encode("ascii"))).rstrip(b"=").decode("ascii")
+    return f"NX1.{encoded}.{signature}", private_key.public_key()
+
+
+def test_signed_license_is_verified_before_claims_are_parsed():
+    license_key, public_key = _signed_license()
+
+    claims = verify_license_key(license_key, {"signing-key-2026-01": public_key})
+
+    assert claims.license_id == "lic-001"
+    assert claims.installation_id == "installation-001"
+
+
+def test_tampered_and_untrusted_signed_licenses_are_rejected():
+    license_key, public_key = _signed_license()
+    prefix, payload, signature = license_key.split(".")
+    replacement = "A" if signature[0] != "A" else "B"
+    tampered = f"{prefix}.{payload}.{replacement}{signature[1:]}"
+
+    with pytest.raises(LicenseVerificationError, match="signature"):
+        verify_license_key(tampered, {"signing-key-2026-01": public_key})
+    with pytest.raises(LicenseVerificationError, match="not trusted"):
+        verify_license_key(license_key, {})
+
+
+def test_public_key_directory_allows_rotation_and_rejects_wrong_key_types(tmp_path):
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.rsa import generate_private_key
+
+    public_key = Ed25519PrivateKey.generate().public_key()
+    (tmp_path / "key-2026.pem").write_bytes(
+        public_key.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    )
+    assert load_verification_keys(tmp_path)["key-2026"]
+
+    bad_directory = tmp_path / "bad"
+    bad_directory.mkdir()
+    rsa_public_key = generate_private_key(public_exponent=65537, key_size=2048).public_key()
+    (bad_directory / "rsa.pem").write_bytes(
+        rsa_public_key.public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+    )
+    with pytest.raises(LicenseVerificationError, match="Ed25519"):
+        load_verification_keys(bad_directory)

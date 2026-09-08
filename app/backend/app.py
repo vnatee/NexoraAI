@@ -52,6 +52,13 @@ from mongo_table_connecters.auth_settings import (
     save_auth_settings,
     serialize_auth_settings,
 )
+from mongo_table_connecters.license_settings import (
+    ensure_license_indexes,
+    get_license_status,
+    import_license,
+    start_trial,
+)
+from core.licensing import LicenseVerificationError, load_verification_keys
 from mongo_table_connecters.chat_history import (
     configured_retention_days as configured_chat_history_retention_days,
     retention_days as effective_chat_history_retention_days,
@@ -3905,6 +3912,55 @@ async def admin_system_health(auth_claims: dict[str, Any]):
         get_database(), current_app.config, os.environ
     )
     return jsonify(snapshot)
+
+
+def _license_verification_keys():
+    return load_verification_keys(os.getenv("NEXORA_LICENSE_PUBLIC_KEY_DIR"))
+
+
+@bp.get("/admin/license")
+@authenticated
+async def admin_get_license(auth_claims: dict[str, Any]):
+    """Return safe licensing status without the imported license key."""
+
+    _require_system_admin(auth_claims)
+    try:
+        return jsonify(get_license_status(_license_verification_keys()))
+    except LicenseVerificationError as error:
+        return jsonify({"error": str(error)}), 503
+
+
+@bp.post("/admin/license/trial")
+@authenticated
+async def admin_start_license_trial(auth_claims: dict[str, Any]):
+    user = _require_system_admin(auth_claims)
+    try:
+        return jsonify(start_trial(actor_id=str(user.get("_id") or ""))), 201
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.put("/admin/license")
+@authenticated
+async def admin_import_license(auth_claims: dict[str, Any]):
+    user = _require_system_admin(auth_claims)
+    body = await request.get_json()
+    license_key = (body or {}).get("license_key") if isinstance(body, dict) else None
+    try:
+        verification_keys = _license_verification_keys()
+        if not verification_keys:
+            return jsonify({"error": "No trusted license signing keys are configured"}), 503
+        return jsonify(
+            import_license(
+                license_key,
+                verification_keys,
+                actor_id=str(user.get("_id") or ""),
+            )
+        )
+    except LicenseVerificationError as error:
+        return jsonify({"error": str(error)}), 400
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
 
 
 @bp.route("/config", methods=["GET"])
@@ -7865,6 +7921,7 @@ async def setup_clients():
     SKIP_STARTUP_BOOTSTRAP = os.getenv("SKIP_STARTUP_BOOTSTRAP", "").lower() == "true"
     if not SKIP_STARTUP_BOOTSTRAP:
         ensure_usage_quota_indexes()
+        ensure_license_indexes()
 
     # Use the current user identity for keyless authentication to Azure services.
     # This assumes you use 'azd auth login' locally, and managed identity when deployed on Azure.

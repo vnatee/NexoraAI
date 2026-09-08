@@ -350,6 +350,37 @@ export interface SystemHealthSnapshot {
     };
 }
 
+export type LicenseStatus = "unlicensed" | "active" | "grace" | "expired" | "revoked" | "invalid";
+
+export interface LicenseStatusResponse {
+    status: LicenseStatus;
+    reason: string;
+    source: "none" | "trial" | "license";
+    installation_id: string;
+    audit_mode: boolean;
+    trial_available: boolean;
+    evaluated_at?: string;
+    trial?: {
+        started_at: string;
+        expires_at: string;
+        duration_days: number;
+    };
+    license?: {
+        license_id: string;
+        customer_id: string;
+        product: string;
+        edition: string;
+        issuer: string;
+        key_id: string;
+        not_before: string;
+        expires_at: string;
+        grace_days: number;
+        features: Record<string, boolean>;
+        capacities: Record<string, number | null>;
+        installation_id?: string | null;
+    };
+}
+
 export interface AgentToolPolicy {
     max_total_calls: number;
     max_calls_per_tool: number;
