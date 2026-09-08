@@ -248,6 +248,7 @@ async def test_tool_capability_probe_detects_supported_model():
     )
     assert (status, detail) == ("supported", "tool_call_returned")
     assert completions.requests[0]["tool_choice"] == "required"
+    assert completions.requests[0]["max_tokens"] == 256
 
 
 @pytest.mark.asyncio

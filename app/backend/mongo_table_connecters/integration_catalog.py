@@ -3,12 +3,13 @@ from typing import Any
 
 from mongo_table_connecters.mongo_connector import get_database
 
-
 _COLLECTIONS = {
     "rest_api": "external_apis",
     "database": "external_databases",
     "mail": "mail_connections",
     "messaging": "messaging_connections",
+    "mcp": "mcp_servers",
+    "business_documents": "business_document_connections",
 }
 
 _BINDINGS = {
@@ -16,6 +17,8 @@ _BINDINGS = {
     "database": ("database_bindings", "integration_id"),
     "mail": ("mail_bindings", "email_id"),
     "messaging": ("messaging_bindings", "connection_id"),
+    "mcp": ("agents", "config.tool_settings.mcp_server_ids"),
+    "business_documents": ("business_document_bindings", "connection_id"),
 }
 
 
@@ -44,9 +47,10 @@ def assign_unassigned_integration(kind: str, integration_id: str, team_id: str) 
     ):
         raise IntegrationAssignmentError("Remove Agent bindings before assigning this integration")
 
+    timestamp_field = "update_at" if kind == "mcp" else "updated_at"
     result = collection.update_one(
         {"_id": integration_id, "delete_at": None, "team_id": {"$in": [None, ""]}},
-        {"$set": {"team_id": team_id, "updated_at": datetime.now(timezone.utc)}},
+        {"$set": {"team_id": team_id, timestamp_field: datetime.now(timezone.utc)}},
     )
     if result.modified_count != 1:
         raise IntegrationAssignmentError("Integration assignment changed; refresh and try again")

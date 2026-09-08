@@ -37,6 +37,7 @@ import ThumbUpOffAltIcon from "@mui/icons-material/ThumbUpOffAlt";
 import ThumbUpAltIcon from "@mui/icons-material/ThumbUpAlt";
 import ThumbDownOffAltIcon from "@mui/icons-material/ThumbDownOffAlt";
 import ThumbDownAltIcon from "@mui/icons-material/ThumbDownAlt";
+import DownloadIcon from "@mui/icons-material/Download";
 
 interface Props {
     answer: ChatAppResponse;
@@ -57,6 +58,42 @@ interface Props {
     onSetFeedback?: (sentiment: "like" | "dislike", index: number) => void;
     feedbackSubmitting?: boolean;
 }
+
+const normalizeMarkdownTableSeparators = (markdown: string): string => {
+    const lines = markdown.split("\n");
+    let inCodeFence = false;
+    for (let index = 0; index < lines.length - 1; index += 1) {
+        if (lines[index].trimStart().startsWith("```")) {
+            inCodeFence = !inCodeFence;
+            continue;
+        }
+        if (inCodeFence) continue;
+
+        const header = lines[index].trim();
+        const next = lines[index + 1].trim();
+        if (!header.includes("|") || !/^\|?[\s:|-]*-{3,}[\s:|-]*$/.test(next)) continue;
+
+        const columnCount = header.replace(/^\|/, "").replace(/\|$/, "").split("|").length;
+        if (columnCount < 2) continue;
+
+        // A table immediately following `2. Section` is parsed as literal
+        // content inside that ordered-list item. Separate the table block.
+        if (index > 0 && lines[index - 1].trim() !== "") {
+            lines.splice(index, 0, "");
+            index += 1;
+        }
+
+        let continuationEnd = index + 1;
+        while (
+            continuationEnd + 1 < lines.length &&
+            /^[\s:-]*-{3,}[\s:|-]*$/.test(lines[continuationEnd + 1].trim())
+        ) {
+            continuationEnd += 1;
+        }
+        lines.splice(index + 1, continuationEnd - index, `| ${Array(columnCount).fill("---").join(" | ")} |`);
+    }
+    return lines.join("\n");
+};
 
 export const Answer = ({
     answer,
@@ -108,10 +145,23 @@ export const Answer = ({
         return { result: result.trim(), isGenerating };
     };
     const { result: answerWithoutChartSpec, isGenerating: isGeneratingChart } = stripChartSpec(parsedAnswer.answerHtml, isStreaming);
-    const sanitizedAnswerHtml = DOMPurify.sanitize(answerWithoutChartSpec);
-    const markdownReady = normalizeMathMarkdown(sanitizedAnswerHtml).replace(/\n/g, "  \n");
+    const sanitizedAnswerHtml = DOMPurify.sanitize(normalizeMarkdownTableSeparators(answerWithoutChartSpec));
+    // Do not append Markdown hard-break spaces to every line. A hard break on
+    // table header/separator rows prevents remark-gfm from recognizing tables.
+    const markdownReady = normalizeMathMarkdown(sanitizedAnswerHtml);
 
     const [copied, setCopied] = useState(false);
+
+    const handleDiagramDownload = () => {
+        const diagram = answer.context?.diagram;
+        if (!diagram) return;
+        const url = URL.createObjectURL(new Blob([diagram.content], { type: diagram.mime_type }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = diagram.filename;
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    };
 
     const handleCopy = () => {
         // Single replace to remove all HTML tags to remove the citations
@@ -218,10 +268,20 @@ export const Answer = ({
                                         borderRadius: 3,
                                         margin: "1em 0",
                                         overflowX: "auto",
+                                        overflowY: "hidden",
+                                        border: "1px solid #1f2937",
+                                        backgroundClip: "padding-box",
                                         boxShadow: "0 4px 8px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.06)"
                                     }}
                                 >
-                                    <Table {...props} sx={{ minWidth: 650 }} />
+                                    <Table
+                                        {...props}
+                                        sx={{
+                                            width: "100%",
+                                            minWidth: { xs: 650, md: 0 },
+                                            tableLayout: { xs: "auto", md: "fixed" }
+                                        }}
+                                    />
                                 </TableContainer>
                             ),
                             thead: ({ node, ...props }: any) => <TableHead {...props} sx={{ backgroundColor: "#f5f7fb" }} />,
@@ -256,7 +316,9 @@ export const Answer = ({
                                     sx={{
                                         padding: "0.85em 1.2em",
                                         borderBottom: "1px solid #e0e0e0",
-                                        borderRadius: "0.25em" // subtle corner
+                                        borderRadius: "0.25em", // subtle corner
+                                        overflowWrap: "anywhere",
+                                        wordBreak: "break-word"
                                     }}
                                     {...props}
                                 />
@@ -282,6 +344,26 @@ export const Answer = ({
                             </MUIButton>
                         ))}
                     </Stack>
+                </Stack.Item>
+            )}
+
+            {answer.context?.diagram && (
+                <Stack.Item>
+                    <Paper variant="outlined" sx={{ mt: 1.5, p: 1.5, borderRadius: 2 }}>
+                        <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 1 }}>
+                            <Typography variant="subtitle2">Diagram ready</Typography>
+                            <MUIButton
+                                variant="contained"
+                                startIcon={<DownloadIcon />}
+                                onClick={handleDiagramDownload}
+                                disabled={isStreaming}
+                                aria-label={`Download ${answer.context.diagram.filename}`}
+                                sx={{ borderRadius: "10px", textTransform: "none", fontWeight: 600, maxWidth: "100%" }}
+                            >
+                                Download {answer.context.diagram.filename}
+                            </MUIButton>
+                        </Box>
+                    </Paper>
                 </Stack.Item>
             )}
 

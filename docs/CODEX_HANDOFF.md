@@ -1,6 +1,6 @@
 # Codex handoff — NexoraAI
 
-Last updated: 2026-09-03 UTC
+Last updated: 2026-09-06 UTC
 
 This document replaces a raw chat transcript as the engineering handoff. It
 captures the decisions and evidence needed to continue without storing copied
@@ -9,7 +9,7 @@ logs, credentials, attachments, or repetitive conversational text.
 ## Repository state
 
 - Workspace: `/workspaces/NexoraAI`
-- Branch: `feature/local-backup-restore`
+- Branch: `feature/mcp-catalog-navigation`
 - Base checkpoint: `09eef3e feat: add private chat document workflows`.
 - Implementation checkpoint: `eff68fb feat: recover interrupted document
   processing`. It adds private Chat document extraction recovery and managed OCR
@@ -120,6 +120,9 @@ See `docs/model_provider_configuration.md`.
   blocked tool/source prefixes, and structured policy-denied results.
 - Structured run/tool/model audit events with trace IDs. Raw prompts, arguments,
   outputs, and credentials are intentionally not persisted.
+- Assistant tool-call messages use an empty string instead of JSON `null` for
+  content. This preserves the tool-call protocol while remaining compatible
+  with Azure OpenAI deployments that reject null message content.
 - Admin Agent Audit page and audit query endpoint.
 
 See `docs/langgraph-agent-runtime.md`.
@@ -176,10 +179,61 @@ See `docs/ai-guardrails.md`.
 ### MCP
 
 - Managed MCP Server catalog grouped by category.
+- The current MCP management navigation separates **Configured Servers** from
+  **Browse Catalog**, replacing the expanding horizontal category tabs with a
+  searchable catalog and responsive Category, Status, and Agent Usage filters.
+  Supported templates open the existing encrypted configuration workflow;
+  unavailable templates remain visibly marked as coming soon. The catalog is
+  now part of Team Integrations: a connection created for a Team is visible and
+  assignable only within that Team, while a System Admin can create an
+  Unassigned connection and assign it once through the shared integration
+  catalog workflow. Agent save and runtime both reject cross-Team connection
+  IDs. Legacy connections without ownership remain usable only by Agents that
+  already referenced them and cannot receive new bindings until reassigned.
+  Stored headers remain encrypted and are never returned to the browser.
+  Personal/user-owned MCP credentials are not part of this slice.
+- Microsoft Azure and Draw.io are available catalog templates. Draw.io uses the
+  official hosted Streamable HTTP endpoint. Because the Chat client does not
+  yet host MCP Apps, successful Draw.io calls expose the submitted XML as a
+  downloadable `.drawio` response artifact (or Mermaid source as `.mmd`). Azure
+  architecture prompts prefer XML and distinguish evidenced solid connectors
+  from conventional, explicitly labelled dashed `inferred` connectors. Azure
+  supports both an externally
+  operated endpoint and a System-Admin-only managed mode. In managed mode the
+  Portal encrypts the Azure workload client secret, then an internal integration
+  controller starts one pinned official
+  `mcr.microsoft.com/azure-sdk/azure-mcp` container per enabled connection.
+  The controller is not published on a host port, authenticates Nexora with a
+  separate bearer secret, accepts no arbitrary image/command/mount/port input,
+  applies resource and capability limits, and removes a container when its
+  connection is deleted. Managed local mode disables the upstream server's
+  incoming HTTP authentication only inside the unpublished private Compose
+  network, so its Portal form needs only tenant ID, workload client ID/secret,
+  and subscription IDs. External Azure MCP endpoints retain Entra OAuth.
+  Enabled instances are reconciled after restart. Deleting while the controller
+  is unavailable returns an accepted cleanup-pending result, hides the record,
+  erases its stored credentials, and retries container removal later rather
+  than trapping an undeletable failed record in the Portal.
+  Controller-returned URLs must match the connection-specific internal host and
+  managed HTTP redirects are disabled. The controller remains idle when Azure
+  is not configured, so Azure is not a first-deployment prerequisite.
+- Azure is locked to `read_only`; the official server starts with a small
+  inventory tool set and discovery/runtime suppress write-oriented or ambiguous
+  tools. Draw.io remains `read_write` so it can create/update diagrams. Tool
+  descriptions guide a LangGraph Agent to preserve Azure resource IDs and
+  relationships when producing a diagram. Provisioning Azure resources from
+  diagrams remains outside this slice. See `docs/azure-drawio-mcp.md`.
 - Streamable HTTP discovery/invocation and per-Agent selection.
 - Encrypted headers, tool allowlists, test/discovery action, timeout isolation.
 - Datadog preset supporting official sites and Bearer PAT/SAT or Datadog
   API/Application keys.
+- Atlassian Jira/Confluence and ServiceNow are available as external remote MCP
+  catalog presets; NexoraAI does not provision containers for them. Atlassian
+  is pinned to the official hosted Rovo MCP endpoint, while ServiceNow accepts
+  the MCP endpoint exposed by the customer's `service-now.com` instance. Both
+  currently accept an encrypted OAuth bearer access token. Browser-driven
+  OAuth authorization and refresh-token rotation remain follow-up work; see
+  `docs/jira-servicenow-mcp.md`.
 - After a successful MCP connection test, the connected/tool-count badge opens
   a searchable dialog containing the discovered tool names and descriptions.
   This discovery result is held only in the current frontend session and is not
@@ -187,6 +241,18 @@ See `docs/ai-guardrails.md`.
 - Datadog live behavior was iterated to force tool use when appropriate and to
   handle monitor/log query issues. Treat broader Datadog tool coverage as a
   continuing integration smoke-test area.
+- The catalog-navigation, Team-ownership, managed-Azure, and Azure-to-Draw.io
+  slices passed 92 focused MCP, controller, authentication,
+  integration-catalog, Agent authorization, and runtime tests. The complete
+  service-free backend suite passed (`827 passed, 1 deselected`), as did
+  frontend TypeScript validation, the memory-safe production build, and local
+  Compose schema validation. The controller and application images built
+  successfully with a command-scoped empty `DOCKER_CONFIG`; the host VS Code
+  Dev Containers credential helper is unavailable and otherwise exits with
+  status 255. A live pinned Azure MCP container was provisioned successfully on
+  the private runtime network and reached its HTTP-ready state. A real Azure
+  resource/tool call still remains to validate the configured service
+  principal and Reader RBAC. The existing large-vendor-chunk warning remains.
 
 ### Database and charts
 
@@ -233,6 +299,14 @@ See `docs/database-integrations.md`.
 - Mail and messaging adapters exist and have unit coverage. Continue real-server
   E2E tests for SMTP/network timeouts, OAuth permissions, mailbox restrictions,
   channel membership, and write-action policy before production use.
+- Business Documents now provides Team-scoped Microsoft 365 and Google
+  Workspace connections. The LangGraph adapter can search/read Word, Excel,
+  PowerPoint, Google Docs, Sheets, Slides, PDF, and text documents, and can
+  create native cloud documents when both the connection and Agent binding
+  explicitly allow Create. Connections use encrypted OAuth credentials,
+  default to read-only, support the unassigned-to-Team catalog workflow, and
+  reject cross-Team Agent bindings. See
+  `docs/business-document-integrations.md`.
 
 See `docs/mail-integrations.md` and `docs/messaging-integrations.md`.
 
@@ -441,6 +515,26 @@ step before Markdown/KaTeX rendering.
   `entra_oid` predicate as defense in depth.
 - TypeScript validation and the memory-safe production build passed. The 25
   focused Cosmos Chat History tests passed, including owner-predicate checks.
+- The current local-runtime slice adds MongoDB-backed server history behind
+  `USE_CHAT_HISTORY_DATABASE=true`; Compose enables it and disables browser and
+  Cosmos history. Conversations are keyed by UUID, scoped by exact stable owner
+  ID on every list/read/write/delete operation, limited to 8 MiB, and carry an
+  absolute expiry. A bounded application cleanup worker is authoritative and
+  deletes attachment objects, extracted chunks, metadata, then the conversation;
+  conversation TTL is intentionally not delegated to MongoDB.
+- Retention defaults to 90 days and can be configured in **Administration →
+  System chat history**. Teams with `Manage agents` may choose a shorter period
+  in **Team settings → Team chat history**, never a value longer than the
+  System policy. Supported choices are 30, 90, 180, 365 days and no expiry
+  where the parent permits it. Policy changes recalculate expiry from each
+  conversation's latest update. Manual deletion uses the same immediate
+  dependency cascade. Metadata-only deletion audit stores actor, time, reason,
+  and counts for 365 days without deleted messages, citations, diagram XML,
+  credentials, or tool output. Settings are stored in `application_settings`.
+- Focused Chat history and management authorization validation passed (`53
+  passed`). The complete service-free backend suite passed (`852 passed, 1
+  deselected`), as did frontend TypeScript validation, the memory-safe
+  production build, and local Compose schema validation.
 
 ### Agent and data-scope selector summary
 
@@ -911,11 +1005,11 @@ described below.
   interrupted after it stopped making progress around 20%; the prior complete
   685-test result below remains the latest completed full regression.
 - The local Compose profile disables the optional Azure Cosmos-native Chat
-  History provider and enables owner-isolated browser/IndexedDB history. This
+  History provider and enables the owner-isolated MongoDB history adapter. This
   prevents a clean local deployment from requiring `AZURE_COSMOSDB_ACCOUNT` at
-  startup. Local history currently remains browser/device-local; adding a
-  provider-neutral Mongo-backed server history adapter is future work. Azure
-  deployments may continue to enable the existing Cosmos history provider.
+  startup and synchronizes history across browsers for the same application
+  user. Azure deployments may continue to enable the existing Cosmos history
+  provider.
 - The focused local-runtime/entry-point regression after this correction passed
   (`6 passed`), and `docker compose config` confirmed both history flags in the
   rendered application environment.
@@ -1087,6 +1181,21 @@ See `docs/usage-quotas.md`.
 - Frontend TypeScript validation and the memory-safe production build passed.
   The product owner manually accepted the Settings Navigation layout and page
   gutters before checkpointing.
+- The current working tree removes the nested horizontal tabs from the former
+  **User directory** page. **Teams**, **Users**, and **User permissions** are
+  grouped under one collapsible **Organization** menu, while **Sign-in &
+  authentication** remains a separate final entry under **System
+  administration**. Team-scoped settings are grouped first under the actual
+  Team name (with ellipsis and a full-name tooltip), followed by AI Workspace,
+  Governance, Organization, and System Administration; all groups start
+  collapsed whenever Administration opens. The Teams list has
+  one primary **Manage** action that opens the existing Team Settings workspace;
+  member management remains in **Members**, while rename moves to the Team
+  Settings title and delete stays in the row overflow menu. This removes the
+  duplicate View/Edit/Manage Members workflows without changing their backend
+  authorization contracts. TypeScript validation, the memory-safe production
+  build, and the complete service-free backend suite (`860 passed, 1
+  deselected`) passed; the rebuilt local application container is healthy.
 
 ### Chat workspace polish
 
@@ -1558,6 +1667,19 @@ Known non-blocking warnings:
 - LangGraph RAG Auto/Always/Disabled and Legacy rollback.
 - Database schema-first query and full-dataset chart aggregation.
 - Managed MCP discovery, Datadog invocation, allowlist, timeout, and audit.
+  Create separate Datadog connections for two Teams, verify each Team can list,
+  bind, test, and invoke only its own connection, and confirm a direct
+  cross-Team connection ID is rejected. For a pre-existing unassigned MCP
+  connection, remove any legacy Agent binding before using **Assign team**.
+- Configure a managed Azure connection as System Admin and connect the official
+  Draw.io hosted endpoint to one Team. Confirm enabling Azure creates exactly
+  one connection-specific container, disable stops it, re-enable/restart
+  reconciles it, and delete removes it. Assign both connections to a LangGraph
+  Agent and request a diagram for one small resource group. Confirm Azure
+  Test/runtime report write-oriented tools as blocked, the Azure identity cannot
+  modify resources, the Draw.io output contains only returned resources with
+  their resource IDs in metadata, and another Team cannot list or invoke either
+  connection.
 - Sub-agent delegation, cycle/depth denial, and trace linkage.
 - Mail read/send and messaging send against approved test accounts/channels.
 - Docling scanned Thai PDF/image ingestion and unique-token RAG retrieval.
@@ -1570,9 +1692,11 @@ Known non-blocking warnings:
 
 ```text
 Read AGENTS.md and docs/CODEX_HANDOFF.md completely. Preserve the working tree
-and do not discard unrelated changes. Continue milestone 2 by adding a
-provider-neutral vector search/RAG contract with Azure AI Search as the default
-adapter and a local vector backend suitable for Docker Compose. Preserve all
-Personal/Team/Global/Data Group ACL filters, citation authorization, metadata,
-and the existing Azure behavior. Do not migrate existing data automatically.
+and do not discard unrelated changes. Validate the managed Azure MCP slice with
+a verified digest of the official image and a least-privilege test tenant. Run
+the enable, Test, Azure inventory to Draw.io, disable, restart/reconcile, and
+delete lifecycle. Preserve read-only enforcement, Team ownership, encrypted
+secrets, and metadata-only lifecycle audit. Do not add Azure write/provisioning
+tools until an architecture-schema, IaC What-If, and explicit approval workflow
+have been designed.
 ```

@@ -52,6 +52,11 @@ from mongo_table_connecters.auth_settings import (
     save_auth_settings,
     serialize_auth_settings,
 )
+from mongo_table_connecters.chat_history import (
+    configured_retention_days as configured_chat_history_retention_days,
+    retention_days as effective_chat_history_retention_days,
+    save_retention_days as save_chat_history_retention_days,
+)
 from mongo_table_connecters.guardrail_settings import (
     get_guardrail_settings,
     save_guardrail_settings,
@@ -81,13 +86,19 @@ from mongo_table_connecters.llm_providers import (
     update_llm_provider,
 )
 from mongo_table_connecters.mcp_servers import (
+    azure_mcp_runtime_config,
+    decrypt_mcp_entra_client_secret,
     decrypt_mcp_headers,
     get_mcp_server,
     insert_mcp_server,
+    list_pending_managed_azure_mcp_deletions,
+    list_pending_managed_azure_mcp_stops,
     list_mcp_servers,
+    list_enabled_managed_azure_mcp_servers,
     normalize_mcp_server_payload,
     serialize_mcp_server,
     soft_delete_mcp_server,
+    complete_mcp_server_cleanup,
     update_mcp_server,
 )
 from mongo_table_connecters.agent_audit import list_agent_audit_events
@@ -102,6 +113,7 @@ from mongo_table_connecters.agent_bindings import insert_agent_binding, get_all_
 from mongo_table_connecters.fixed_promts import insert_fixed_prompt, get_all_fixed_prompt
 from mongo_table_connecters.external_database import insert_external_database, get_external_database_by_id, get_external_databases_by_team_id, get_all_external_databases, update_external_database, delete_external_database_by_id, serialize_external_database
 from mongo_table_connecters.integration_catalog import IntegrationAssignmentError, assign_unassigned_integration
+from mongo_table_connecters.integration_lifecycle_events import insert_integration_lifecycle_event
 from mongo_table_connecters.database_binding import insert_database_binding, get_database_binding_by_id, get_database_bindings_by_agent_id, get_all_database_bindings, update_database_binding, delete_database_binding_by_id
 # ⭐ CHART CAPABILITY: import chart binding functions
 from mongo_table_connecters.chart_binding import insert_chart_binding, get_chart_bindings_by_agent_id, get_enabled_chart_bindings_by_agent_id, update_chart_binding, delete_chart_binding_by_id
@@ -129,6 +141,26 @@ from mongo_table_connecters.mail_bindings import (
     update_mail_binding,
 )
 from email_connectors import test_mail_connection
+from business_document_connectors import test_business_document_connection
+from mongo_table_connecters.business_document_connections import (
+    decrypt_business_document_secrets,
+    get_business_document_connection,
+    insert_business_document_connection,
+    list_business_document_connections,
+    normalize_business_document_connection,
+    serialize_business_document_connection,
+    soft_delete_business_document_connection,
+    update_business_document_connection,
+)
+from mongo_table_connecters.business_document_bindings import (
+    collection as business_document_bindings_collection,
+    delete_business_document_binding,
+    get_business_document_binding,
+    insert_business_document_binding,
+    list_business_document_bindings,
+    normalize_business_document_binding,
+    update_business_document_binding,
+)
 from messaging_connectors import test_messaging_connection
 from mongo_table_connecters.messaging_connections import (
     decrypt_messaging_secrets, delete_messaging_connection, get_messaging_connection,
@@ -245,7 +277,11 @@ from approaches.retrievethenread import RetrieveThenReadApproach
 from approaches.retrievethenreadvision import RetrieveThenReadVisionApproach
 from agent_runtime.factory import create_agent_runtime
 from agent_runtime.charting import ChartValidationError, validate_echarts_spec
-from agent_runtime.adapters.mcp import MCPServerConfig, discover_mcp_tools
+from agent_runtime.adapters.mcp import (
+    MCPServerConfig,
+    discover_mcp_tools,
+    is_read_only_mcp_tool,
+)
 from core.chat_attachments import ChatAttachmentError, validate_chat_attachments
 from core.attachment_cleanup import cleanup_expired_attachments
 from core.attachment_extraction import (
@@ -302,6 +338,7 @@ from config import (
     CONFIG_CHAT_ATTACHMENT_STORE,
     CONFIG_CHAT_HISTORY_BROWSER_ENABLED,
     CONFIG_CHAT_HISTORY_COSMOS_ENABLED,
+    CONFIG_CHAT_HISTORY_DATABASE_ENABLED,
     CONFIG_CHAT_VISION_APPROACH,
     CONFIG_CREDENTIAL,
     CONFIG_DEFAULT_REASONING_EFFORT,
@@ -345,6 +382,12 @@ from core.model_profiles import (
     managed_profile_id,
 )
 from core.provider_secrets import decrypt_provider_secret, encrypt_provider_secret
+from core.integration_controller import (
+    AzureMCPProvisionRequest,
+    IntegrationControllerClient,
+    IntegrationControllerError,
+)
+from core.mcp_auth import EntraClientCredentials
 from core.runtime_settings import LLMProviderSettings, ModelProvider, RuntimeSettings, parse_model_provider
 from agent_runtime.policy import normalize_tool_policy
 from core.guardrails import (
@@ -426,6 +469,7 @@ def _validate_agent_model_config(config: object) -> dict[str, Any]:
         "external_database": raw_tool_settings.get("external_database", True) is not False,
         "rest_integrations": raw_tool_settings.get("rest_integrations", True) is not False,
         "mail": raw_tool_settings.get("mail", True) is not False,
+        "business_documents": raw_tool_settings.get("business_documents", True) is not False,
         "messaging": raw_tool_settings.get("messaging", True) is not False,
         "mcp": raw_tool_settings.get("mcp", True) is not False,
         "mcp_execution": mcp_execution,
@@ -468,6 +512,49 @@ def _normalize_id_list(value: object, field: str) -> list[str]:
         if normalized and normalized not in result:
             result.append(normalized)
     return result
+
+
+def _validate_agent_mcp_connections(
+    config: dict[str, Any],
+    team_id: str,
+    *,
+    existing_config: dict[str, Any] | None = None,
+) -> None:
+    """Keep MCP credentials inside their owning Team at save time.
+
+    Legacy connections without ``team_id`` may remain on an Agent that already
+    referenced them, but they cannot be added to another Agent.
+    """
+    tool_settings = config.get("tool_settings") or {}
+    selected_ids = tool_settings.get("mcp_server_ids") or []
+    existing_ids = {
+        str(item)
+        for item in (
+            ((existing_config or {}).get("tool_settings") or {}).get(
+                "mcp_server_ids"
+            )
+            or []
+        )
+    }
+    for server_id in selected_ids:
+        document = get_mcp_server(str(server_id))
+        if not document:
+            raise AccessControlError("MCP connection not found", status_code=404)
+        connection_team_id = str(document.get("team_id") or "")
+        if connection_team_id == team_id:
+            continue
+        if not connection_team_id and str(server_id) in existing_ids:
+            continue
+        raise AccessControlError("MCP connection is not assigned to the Agent's team")
+
+    unknown_allowlists = set(tool_settings.get("mcp_tool_allowlists") or {}) - set(
+        selected_ids
+    )
+    if unknown_allowlists:
+        raise AccessControlError(
+            "MCP tool allowlists must reference an assigned MCP connection",
+            status_code=400,
+        )
 
 
 def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> None:
@@ -1159,9 +1246,13 @@ async def _probe_model_tool_capability(
 ) -> tuple[str, str]:
     completion_options: dict[str, Any] = {}
     if settings.model in Approach.GPT_REASONING_MODELS:
-        completion_options["max_completion_tokens"] = 32
+        completion_options["max_completion_tokens"] = 256
     else:
-        completion_options.update({"max_tokens": 32, "temperature": 0})
+        # Thinking-capable local models such as Qwen can consume the first few
+        # dozen tokens before emitting the required tool call. A 32-token probe
+        # therefore produced a false "unsupported" result even though Ollama
+        # advertised and successfully executed tools.
+        completion_options.update({"max_tokens": 256, "temperature": 0})
     completion_options = apply_llm_vendor_chat_policy(
         infer_llm_vendor(provider).id, completion_options
     )
@@ -1834,6 +1925,7 @@ async def _run_langgraph_as_chat_stream(
     )
     citations = []
     chart_spec = (result.get("artifacts") or {}).get("chart")
+    diagram_artifact = (result.get("artifacts") or {}).get("diagram")
     rag_diagnostics = {"called": False, "result_count": 0}
     for event in result.get("tool_trace", []):
         if event.get("source") != "rag" or event.get("is_error"):
@@ -1861,6 +1953,7 @@ async def _run_langgraph_as_chat_stream(
                 }
             ],
             **({"chart": chart_spec} if chart_spec else {}),
+            **({"diagram": diagram_artifact} if diagram_artifact else {}),
         },
         "session_state": session_state,
     }
@@ -2347,7 +2440,8 @@ async def chat(auth_claims: dict[str, Any]):
         session_state = request_json.get("session_state")
         if session_state is None:
             session_state = create_session_id(
-                current_app.config[CONFIG_CHAT_HISTORY_COSMOS_ENABLED],
+                current_app.config[CONFIG_CHAT_HISTORY_COSMOS_ENABLED]
+                or current_app.config[CONFIG_CHAT_HISTORY_DATABASE_ENABLED],
                 current_app.config[CONFIG_CHAT_HISTORY_BROWSER_ENABLED],
             )
         result = await approach.run(
@@ -2616,7 +2710,8 @@ Always respond in the same language as the user"""
         session_state = request_json.get("session_state")
         if session_state is None:
             session_state = create_session_id(
-                current_app.config[CONFIG_CHAT_HISTORY_COSMOS_ENABLED],
+                current_app.config[CONFIG_CHAT_HISTORY_COSMOS_ENABLED]
+                or current_app.config[CONFIG_CHAT_HISTORY_DATABASE_ENABLED],
                 current_app.config[CONFIG_CHAT_HISTORY_BROWSER_ENABLED],
             )
         if use_langgraph_runtime:
@@ -2918,6 +3013,61 @@ async def admin_update_guardrail_settings(auth_claims: dict[str, Any]):
         body = await request.get_json()
         return jsonify({"configured": True, "policy": save_guardrail_settings(body or {})})
     except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.get("/admin/chat-history-retention")
+@authenticated
+async def admin_get_chat_history_retention(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    return jsonify(
+        {
+            "configured_days": configured_chat_history_retention_days(),
+            "effective_days": effective_chat_history_retention_days(),
+        }
+    )
+
+
+@bp.put("/admin/chat-history-retention")
+@authenticated
+async def admin_update_chat_history_retention(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        body = await request.get_json()
+        days = save_chat_history_retention_days((body or {}).get("retention_days"))
+        return jsonify({"configured_days": days, "effective_days": days})
+    except (TypeError, ValueError) as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.get("/teams/<team_id>/chat-history-retention")
+@authenticated
+async def team_get_chat_history_retention(auth_claims: dict[str, Any], team_id: str):
+    _require_team_access(auth_claims, team_id, permission="Manage agents")
+    return jsonify(
+        {
+            "configured_days": configured_chat_history_retention_days(team_id),
+            "system_days": effective_chat_history_retention_days(),
+            "effective_days": effective_chat_history_retention_days(team_id),
+        }
+    )
+
+
+@bp.put("/teams/<team_id>/chat-history-retention")
+@authenticated
+async def team_update_chat_history_retention(auth_claims: dict[str, Any], team_id: str):
+    _require_team_access(auth_claims, team_id, permission="Manage agents")
+    try:
+        body = await request.get_json()
+        days = save_chat_history_retention_days((body or {}).get("retention_days"), team_id)
+        return jsonify(
+            {
+                "configured_days": days,
+                "system_days": effective_chat_history_retention_days(),
+                "effective_days": effective_chat_history_retention_days(team_id),
+            }
+        )
+    except (TypeError, ValueError) as error:
         return jsonify({"error": str(error)}), 400
 
 
@@ -3263,43 +3413,122 @@ async def admin_test_llm_provider(auth_claims: dict[str, Any], provider_id: str)
 @bp.get("/admin/mcp-servers")
 @authenticated
 async def admin_list_mcp_servers(auth_claims: dict[str, Any]):
-    _require_system_admin(auth_claims)
-    servers = []
-    for item in list_mcp_servers():
-        serialized = serialize_mcp_server(item)
-        serialized["agent_usage_count"] = get_database().agents.count_documents(
-            {
-                "delete_at": None,
-                "config.tool_settings.mcp_server_ids": str(item["_id"]),
-            }
-        )
-        servers.append(serialized)
-    return jsonify(
-        {"servers": servers}
-    )
+    try:
+        team_id = str(request.args.get("team_id") or "").strip()
+        _require_integration_catalog_access(auth_claims, team_id)
+        servers = []
+        for item in list_mcp_servers(team_id):
+            serialized = serialize_mcp_server(item)
+            serialized["agent_usage_count"] = get_database().agents.count_documents(
+                {
+                    "delete_at": None,
+                    "config.tool_settings.mcp_server_ids": str(item["_id"]),
+                }
+            )
+            servers.append(serialized)
+        return jsonify({"servers": servers})
+    except AccessControlError as error:
+        return error_response(error, "/admin/mcp-servers")
 
 
 @bp.get("/mcp-servers/available")
 @authenticated
 async def available_mcp_servers(auth_claims: dict[str, Any]):
-    return jsonify(
-        {
-            "servers": [
-                serialize_mcp_server(item)
-                for item in list_mcp_servers(enabled_only=True)
-            ]
-        }
-    )
+    try:
+        team_id = str(request.args.get("team_id") or "").strip()
+        agent_id = str(request.args.get("agent_id") or "").strip()
+        _require_integration_catalog_access(
+            auth_claims, team_id, allow_agent_management=True
+        )
+        servers = list_mcp_servers(team_id, enabled_only=True)
+        if agent_id:
+            team = get_team_by_id(team_id)
+            if not team or agent_id not in {
+                str(item) for item in (team.get("agent_id") or [])
+            }:
+                raise AccessControlError(
+                    "Agent does not belong to this team", status_code=404
+                )
+            agent = get_agent_by_id(agent_id) or {}
+            selected_ids = (
+                ((agent.get("config") or {}).get("tool_settings") or {}).get(
+                    "mcp_server_ids"
+                )
+                or []
+            )
+            returned_ids = {str(item.get("_id")) for item in servers}
+            for selected_id in selected_ids:
+                legacy = get_mcp_server(str(selected_id))
+                if (
+                    legacy
+                    and legacy.get("enabled") is not False
+                    and not str(legacy.get("team_id") or "")
+                    and str(legacy.get("_id")) not in returned_ids
+                ):
+                    servers.append(legacy)
+        return jsonify(
+            {
+                "servers": [
+                    serialize_mcp_server(item) for item in servers
+                ]
+            }
+        )
+    except AccessControlError as error:
+        return error_response(error, "/mcp-servers/available")
 
 
 @bp.post("/admin/mcp-servers")
 @authenticated
 async def admin_create_mcp_server(auth_claims: dict[str, Any]):
-    _require_system_admin(auth_claims)
     try:
         body = await request.get_json() or {}
-        server = insert_mcp_server(normalize_mcp_server_payload(body))
+        normalized = normalize_mcp_server_payload(body)
+        actor = _require_integration_catalog_access(auth_claims, normalized["team_id"])
+        managed_azure = (
+            normalized["vendor"] == "azure"
+            and normalized["deployment_mode"] == "managed"
+        )
+        if managed_azure:
+            _require_system_admin(auth_claims)
+        requested_enabled = normalized["enabled"]
+        if managed_azure:
+            normalized["provisioning_status"] = (
+                "pending" if requested_enabled else "stopped"
+            )
+        server = insert_mcp_server(normalized)
+        if managed_azure and requested_enabled:
+            try:
+                server = await _provision_managed_azure_mcp(server)
+                insert_integration_lifecycle_event(
+                    action="provision",
+                    status="success",
+                    connection_id=str(server["_id"]),
+                    team_id=str(server.get("team_id") or ""),
+                    actor_id=str(actor.get("_id") or ""),
+                    vendor="azure",
+                )
+            except IntegrationControllerError as error:
+                server = update_mcp_server(
+                    str(server["_id"]),
+                    {
+                        "enabled": True,
+                        "provisioning_status": "failed",
+                        "provisioning_error": str(error)[:500],
+                    },
+                ) or server
+                insert_integration_lifecycle_event(
+                    action="provision",
+                    status="error",
+                    connection_id=str(server["_id"]),
+                    team_id=str(server.get("team_id") or ""),
+                    actor_id=str(actor.get("_id") or ""),
+                    vendor="azure",
+                    error_type=type(error).__name__,
+                )
+                return jsonify(serialize_mcp_server(server)), 202
         return jsonify(serialize_mcp_server(server)), 201
+    except AccessControlError as error:
+        return error_response(error, "/admin/mcp-servers")
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
@@ -3307,16 +3536,81 @@ async def admin_create_mcp_server(auth_claims: dict[str, Any]):
 @bp.put("/admin/mcp-servers/<server_id>")
 @authenticated
 async def admin_update_mcp_server(auth_claims: dict[str, Any], server_id: str):
-    _require_system_admin(auth_claims)
-    existing = get_mcp_server(server_id)
-    if not existing:
-        return jsonify({"error": "MCP server not found"}), 404
     try:
+        existing = get_mcp_server(server_id)
+        if not existing:
+            return jsonify({"error": "MCP server not found"}), 404
+        actor = _require_integration_catalog_access(auth_claims, str(existing.get("team_id") or ""))
+        if (
+            str(existing.get("vendor") or "") == "azure"
+            and str(existing.get("deployment_mode") or "external") == "managed"
+        ):
+            _require_system_admin(auth_claims)
         body = await request.get_json() or {}
-        server = update_mcp_server(
-            server_id, normalize_mcp_server_payload(body, existing=existing)
+        if "team_id" in body and str(body.get("team_id") or "") != str(
+            existing.get("team_id") or ""
+        ):
+            raise ValueError("Use Assign to team to change integration ownership")
+        normalized = normalize_mcp_server_payload(body, existing=existing)
+        managed_azure = (
+            normalized["vendor"] == "azure"
+            and normalized["deployment_mode"] == "managed"
         )
+        requested_enabled = normalized["enabled"]
+        if managed_azure:
+            normalized["provisioning_status"] = (
+                "pending" if requested_enabled else "stopping"
+            )
+        server = update_mcp_server(server_id, normalized) or existing
+        if managed_azure:
+            controller = IntegrationControllerClient()
+            try:
+                if requested_enabled:
+                    server = await _provision_managed_azure_mcp(server)
+                    action = "provision"
+                else:
+                    await controller.stop_azure_mcp(server_id)
+                    action = "stop"
+                    server = update_mcp_server(
+                        server_id,
+                        {
+                            "enabled": False,
+                            "provisioning_status": "stopped",
+                            "provisioning_error": "",
+                        },
+                    ) or server
+                insert_integration_lifecycle_event(
+                    action=action,
+                    status="success",
+                    connection_id=server_id,
+                    team_id=str(server.get("team_id") or ""),
+                    actor_id=str(actor.get("_id") or ""),
+                    vendor="azure",
+                )
+            except IntegrationControllerError as error:
+                server = update_mcp_server(
+                    server_id,
+                    {
+                        "enabled": requested_enabled,
+                        "provisioning_status": (
+                            "failed" if requested_enabled else "stop_pending"
+                        ),
+                        "provisioning_error": str(error)[:500],
+                    },
+                ) or server
+                insert_integration_lifecycle_event(
+                    action="provision" if requested_enabled else "stop",
+                    status="error",
+                    connection_id=server_id,
+                    team_id=str(server.get("team_id") or ""),
+                    actor_id=str(actor.get("_id") or ""),
+                    vendor="azure",
+                    error_type=type(error).__name__,
+                )
+                return jsonify(serialize_mcp_server(server)), 202
         return jsonify(serialize_mcp_server(server or existing))
+    except AccessControlError as error:
+        return error_response(error, "/admin/mcp-servers/<server_id>")
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
@@ -3324,43 +3618,102 @@ async def admin_update_mcp_server(auth_claims: dict[str, Any], server_id: str):
 @bp.delete("/admin/mcp-servers/<server_id>")
 @authenticated
 async def admin_delete_mcp_server(auth_claims: dict[str, Any], server_id: str):
-    _require_system_admin(auth_claims)
-    if not get_mcp_server(server_id):
-        return jsonify({"error": "MCP server not found"}), 404
-    reference_count = get_database().agents.count_documents(
-        {
-            "delete_at": None,
-            "config.tool_settings.mcp_server_ids": server_id,
-        }
-    )
-    if reference_count:
+    try:
+        existing = get_mcp_server(server_id)
+        if not existing:
+            return jsonify({"error": "MCP server not found"}), 404
+        actor = _require_integration_catalog_access(auth_claims, str(existing.get("team_id") or ""))
+        managed_azure = (
+            str(existing.get("vendor") or "") == "azure"
+            and str(existing.get("deployment_mode") or "external") == "managed"
+        )
+        if managed_azure:
+            _require_system_admin(auth_claims)
+        reference_count = get_database().agents.count_documents(
+            {
+                "delete_at": None,
+                "config.tool_settings.mcp_server_ids": server_id,
+            }
+        )
+        if reference_count:
+            return jsonify(
+                {"error": f"MCP server is used by {reference_count} agent(s); disable it instead"}
+            ), 409
+        cleanup_error = None
+        if managed_azure:
+            try:
+                await IntegrationControllerClient().delete_azure_mcp(server_id)
+            except IntegrationControllerError as error:
+                cleanup_error = error
+        soft_delete_mcp_server(
+            server_id,
+            provisioning_status=(
+                "cleanup_pending" if cleanup_error else "deleted"
+            ) if managed_azure else None,
+            provisioning_error=str(cleanup_error or ""),
+        )
+        if managed_azure:
+            insert_integration_lifecycle_event(
+                action="delete",
+                status="pending" if cleanup_error else "success",
+                connection_id=server_id,
+                team_id=str(existing.get("team_id") or ""),
+                actor_id=str(actor.get("_id") or ""),
+                vendor="azure",
+                error_type=type(cleanup_error).__name__ if cleanup_error else "",
+            )
         return jsonify(
-            {"error": f"MCP server is used by {reference_count} agent(s); disable it instead"}
-        ), 409
-    soft_delete_mcp_server(server_id)
-    return jsonify({"success": True})
+            {"success": True, "cleanup_pending": bool(cleanup_error)}
+        ), (202 if cleanup_error else 200)
+    except AccessControlError as error:
+        return error_response(error, "/admin/mcp-servers/<server_id>")
 
 
 @bp.post("/admin/mcp-servers/<server_id>/test")
 @authenticated
 async def admin_test_mcp_server(auth_claims: dict[str, Any], server_id: str):
-    _require_system_admin(auth_claims)
-    server = get_mcp_server(server_id)
-    if not server:
-        return jsonify({"error": "MCP server not found"}), 404
     try:
+        server = get_mcp_server(server_id)
+        if not server:
+            return jsonify({"error": "MCP server not found"}), 404
+        _require_integration_catalog_access(auth_claims, str(server.get("team_id") or ""))
         config = MCPServerConfig(
             server_id=str(server["_id"]),
             name=str(server["name"]),
             url=str(server["url"]),
+            vendor=str(server.get("vendor") or "generic"),
+            operation_mode=(
+                "read_only"
+                if str(server.get("vendor") or "generic") == "azure"
+                else str(server.get("operation_mode") or "read_write")
+            ),
             headers=decrypt_mcp_headers(server),
+            entra_credentials=(
+                EntraClientCredentials(
+                    tenant_id=str(server.get("entra_tenant_id") or ""),
+                    client_id=str(server.get("entra_client_id") or ""),
+                    client_secret=decrypt_mcp_entra_client_secret(server),
+                    scope=str(server.get("entra_scope") or ""),
+                )
+                if server.get("auth_type") == "entra_client_credentials"
+                and server.get("deployment_mode") != "managed"
+                else None
+            ),
+            managed=server.get("deployment_mode") == "managed",
             allowed_tools=tuple(server.get("allowed_tools") or ()),
             timeout_seconds=float(server.get("timeout_seconds") or 60),
         )
-        tools = await discover_mcp_tools(config)
+        discovered_tools = await discover_mcp_tools(config)
+        tools = [
+            tool
+            for tool in discovered_tools
+            if config.operation_mode != "read_only"
+            or is_read_only_mcp_tool(tool.name)
+        ]
         return jsonify(
             {
                 "success": True,
+                "blocked_tool_count": len(discovered_tools) - len(tools),
                 "tools": [
                     {
                         "name": tool.name,
@@ -3370,9 +3723,153 @@ async def admin_test_mcp_server(auth_claims: dict[str, Any], server_id: str):
                 ],
             }
         )
+    except AccessControlError as error:
+        return error_response(error, "/admin/mcp-servers/<server_id>/test")
     except Exception as error:
         current_app.logger.warning("MCP server connection test failed: %s", error)
         return jsonify({"success": False, "error": str(error)}), 400
+
+
+async def _provision_managed_azure_mcp(server: dict[str, Any]) -> dict[str, Any]:
+    try:
+        runtime = azure_mcp_runtime_config(server)
+    except ValueError as error:
+        raise IntegrationControllerError(str(error)) from None
+    result = await IntegrationControllerClient().provision_azure_mcp(
+        AzureMCPProvisionRequest(
+            connection_id=str(server["_id"]),
+            azure_tenant_id=runtime["azure_tenant_id"],
+            azure_client_id=runtime["azure_client_id"],
+            azure_client_secret=runtime["azure_client_secret"],
+            azure_subscription_ids=runtime["azure_subscription_ids"],
+        )
+    )
+    url = str(result.get("url") or "").strip()
+    parsed = urlparse(url)
+    expected_host = f"nexora-azure-mcp-{server['_id']}"
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname != expected_host
+        or parsed.port != 8080
+        or parsed.username
+        or parsed.password
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise IntegrationControllerError(
+            "Integration controller returned an invalid Azure MCP URL"
+        )
+    if (
+        str(server.get("url") or "") == url
+        and server.get("enabled") is True
+        and server.get("provisioning_status") == "ready"
+        and not server.get("provisioning_error")
+    ):
+        return server
+    return update_mcp_server(
+        str(server["_id"]),
+        {
+            "url": url,
+            "enabled": True,
+            "provisioning_status": "ready",
+            "provisioning_error": "",
+        },
+    ) or server
+
+
+async def _reconcile_managed_azure_mcp_servers() -> None:
+    while True:
+        try:
+            controller = IntegrationControllerClient()
+            for stopped in await asyncio.to_thread(
+                list_pending_managed_azure_mcp_stops
+            ):
+                try:
+                    await controller.stop_azure_mcp(str(stopped["_id"]))
+                    update_mcp_server(
+                        str(stopped["_id"]),
+                        {
+                            "provisioning_status": "stopped",
+                            "provisioning_error": "",
+                        },
+                    )
+                    insert_integration_lifecycle_event(
+                        action="stop",
+                        status="success",
+                        connection_id=str(stopped["_id"]),
+                        team_id=str(stopped.get("team_id") or ""),
+                        actor_id="system",
+                        vendor="azure",
+                    )
+                except Exception as error:
+                    current_app.logger.warning(
+                        "Managed Azure MCP stop retry failed for %s: %s",
+                        stopped.get("_id"),
+                        type(error).__name__,
+                    )
+            for deleted in await asyncio.to_thread(
+                list_pending_managed_azure_mcp_deletions
+            ):
+                try:
+                    await controller.delete_azure_mcp(str(deleted["_id"]))
+                    complete_mcp_server_cleanup(str(deleted["_id"]))
+                    insert_integration_lifecycle_event(
+                        action="cleanup",
+                        status="success",
+                        connection_id=str(deleted["_id"]),
+                        team_id=str(deleted.get("team_id") or ""),
+                        actor_id="system",
+                        vendor="azure",
+                    )
+                except Exception as error:
+                    current_app.logger.warning(
+                        "Managed Azure MCP cleanup retry failed for %s: %s",
+                        deleted.get("_id"),
+                        type(error).__name__,
+                    )
+            for server in await asyncio.to_thread(
+                list_enabled_managed_azure_mcp_servers
+            ):
+                previous_status = str(server.get("provisioning_status") or "")
+                try:
+                    updated = await _provision_managed_azure_mcp(server)
+                    if previous_status != "ready":
+                        insert_integration_lifecycle_event(
+                            action="reconcile",
+                            status="success",
+                            connection_id=str(server.get("_id") or ""),
+                            team_id=str(server.get("team_id") or ""),
+                            actor_id="system",
+                            vendor="azure",
+                        )
+                    server = updated
+                except Exception as error:
+                    update_mcp_server(
+                        str(server.get("_id") or ""),
+                        {
+                            "provisioning_status": "failed",
+                            "provisioning_error": str(error)[:500],
+                        },
+                    )
+                    if previous_status != "failed":
+                        insert_integration_lifecycle_event(
+                            action="reconcile",
+                            status="error",
+                            connection_id=str(server.get("_id") or ""),
+                            team_id=str(server.get("team_id") or ""),
+                            actor_id="system",
+                            vendor="azure",
+                            error_type=type(error).__name__,
+                        )
+                    current_app.logger.warning(
+                        "Managed Azure MCP reconciliation failed for %s: %s",
+                        server.get("_id"),
+                        type(error).__name__,
+                    )
+        except Exception:
+            current_app.logger.exception("Managed Azure MCP reconciliation scan failed")
+        await asyncio.sleep(30)
 
 
 @bp.get("/admin/agent-audit-events")
@@ -3424,6 +3921,7 @@ async def config():
             "showSpeechOutputAzure": current_app.config[CONFIG_SPEECH_OUTPUT_AZURE_ENABLED],
             "showChatHistoryBrowser": current_app.config[CONFIG_CHAT_HISTORY_BROWSER_ENABLED],
             "showChatHistoryCosmos": current_app.config[CONFIG_CHAT_HISTORY_COSMOS_ENABLED],
+            "showChatHistoryDatabase": current_app.config[CONFIG_CHAT_HISTORY_DATABASE_ENABLED],
             "showAgenticRetrievalOption": current_app.config[CONFIG_AGENTIC_RETRIEVAL_ENABLED],
             "chatDocumentAttachmentsEnabled": current_app.config.get(CONFIG_CHAT_ATTACHMENT_STORE) is not None,
             "maxUploadSizeBytes": current_app.config["MAX_CONTENT_LENGTH"],
@@ -3678,6 +4176,164 @@ async def remove_mail_binding(auth_claims: dict[str, Any]):
     if not delete_mail_binding(str(body.get("binding_id") or "")):
         return jsonify({"error": "Mail binding not found"}), 404
     return jsonify({"message": "Mail binding deleted"})
+
+
+@bp.get("/business_document_connections")
+@authenticated
+async def business_document_connections(auth_claims: dict[str, Any]):
+    team_id = str(request.args.get("team_id") or "")
+    try:
+        _require_integration_catalog_access(auth_claims, team_id, allow_agent_management=True)
+        results = []
+        for document in list_business_document_connections(team_id):
+            usage_count = business_document_bindings_collection.count_documents(
+                {"connection_id": str(document["_id"]), "delete_at": None}
+            )
+            results.append(serialize_business_document_connection(document, usage_count=usage_count))
+        return jsonify(results)
+    except AccessControlError as error:
+        return error_response(error, "/business_document_connections")
+
+
+@bp.post("/save_business_document_connection")
+@authenticated
+async def save_business_document_connection(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        connection_id = str(body.get("connection_id") or "")
+        existing = get_business_document_connection(connection_id) if connection_id else None
+        if connection_id and not existing:
+            return jsonify({"error": "Business document connection not found"}), 404
+        normalized = normalize_business_document_connection(body, existing=existing)
+        current_team_id = str(existing.get("team_id") or "") if existing else normalized["team_id"]
+        _require_integration_catalog_access(auth_claims, current_team_id)
+        if existing and "team_id" in body and str(body.get("team_id") or "") != current_team_id:
+            raise ValueError("Use Assign to team to change integration ownership")
+        document = (
+            update_business_document_connection(connection_id, normalized)
+            if existing
+            else insert_business_document_connection(normalized)
+        )
+        return jsonify({
+            "message": "Business document connection saved",
+            "connection": serialize_business_document_connection(document or existing),
+        })
+    except AccessControlError as error:
+        return error_response(error, "/save_business_document_connection")
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.post("/test_business_document_connection")
+@authenticated
+async def test_business_document_config(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        connection = get_business_document_connection(str(body.get("connection_id") or ""))
+        if not connection:
+            raise ValueError("Save the business document connection before testing it")
+        _require_integration_catalog_access(auth_claims, str(connection.get("team_id") or ""))
+        return jsonify(await test_business_document_connection(
+            connection, decrypt_business_document_secrets(connection)
+        ))
+    except AccessControlError as error:
+        return error_response(error, "/test_business_document_connection")
+    except (ValueError, OSError) as error:
+        current_app.logger.warning("Business document connection test failed: %s", error)
+        return jsonify({"ok": False, "error": str(error)}), 400
+
+
+@bp.post("/delete_business_document_connection")
+@authenticated
+async def remove_business_document_connection(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        connection_id = str(body.get("connection_id") or "")
+        existing = get_business_document_connection(connection_id)
+        if not existing:
+            return jsonify({"error": "Business document connection not found"}), 404
+        _require_integration_catalog_access(auth_claims, str(existing.get("team_id") or ""))
+        if business_document_bindings_collection.count_documents({"connection_id": connection_id, "delete_at": None}):
+            return jsonify({"error": "Remove Agent bindings before deleting this connection"}), 409
+        if not soft_delete_business_document_connection(connection_id):
+            return jsonify({"error": "Business document connection not found"}), 404
+        return jsonify({"message": "Business document connection deleted"})
+    except AccessControlError as error:
+        return error_response(error, "/delete_business_document_connection")
+
+
+@bp.get("/business_document_bindings")
+@authenticated
+async def business_document_bindings(auth_claims: dict[str, Any]):
+    agent_id = str(request.args.get("agent_id") or "")
+    agent = get_agent_by_id(agent_id)
+    if not agent:
+        return jsonify({"error": "Agent not found"}), 404
+    team = get_team_by_agent_id(agent_id)
+    if not team:
+        return jsonify({"error": "Agent team not found"}), 404
+    try:
+        _require_team_access(auth_claims, str(team.get("_id") or ""), permission="Manage agents")
+        return jsonify([_mail_binding_response(item) for item in list_business_document_bindings(agent_id)])
+    except AccessControlError as error:
+        return error_response(error, "/business_document_bindings")
+
+
+@bp.post("/save_business_document_binding")
+@authenticated
+async def save_business_document_binding(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        binding_id = str(body.get("binding_id") or "")
+        existing = get_business_document_binding(binding_id) if binding_id else None
+        normalized = normalize_business_document_binding({**(existing or {}), **body})
+        if not get_agent_by_id(normalized["agent_id"]):
+            raise ValueError("A valid agent_id is required")
+        connection = get_business_document_connection(normalized["connection_id"])
+        if not connection:
+            raise ValueError("A valid connection_id is required")
+        _require_agent_integration_team(normalized["agent_id"], connection)
+        team = get_team_by_agent_id(normalized["agent_id"])
+        _require_team_access(auth_claims, str((team or {}).get("_id") or ""), permission="Manage agents")
+        if "create" in normalized["permissions"] and connection.get("operation_mode") != "read_write":
+            raise ValueError("Create permission requires a Read & create connection")
+        duplicate = business_document_bindings_collection.find_one({
+            "_id": {"$ne": binding_id},
+            "agent_id": normalized["agent_id"],
+            "connection_id": normalized["connection_id"],
+            "delete_at": None,
+        })
+        if duplicate:
+            return jsonify({"error": "This document connection is already assigned to the Agent"}), 409
+        document = (
+            update_business_document_binding(binding_id, normalized) and get_business_document_binding(binding_id)
+            if existing
+            else insert_business_document_binding(normalized)
+        )
+        return jsonify({"message": "Business document binding saved", "binding": _mail_binding_response(document or normalized)})
+    except AccessControlError as error:
+        return error_response(error, "/save_business_document_binding")
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.post("/delete_business_document_binding")
+@authenticated
+async def remove_business_document_binding(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        binding = get_business_document_binding(str(body.get("binding_id") or ""))
+        if not binding:
+            return jsonify({"error": "Business document binding not found"}), 404
+        connection = get_business_document_connection(str(binding.get("connection_id") or ""))
+        _require_agent_integration_team(str(binding.get("agent_id") or ""), connection)
+        team = get_team_by_agent_id(str(binding.get("agent_id") or ""))
+        _require_team_access(auth_claims, str((team or {}).get("_id") or ""), permission="Manage agents")
+        if not delete_business_document_binding(str(binding["_id"])):
+            return jsonify({"error": "Business document binding not found"}), 404
+        return jsonify({"message": "Business document binding deleted"})
+    except AccessControlError as error:
+        return error_response(error, "/delete_business_document_binding")
 
 
 @bp.get("/messaging_connections")
@@ -6139,6 +6795,7 @@ async def create_agent(auth_claims: dict[str, Any]):
         )
         agent_name = body.get("agent_name", None)
         agent_config = _validate_agent_model_config(body.get("config", None))
+        _validate_agent_mcp_connections(agent_config, str(team_id or ""))
         agent_prompt = body.get("prompt", None)
         result, agent_id = insert_agent(agent_name, agent_prompt, agent_config)
         agent_team = team.get("agent_id")
@@ -6181,8 +6838,16 @@ async def edit_agent(auth_claims: dict[str, Any]):
         )
         if str(agent_id or "") not in {str(item) for item in (team.get("agent_id") or [])}:
             raise AccessControlError("Agent does not belong to this team", status_code=404)
+        current_agent = get_agent_by_id(str(agent_id or ""))
+        if not current_agent:
+            raise AccessControlError("Agent not found", status_code=404)
         agent_name = body.get("agent_name", None)
         agent_config = _validate_agent_model_config(body.get("config", None))
+        _validate_agent_mcp_connections(
+            agent_config,
+            str(team_id or ""),
+            existing_config=current_agent.get("config") or {},
+        )
         agent_prompt = body.get("prompt", None)
         update_agent(agent_id, agent_name, agent_prompt, agent_config)
         return jsonify({"success": f"Edit agent success"}), 200
@@ -7150,6 +7815,8 @@ async def setup_clients():
         "USE_CHAT_HISTORY_BROWSER", "").lower() == "true"
     USE_CHAT_HISTORY_COSMOS = os.getenv(
         "USE_CHAT_HISTORY_COSMOS", "").lower() == "true"
+    USE_CHAT_HISTORY_DATABASE = os.getenv(
+        "USE_CHAT_HISTORY_DATABASE", "").lower() == "true"
     USE_AGENTIC_RETRIEVAL = os.getenv(
         "USE_AGENTIC_RETRIEVAL", "").lower() == "true"
     if KNOWLEDGE_SEARCH_PROVIDER == "qdrant" and os.getenv("USE_VECTORS", "").lower() == "false":
@@ -7490,6 +8157,7 @@ async def setup_clients():
     current_app.config[CONFIG_SPEECH_OUTPUT_AZURE_ENABLED] = USE_SPEECH_OUTPUT_AZURE
     current_app.config[CONFIG_CHAT_HISTORY_BROWSER_ENABLED] = USE_CHAT_HISTORY_BROWSER
     current_app.config[CONFIG_CHAT_HISTORY_COSMOS_ENABLED] = USE_CHAT_HISTORY_COSMOS
+    current_app.config[CONFIG_CHAT_HISTORY_DATABASE_ENABLED] = USE_CHAT_HISTORY_DATABASE
     current_app.config[CONFIG_AGENTIC_RETRIEVAL_ENABLED] = USE_AGENTIC_RETRIEVAL
     current_app.config[CONFIG_MAIL_COMPONENT] = {
         "host": MAIL_HOST,
@@ -7623,6 +8291,15 @@ async def setup_clients():
         prompt_manager=prompt_manager,
         embedding_service=text_embeddings_service,
     )
+    controller = IntegrationControllerClient()
+    if (
+        controller.configured
+        and os.getenv("DISABLE_MANAGED_MCP_RECONCILIATION", "").lower() != "true"
+    ):
+        current_app.config["MANAGED_MCP_RECONCILIATION_TASK"] = asyncio.create_task(
+            _reconcile_managed_azure_mcp_servers()
+        )
+
     if SKIP_STARTUP_BOOTSTRAP:
         current_app.logger.info("Skipping application data bootstrap")
         return
@@ -7689,6 +8366,14 @@ Don’t combine sources, list each source separately, for example [info1.txt][in
 
 @bp.after_app_serving
 async def close_clients():
+    if reconciliation_task := current_app.config.get(
+        "MANAGED_MCP_RECONCILIATION_TASK"
+    ):
+        reconciliation_task.cancel()
+        try:
+            await reconciliation_task
+        except asyncio.CancelledError:
+            pass
     if recovery_task := current_app.config.get(CONFIG_INGESTION_RECOVERY_TASK):
         recovery_task.cancel()
         try:

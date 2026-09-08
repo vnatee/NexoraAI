@@ -9,7 +9,6 @@ from pymongo.errors import PyMongoError
 from core.attachment_store import AttachmentRecord
 from mongo_table_connecters.mongo_connector import get_database
 
-
 collection = get_database()["chat_attachment_metadata"]
 
 ATTACHMENT_STATUSES = {"stored", "extracting", "ready", "failed"}
@@ -169,6 +168,25 @@ def list_attachment_metadata(
         "expires_at": {"$gt": now or _now()},
     }
     return list(collection.find(query).sort("created_at", -1).limit(max(1, min(limit, 100))))
+
+
+def list_conversation_attachment_metadata(
+    *, owner_id: str, conversation_id: str
+) -> list[dict[str, Any]]:
+    """Return dependency metadata for an authorized conversation cleanup."""
+    return list(
+        collection.find(
+            {"owner_id": owner_id, "conversation_id": conversation_id},
+            {"_id": 1, "owner_id": 1, "conversation_id": 1},
+        )
+    )
+
+
+def delete_conversation_attachment_metadata(*, owner_id: str, conversation_id: str) -> int:
+    result = collection.delete_many(
+        {"owner_id": owner_id, "conversation_id": conversation_id}
+    )
+    return int(result.deleted_count)
 
 
 def list_recoverable_attachment_metadata(

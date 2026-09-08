@@ -37,7 +37,7 @@ from core.attachment_retrieval import source_display_filename
 from core.authentication import AuthenticationHelper
 from core.guardrails import GuardrailPolicy, sanitize_untrusted_context
 from core.knowledge_search import KnowledgeSearchClient
-from core.llm_vendors import apply_llm_vendor_chat_policy
+from core.llm_vendors import apply_llm_vendor_chat_policy, apply_llm_vendor_message_policy
 from prepdocslib.embeddings import OpenAIEmbeddings
 
 
@@ -519,6 +519,11 @@ class Approach(ABC):
         params["seed"] = overrides.get("seed")
         params["n"] = n if n is not None else 1
         params = self.apply_chat_completion_policy(overrides, params)
+        messages = apply_llm_vendor_message_policy(
+            overrides.get("_llm_vendor"),
+            messages,
+            tools_enabled=bool(tools),
+        )
 
         # Azure OpenAI takes the deployment name as the model name
         return effective_client.chat.completions.create(

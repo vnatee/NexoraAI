@@ -31,7 +31,7 @@ MCP Invocation supports `Auto` and `Required`. Auto forces an MCP call on the fi
 
 ## MCP management
 
-MCP uses Streamable HTTP so the same configuration works in Docker and Kubernetes. System administrators manage servers from **Admin Management → MCP Servers**. Each agent receives only the enabled managed servers selected in its configuration. Header values are encrypted with `APP_DATA_ENCRYPTION_KEY`, are never returned by the API, and a blank header field during editing preserves the existing secret.
+MCP uses Streamable HTTP so the same configuration works in Docker and Kubernetes. Team administrators manage servers from **Team settings → Team integrations → MCP Servers**. System administrators may create unassigned connections in the Administration integration catalog and assign them to a Team. Each agent receives only enabled connections owned by its Team and explicitly selected in its configuration. Header values are encrypted with `APP_DATA_ENCRYPTION_KEY`, are never returned by the API, and a blank header field during editing preserves the existing secret.
 
 The server **Test** action performs tool discovery and reports the names exposed by the server. Use an allowlist for every production MCP server. Discovery failure is isolated to that server, so the remaining agent tools continue to work.
 
@@ -57,6 +57,14 @@ Do not commit tokens in this JSON; inject them with container/Kubernetes secrets
 Use **Admin Management → MCP Servers → Add Datadog**. The preset uses Datadog's current Streamable HTTP endpoint (`/v1/mcp`), supports US1, EU and another official Datadog site, and can scope discovery with the `toolsets` query parameter. For this server-side runtime, authenticate with either a Personal/Service Access Token (Bearer, recommended) or Datadog API and Application keys. Credentials are encrypted using `APP_DATA_ENCRYPTION_KEY`.
 
 The Datadog identity needs `mcp_read` plus permission for each underlying product. Grant `mcp_write` only if the agent is intentionally allowed to modify Datadog resources. OAuth browser login is not part of this preset yet because it requires per-user callback, token refresh and revocation storage; the header-based service identity is deterministic for Docker/Kubernetes deployments.
+
+### Azure inventory and Draw.io
+
+The Azure catalog template is inventory-only and filters discovered tools using
+a fail-closed read-operation policy. The Draw.io template permits diagram
+writes. Assign one connection of each type to a LangGraph Agent to produce a
+diagram from Azure inventory. See `docs/azure-drawio-mcp.md` for setup,
+least-privilege guidance, and the current boundary.
 
 ## Local REST integrations
 

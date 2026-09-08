@@ -27,7 +27,7 @@
 }
 
 .chatContextBar {
-    width: min(100%, 68rem);
+    width: min(100%, 100rem);
     padding: 1.25rem 1.5rem 0;
     flex: 0 0 auto;
     display: flex;
@@ -64,7 +64,7 @@
 
 .chatMessageStream {
     flex: 1;
-    width: min(100%, 68rem);
+    width: min(100%, 100rem);
     min-height: 0;
     overflow-y: auto;
     padding: 1.5rem 1.5rem 2rem;
@@ -88,7 +88,7 @@
     flex: 0 0 auto;
     padding: 0.75rem 1.5rem 1.25rem;
     width: 100%;
-    max-width: 68rem;
+    max-width: 100rem;
     position: relative;
     z-index: 5;
     background: linear-gradient(180deg, rgba(247, 248, 250, 0), #f7f8fa 20%);
@@ -166,8 +166,9 @@
     }
 
     .chatMessageGpt {
-        max-width: 80%;
-        min-width: 31.25rem;
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
     }
 }
 .menuDropdown {

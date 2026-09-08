@@ -10,11 +10,11 @@ from agent_runtime.tools import ToolRegistry, ToolSpec
 from mongo_table_connecters.external_apis import get_apis_by_id
 
 
-async def _validate_target(url: str) -> None:
+async def _validate_target(url: str, *, allow_private: bool = False) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ValueError("Integration URL must use http or https")
-    if os.getenv("ALLOW_PRIVATE_INTEGRATION_ENDPOINTS", "").lower() == "true":
+    if allow_private or os.getenv("ALLOW_PRIVATE_INTEGRATION_ENDPOINTS", "").lower() == "true":
         return
     addresses = (
         await __import__("asyncio")

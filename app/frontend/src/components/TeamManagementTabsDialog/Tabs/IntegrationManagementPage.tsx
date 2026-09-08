@@ -6,15 +6,19 @@ import EmailIcon from "@mui/icons-material/Email";
 import TableChartIcon from "@mui/icons-material/TableChart";
 import StorageIcon from "@mui/icons-material/Storage";
 import DocumentScannerIcon from "@mui/icons-material/DocumentScanner";
+import HubOutlinedIcon from "@mui/icons-material/HubOutlined";
+import FolderSharedOutlinedIcon from "@mui/icons-material/FolderSharedOutlined";
 
 import { ExternalApiListPage } from "./ExternalApiListPage";
 import { DatabaseQueryListPage } from "./DatabaseQueryListPage";
 import { MailIntegrationListPage } from "./MailIntegrationListPage";
 import { MessagingIntegrationListPage } from "./MessagingIntegrationListPage";
 import { DocumentProcessingPage } from "./DocumentProcessingPage";
+import { BusinessDocumentsIntegrationPage } from "./BusinessDocumentsIntegrationPage";
 import { TeamProfile } from "../../../api/models";
+import { MCPServerManagement } from "../../MCPServerManagement";
 
-type ViewMode = "types" | "external_api" | "database" | "mail" | "messaging" | "document_processing";
+type ViewMode = "types" | "external_api" | "database" | "mail" | "messaging" | "mcp" | "document_processing" | "business_documents";
 
 interface Props {
     team: TeamProfile | null;
@@ -41,7 +45,9 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
         return <MailIntegrationListPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
     }
     if (view === "messaging") return <MessagingIntegrationListPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
+    if (view === "mcp") return <MCPServerManagement key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
     if (view === "document_processing") return <DocumentProcessingPage onBack={() => setView("types")} />;
+    if (view === "business_documents") return <BusinessDocumentsIntegrationPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
 
     // ✅ scalable integration type config
     const integrationTypes = [
@@ -68,6 +74,18 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
             ]
         },
         {
+            key: "business_documents",
+            title: "Business Documents",
+            description: "Connect Microsoft 365 and Google Workspace documents for Agent search, reading and controlled creation",
+            icon: <FolderSharedOutlinedIcon fontSize="large" />,
+            enabled: true,
+            badges: [
+                { label: "Microsoft 365", color: "primary" as const },
+                { label: "Google Workspace", color: "success" as const },
+                { label: "Read / Create", color: "warning" as const }
+            ]
+        },
+        {
             key: "mail",
             title: "Mail",
             description: "Manage Microsoft 365, Gmail and IMAP/POP3 + SMTP connections",
@@ -76,6 +94,17 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
             badges: [
                 { label: "Read / Write", color: "warning" as const },
                 { label: "Connection catalog", color: "default" as const }
+            ]
+        },
+        {
+            key: "mcp",
+            title: "MCP Servers",
+            description: "Manage Streamable HTTP MCP connections and assign them to Agents",
+            icon: <HubOutlinedIcon fontSize="large" />,
+            enabled: true,
+            badges: [
+                { label: "Datadog", color: "primary" as const },
+                { label: "Custom", color: "default" as const }
             ]
         },
         {
@@ -109,14 +138,6 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
             enabled: true,
             badges: [{ label: "LINE", color: "success" as const }, { label: "Slack", color: "primary" as const }, { label: "Discord", color: "info" as const }]
         },
-        {
-            key: "google_sheet",
-            title: "Google Sheet",
-            description: "Connect Google Sheets",
-            icon: <TableChartIcon fontSize="large" />,
-            enabled: false,
-            badges: []
-        }
     ];
 
     return (
