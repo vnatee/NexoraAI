@@ -114,6 +114,21 @@ def test_trial_expires_without_being_reset(monkeypatch):
     assert status["trial_available"] is False
 
 
+def test_trial_status_accepts_pymongo_naive_utc_datetimes(monkeypatch):
+    settings, _audit = _configure(monkeypatch)
+    start = datetime(2026, 9, 8, tzinfo=timezone.utc)
+    license_settings.start_trial(actor_id="admin-1", now=start)
+    stored = settings.documents[license_settings.SETTINGS_ID]
+    stored["trial_started_at"] = stored["trial_started_at"].replace(tzinfo=None)
+    stored["trial_expires_at"] = stored["trial_expires_at"].replace(tzinfo=None)
+
+    status = license_settings.get_license_status({}, now=start + timedelta(days=1))
+
+    assert status["status"] == "active"
+    assert status["trial"]["started_at"] == "2026-09-08T00:00:00+00:00"
+    assert status["trial"]["expires_at"] == "2026-09-22T00:00:00+00:00"
+
+
 def test_import_encrypts_raw_key_and_returns_only_safe_claims(monkeypatch):
     settings, audit = _configure(monkeypatch)
     installation_id = license_settings.get_or_create_installation_id()

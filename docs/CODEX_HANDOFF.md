@@ -1281,6 +1281,15 @@ explicit audit-mode comparison slice. See `docs/licensing.md`.
   passed, 1 deselected`), Ruff passes for the focused licensing modules and
   tests, the frontend production build passes, and the local Compose schema
   renders with the read-only public-key mount.
+- Post-checkpoint validation against the real local MongoDB runtime found that
+  PyMongo returns stored UTC Trial timestamps without `tzinfo`. The status path
+  now normalizes only persisted naive timestamps as UTC, while explicit caller
+  timestamps remain strict. The Portal also reports a controlled HTTP error
+  instead of exposing a JSON parse error when an upstream response is HTML.
+  Focused regression tests pass (`34 passed`), the frontend production build
+  passes, and the live stored Trial evaluates as active. The full suite reached
+  `910 passed` with one unrelated data-integration failure where a repository
+  PDF fixture produced no text-splitter sections.
 
 ### Chat workspace polish
 

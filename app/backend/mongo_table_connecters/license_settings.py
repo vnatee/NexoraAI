@@ -192,8 +192,8 @@ def _serialize_license(evaluation: LicenseEvaluation, *, installation_id: str) -
 
 
 def _serialize_trial(document: dict[str, Any], *, installation_id: str, now: datetime) -> dict[str, Any]:
-    started_at = _utc(document["trial_started_at"])
-    expires_at = _utc(document.get("trial_expires_at") or (started_at + timedelta(days=TRIAL_DAYS)))
+    started_at = _stored_utc(document["trial_started_at"])
+    expires_at = _stored_utc(document.get("trial_expires_at") or (started_at + timedelta(days=TRIAL_DAYS)))
     state = "active" if now <= expires_at else "expired"
     return {
         "status": state,
@@ -276,3 +276,11 @@ def _utc(value: datetime | None) -> datetime:
     if instant.tzinfo is None or instant.utcoffset() is None:
         raise ValueError("license timestamps must include a timezone")
     return instant.astimezone(timezone.utc)
+
+
+def _stored_utc(value: datetime) -> datetime:
+    """Normalize MongoDB datetimes, which PyMongo returns as naive UTC by default."""
+
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
