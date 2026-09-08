@@ -10,6 +10,10 @@ user-facing feature, field, workflow, permission, or menu changes. Do not create
 a dated replacement manual unless a separately maintained release manual is
 explicitly requested.
 
+The formatted Word deliverable is `NexoraAI-User-Manual.docx`. Regenerate both
+Word manuals after updating their Markdown sources with:
+` .venv/bin/python scripts/build_manual_docx.py `.
+
 ## 1. What NexoraAI does
 
 NexoraAI provides a governed AI workspace where users can:

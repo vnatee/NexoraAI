@@ -1334,6 +1334,11 @@ explicit audit-mode comparison slice. See `docs/licensing.md`.
   user-facing manuals, first established against the 2026-09-08 interface.
   They document current navigation, permission-dependent visibility, fields,
   examples, safety notes, troubleshooting, and links to specialist guides.
+- `docs/NexoraAI-User-Manual.docx` and
+  `docs/NexoraAI-Administrator-Manual.docx` are the formatted Word deliverables.
+  They include screenshot placeholders rather than environment-specific images.
+  Regenerate them with `.venv/bin/python scripts/build_manual_docx.py` whenever
+  either Markdown source changes.
 - When the product owner says **update manual**, update these existing files in
   place according to the affected audience. A feature that changes both the
   user workflow and its administration must update both manuals. Keep examples
