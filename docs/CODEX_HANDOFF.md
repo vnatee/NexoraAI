@@ -1212,6 +1212,22 @@ See `docs/usage-quotas.md`.
   administration** and **Return to Presale team**. This is presentation-only;
   the existing Team and System authorization boundaries remain unchanged.
 
+### System Health
+
+- System Administrators have a **System administration → System health** page
+  backed by `GET /admin/system-health`. It refreshes every 30 seconds and shows
+  a secret-free snapshot of core services, aggregate integration health, and
+  ingestion/attachment queues and workers.
+- MongoDB and configured local MinIO, Qdrant, Ollama, and Integration Controller
+  endpoints receive short read-only liveness probes. Azure and other remote
+  clients are reported as initialized/configured rather than making potentially
+  costly provider calls on every refresh. Full host metrics, time-series,
+  alerting, and externally hosted outage detection remain follow-up work; see
+  `docs/system-health.md`.
+- Focused System Health tests pass (`4 passed`), the complete service-free suite
+  passes (`873 passed, 1 deselected`), and the frontend TypeScript/production
+  build passes.
+
 ### Chat workspace polish
 
 - Checkpoint `c617141 feat: refine chat workspace and usage analytics` starts
