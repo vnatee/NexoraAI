@@ -267,7 +267,8 @@ Recommended delivery order:
    reservations, idempotent LLM/document events, and threshold/block audit
    events are implemented and validated on `feature/durable-usage-metering`.
 2. Versioned entitlement schema and in-process evaluator with deterministic
-   tests; no enforcement yet.
+   tests; no enforcement yet. **Implemented** in `core/licensing.py`; see
+   `docs/licensing.md`.
 3. Signed offline license verification, stable installation identity, secure
    persistence, and System Admin status/import UI.
 4. Feature gates and capacity ceilings enforced server-side, starting in audit
