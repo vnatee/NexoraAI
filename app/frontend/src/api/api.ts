@@ -1970,9 +1970,7 @@ export async function getSystemHealthApi(idToken: string): Promise<SystemHealthS
 
 export async function getLicenseStatusApi(idToken: string): Promise<LicenseStatusResponse> {
     const response = await fetch("/admin/license", { headers: await getHeaders(idToken) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Unable to load license status");
-    return data;
+    return readLicenseResponse(response, "Unable to load license status");
 }
 
 export async function startLicenseTrialApi(idToken: string): Promise<LicenseStatusResponse> {
@@ -1980,9 +1978,7 @@ export async function startLicenseTrialApi(idToken: string): Promise<LicenseStat
         method: "POST",
         headers: await getHeaders(idToken)
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Unable to start trial");
-    return data;
+    return readLicenseResponse(response, "Unable to start trial");
 }
 
 export async function importLicenseApi(licenseKey: string, idToken: string): Promise<LicenseStatusResponse> {
@@ -1991,8 +1987,16 @@ export async function importLicenseApi(licenseKey: string, idToken: string): Pro
         headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
         body: JSON.stringify({ license_key: licenseKey })
     });
+    return readLicenseResponse(response, "Unable to import license");
+}
+
+async function readLicenseResponse(response: Response, fallback: string): Promise<LicenseStatusResponse> {
+    const contentType = response.headers.get("content-type") || "";
+    if (!contentType.toLowerCase().includes("application/json")) {
+        throw new Error(`${fallback} (HTTP ${response.status})`);
+    }
     const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Unable to import license");
+    if (!response.ok) throw new Error(data.error || `${fallback} (HTTP ${response.status})`);
     return data;
 }
 
