@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Alert, Box, Typography, Card, CardContent, Stack, Chip, CircularProgress, InputAdornment, MenuItem, TextField } from "@mui/material";
+import { Alert, Box, Typography, Card, CardContent, Stack, Chip, CircularProgress, InputAdornment, MenuItem, Tab, Tabs, TextField } from "@mui/material";
 import ApiIcon from "@mui/icons-material/Api";
 import ChatIcon from "@mui/icons-material/Chat";
 import EmailIcon from "@mui/icons-material/Email";
@@ -39,12 +39,14 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
     const [connectionError, setConnectionError] = useState("");
     const [connectionSearch, setConnectionSearch] = useState("");
     const [connectionType, setConnectionType] = useState<"all" | "mcp" | "native">("all");
+    const [landingTab, setLandingTab] = useState<"configured" | "catalog">("configured");
 
     // ✅ reset view ถ้า team เปลี่ยน
     useEffect(() => {
         setView("types");
         setConnectionSearch("");
         setConnectionType("all");
+        setLandingTab("configured");
     }, [team?._id]);
 
     useEffect(() => {
@@ -77,7 +79,16 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
         return <MailIntegrationListPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
     }
     if (view === "messaging") return <MessagingIntegrationListPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
-    if (view === "mcp") return <MCPServerManagement key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
+    if (view === "mcp") {
+        return (
+            <MCPServerManagement
+                key={`${team?._id || "unassigned"}:${landingTab}`}
+                team={team}
+                initialView={landingTab}
+                onBack={() => setView("types")}
+            />
+        );
+    }
     if (view === "document_processing") return <DocumentProcessingPage onBack={() => setView("types")} />;
     if (view === "business_documents") return <BusinessDocumentsIntegrationPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
 
@@ -200,78 +211,93 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
                 overflowY: "auto"
             }}
         >
-            <Typography variant="h6" mb={1}>
-                {team ? `${team.name} integrations` : "Platform integration catalog"}
-            </Typography>
-
-            <Typography variant="body2" color="text.secondary" mb={3}>
-                {team
-                    ? "Manage connections assigned to this team."
-                    : "Create and test connections before assigning them to a team. Unassigned connections cannot be used by Agents."}
-            </Typography>
-
-            <Typography fontWeight={700} mb={1.5}>
-                Connections ({connections.length})
-            </Typography>
-            <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} mb={2}>
-                <TextField
-                    fullWidth
-                    size="small"
-                    placeholder="Search connections"
-                    value={connectionSearch}
-                    onChange={event => setConnectionSearch(event.target.value)}
-                    InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
+            <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }} gap={1} mb={1}>
+                <Box>
+                    <Typography variant="h6">Integrations</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                        {team
+                            ? `Team scope · ${team.name}. Connections and assignments here apply only to this team.`
+                            : "System scope · Unassigned connections cannot be used by Agents until assigned to a team."}
+                    </Typography>
+                </Box>
+                <Chip
+                    color={team ? "primary" : "default"}
+                    variant={team ? "filled" : "outlined"}
+                    label={team ? `Team · ${team.name}` : "System · Unassigned"}
                 />
-                <TextField
-                    select
-                    size="small"
-                    label="Connection type"
-                    value={connectionType}
-                    onChange={event => setConnectionType(event.target.value as "all" | "mcp" | "native")}
-                    sx={{ minWidth: 190 }}
-                >
-                    <MenuItem value="all">All</MenuItem>
-                    <MenuItem value="mcp">MCP</MenuItem>
-                    <MenuItem value="native">Native</MenuItem>
-                </TextField>
             </Stack>
 
-            {connectionError && <Alert severity="error" sx={{ mb: 2 }}>{connectionError}</Alert>}
-            {loadingConnections ? (
-                <Box display="flex" justifyContent="center" py={3}><CircularProgress size={28} /></Box>
+            <Tabs
+                value={landingTab}
+                onChange={(_, value) => setLandingTab(value)}
+                sx={{ borderBottom: 1, borderColor: "divider", mb: 3 }}
+                aria-label="integration catalog views"
+            >
+                <Tab value="configured" label={`Configured connections (${connections.length})`} />
+                <Tab value="catalog" label="Browse catalog" />
+            </Tabs>
+
+            {landingTab === "configured" ? (
+                <>
+                    <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} mb={2}>
+                        <TextField
+                            fullWidth
+                            size="small"
+                            placeholder="Search connections"
+                            value={connectionSearch}
+                            onChange={event => setConnectionSearch(event.target.value)}
+                            InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
+                        />
+                        <TextField
+                            select
+                            size="small"
+                            label="Connection type"
+                            value={connectionType}
+                            onChange={event => setConnectionType(event.target.value as "all" | "mcp" | "native")}
+                            sx={{ minWidth: 190 }}
+                        >
+                            <MenuItem value="all">All</MenuItem>
+                            <MenuItem value="mcp">MCP</MenuItem>
+                            <MenuItem value="native">Native</MenuItem>
+                        </TextField>
+                    </Stack>
+
+                    {connectionError && <Alert severity="error" sx={{ mb: 2 }}>{connectionError}</Alert>}
+                    {loadingConnections ? (
+                        <Box display="flex" justifyContent="center" py={3}><CircularProgress size={28} /></Box>
+                    ) : (
+                        <Stack spacing={1.25}>
+                            {visibleConnections.map(connection => (
+                                <ConnectionCard
+                                    key={`${connection.kind}:${connection.id}`}
+                                    connection={connection}
+                                    onClick={() => setView(connectionView(connection.kind))}
+                                />
+                            ))}
+                            {!visibleConnections.length && (
+                                <Card variant="outlined"><CardContent><Typography color="text.secondary">
+                                    {connections.length ? "No connections match these filters." : "No connections have been configured yet. Open Browse catalog to add one."}
+                                </Typography></CardContent></Card>
+                            )}
+                        </Stack>
+                    )}
+                </>
             ) : (
-                <Stack spacing={1.25} mb={4}>
-                    {visibleConnections.map(connection => (
-                        <ConnectionCard
-                            key={`${connection.kind}:${connection.id}`}
-                            connection={connection}
-                            onClick={() => setView(connectionView(connection.kind))}
+                <Stack spacing={2}>
+                    {integrationTypes.filter(type => !("systemAdminOnly" in type) || !type.systemAdminOnly || isSystemAdmin).map(type => (
+                        <IntegrationCard
+                            key={type.key}
+                            icon={type.icon}
+                            title={type.title}
+                            description={type.description}
+                            disabled={!type.enabled}
+                            statusLabel={type.statusLabel}
+                            badges={type.badges}
+                            onClick={type.enabled ? () => setView(type.key as ViewMode) : undefined}
                         />
                     ))}
-                    {!visibleConnections.length && (
-                        <Card variant="outlined"><CardContent><Typography color="text.secondary">
-                            {connections.length ? "No connections match these filters." : "No connections have been configured yet."}
-                        </Typography></CardContent></Card>
-                    )}
                 </Stack>
             )}
-
-            <Typography fontWeight={700} mb={1.5}>Add integration</Typography>
-
-            <Stack spacing={2}>
-                {integrationTypes.filter(type => !("systemAdminOnly" in type) || !type.systemAdminOnly || isSystemAdmin).map(type => (
-                    <IntegrationCard
-                        key={type.key}
-                        icon={type.icon}
-                        title={type.title}
-                        description={type.description}
-                        disabled={!type.enabled}
-                        statusLabel={type.statusLabel}
-                        badges={type.badges}
-                        onClick={type.enabled ? () => setView(type.key as ViewMode) : undefined}
-                    />
-                ))}
-            </Stack>
         </Box>
     );
 }

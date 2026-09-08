@@ -151,7 +151,15 @@ const MCP_CATEGORIES: Array<{ id: "all" | MCPCategory; label: string }> = [
 
 const categoryLabel = (category: MCPCategory) => MCP_CATEGORIES.find(item => item.id === category)?.label ?? category;
 
-export function MCPServerManagement({ team = null, onBack }: { team?: TeamProfile | null; onBack?: () => void }) {
+export function MCPServerManagement({
+    team = null,
+    onBack,
+    initialView = "configured"
+}: {
+    team?: TeamProfile | null;
+    onBack?: () => void;
+    initialView?: "configured" | "catalog";
+}) {
     const { instance } = useMsal();
     const teamId = team?._id ?? "";
     const [servers, setServers] = useState<ManagedMCPServer[]>([]);
@@ -161,7 +169,7 @@ export function MCPServerManagement({ team = null, onBack }: { team?: TeamProfil
     const [testStatus, setTestStatus] = useState<Record<string, { status: "success" | "error"; tools?: DiscoveredMCPTool[] }>>({});
     const [toolDialogServer, setToolDialogServer] = useState<ManagedMCPServer | null>(null);
     const [toolSearch, setToolSearch] = useState("");
-    const [view, setView] = useState<"configured" | "catalog">("configured");
+    const [view, setView] = useState<"configured" | "catalog">(initialView);
     const [searchQuery, setSearchQuery] = useState("");
     const [categoryFilter, setCategoryFilter] = useState<"all" | MCPCategory>("all");
     const [statusFilter, setStatusFilter] = useState<"all" | "enabled" | "disabled">("all");
@@ -441,7 +449,7 @@ export function MCPServerManagement({ team = null, onBack }: { team?: TeamProfil
                 <Stack direction="row" spacing={1.5} alignItems="flex-start">
                     {onBack && <IconButton onClick={onBack} aria-label="Back to integrations"><ArrowBackIcon /></IconButton>}
                     <Box>
-                        <Typography variant="h6">MCP Servers</Typography>
+                        <Typography variant="h6">Remote MCP Connections</Typography>
                         <Typography variant="body2" color="text.secondary">
                             {team
                                 ? `Manage Streamable HTTP MCP connections assigned to ${team.name}.`

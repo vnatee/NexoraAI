@@ -26,7 +26,6 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import PolicyOutlinedIcon from "@mui/icons-material/PolicyOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
-import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import { useMsal } from "@azure/msal-react";
 
@@ -298,7 +297,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
         ...GROUP_DETAILS,
         people: {
             ...GROUP_DETAILS.people,
-            label: managedTeam?.name || GROUP_DETAILS.people.label
+            label: managedTeam ? `Team · ${managedTeam.name}` : GROUP_DETAILS.people.label
         }
     };
     const groupedPages = useMemo(
@@ -322,11 +321,25 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
 
     return (
         <Dialog open={open} onClose={onClose} maxWidth="xl" fullWidth>
-            <DialogTitle sx={{ pb: 2 }}>
-                <Box display="flex" alignItems="flex-start" justifyContent="space-between" gap={2} flexWrap="wrap">
+            <DialogTitle
+                sx={{
+                    px: 3,
+                    py: 2,
+                    bgcolor: managedTeam ? "rgba(25, 118, 210, 0.06)" : "grey.100",
+                    borderTop: 4,
+                    borderColor: managedTeam ? "primary.main" : "text.secondary"
+                }}
+            >
+                <Box display="flex" alignItems="center" justifyContent="space-between" gap={2} flexWrap="wrap">
                     <Box>
                         <Box display="flex" alignItems="center" gap={1} flexWrap="wrap">
-                            <Typography variant="h6">{managedTeam ? `Team settings · ${managedTeam.name}` : "Administration"}</Typography>
+                            {managedTeam ? <GroupsOutlinedIcon color="primary" /> : <AdminPanelSettingsOutlinedIcon color="action" />}
+                            <Box>
+                                <Typography variant="overline" color={managedTeam ? "primary.main" : "text.secondary"} fontWeight={800} lineHeight={1.2}>
+                                    {managedTeam ? "TEAM WORKSPACE" : "SYSTEM ADMINISTRATION"}
+                                </Typography>
+                                <Typography variant="h6" lineHeight={1.3}>{managedTeam ? managedTeam.name : "Administration"}</Typography>
+                            </Box>
                             {managedTeam && canManageTeams && (
                                 <IconButton
                                     size="small"
@@ -340,38 +353,44 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
                                     <EditOutlinedIcon fontSize="small" />
                                 </IconButton>
                             )}
-                            <Chip size="small" variant="outlined" color={managedTeam ? "primary" : "default"} label={managedTeam ? "Team" : "System"} />
+                            <Chip
+                                size="small"
+                                variant={managedTeam ? "filled" : "outlined"}
+                                color={managedTeam ? "primary" : "default"}
+                                label={managedTeam ? `Team scope · ${managedTeam.name}` : "System-wide scope"}
+                            />
                         </Box>
                         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                             {managedTeam
-                                ? "Manage people, AI workspace, governance, and authorized system settings."
-                                : "Manage platform identity, providers, integrations, governance, and operational policy."}
+                                ? `Changes on this screen apply to ${managedTeam.name}, unless a section is explicitly marked System.`
+                                : "Changes on this screen apply across the platform or to unassigned catalog resources."}
                         </Typography>
                     </Box>
                     {managedTeam && (canManageUsers || canManageTeams) && (
                         <Button
                             size="small"
                             variant="outlined"
-                            startIcon={<ArrowBackIcon />}
+                            startIcon={<AdminPanelSettingsOutlinedIcon />}
                             onClick={() => {
                                 setManagedTeam(null);
                                 setSelectedPageId(canManageUsers ? "users" : "teams");
                                 setExpandedGroups({ ...COLLAPSED_GROUPS });
                             }}
                         >
-                            Administration
+                            Switch to system administration
                         </Button>
                     )}
                     {!managedTeam && selectTeamData && (
                         <Button
                             size="small"
                             variant="outlined"
+                            startIcon={<GroupsOutlinedIcon />}
                             onClick={() => {
                                 setManagedTeam(selectTeamData);
                                 setSelectedPageId("members");
                             }}
                         >
-                            Team settings
+                            Return to {selectTeamData.name} team
                         </Button>
                     )}
                 </Box>

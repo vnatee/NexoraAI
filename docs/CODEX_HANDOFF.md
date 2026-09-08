@@ -236,9 +236,11 @@ See `docs/ai-guardrails.md`.
   `docs/jira-servicenow-mcp.md`.
 - The Administration integration landing page now consumes a provider-neutral,
   secret-free connection projection across native and MCP collections. It
-  displays all configured connections together with `Native` or `MCP`, status,
-  provider, and Agent usage, while provider-specific editors and storage remain
-  intact. Agent Management places MCP assignments inside the shared
+  separates **Configured connections** from **Browse catalog**, and displays
+  all configured connections together with `Native` or `MCP`, status, provider,
+  and Agent usage, while provider-specific editors and storage remain intact.
+  The page repeats its Team or System/Unassigned scope so catalog actions cannot
+  be mistaken for another workspace. Agent Management places MCP assignments inside the shared
   **Integrations** tab. A compatibility binding projection reads all existing
   binding collections plus legacy `mcp_server_ids`; no credential or binding
   data migration has been performed. See `docs/integration-control-plane.md`.
@@ -1204,6 +1206,11 @@ See `docs/usage-quotas.md`.
   authorization contracts. TypeScript validation, the memory-safe production
   build, and the complete service-free backend suite (`860 passed, 1
   deselected`) passed; the rebuilt local application container is healthy.
+- The settings header now makes the active context explicit with distinct
+  **TEAM WORKSPACE** and **SYSTEM ADMINISTRATION** treatments, a scope chip, and
+  destination-oriented switch actions such as **Switch to system
+  administration** and **Return to Presale team**. This is presentation-only;
+  the existing Team and System authorization boundaries remain unchanged.
 
 ### Chat workspace polish
 

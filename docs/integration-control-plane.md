@@ -18,8 +18,10 @@ The provider-specific collections remain the source of truth:
 `list_integration_connections()` projects these records into one secret-free
 shape containing connection ID, kind, connection type, provider, Team, status,
 detail, and Agent usage count. The management UI consumes this projection to
-show all configured connections in one list. Selecting a connection still
-opens its provider-specific editor.
+show all configured connections in one list under **Configured connections**.
+Creation entry points live separately under **Browse catalog**. Both views show
+the active Team or System/Unassigned scope. Selecting a connection still opens
+its provider-specific editor.
 
 Agent bindings are also projected into one normalized read shape by
 `list_agent_integration_bindings()`. It reads the existing binding collections
