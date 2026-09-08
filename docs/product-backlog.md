@@ -270,7 +270,9 @@ Recommended delivery order:
    tests; no enforcement yet. **Implemented** in `core/licensing.py`; see
    `docs/licensing.md`.
 3. Signed offline license verification, stable installation identity, secure
-   persistence, and System Admin status/import UI.
+   persistence, and System Admin status/import UI. **Implemented in audit
+   mode**, including one-time 14-day Trial activation and a vendor-side issuer
+   tool; see `docs/licensing.md`.
 4. Feature gates and capacity ceilings enforced server-side, starting in audit
    mode before blocking production operations.
 5. Grace/expiry/renewal/re-host workflows and audit events.

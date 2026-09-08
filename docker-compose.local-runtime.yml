@@ -66,10 +66,12 @@ services:
       MAX_UPLOAD_SIZE_BYTES: ${MAX_UPLOAD_SIZE_BYTES:-104857600}
       INTEGRATION_CONTROLLER_URL: http://integration-controller:8080
       INTEGRATION_CONTROLLER_TOKEN: ${INTEGRATION_CONTROLLER_TOKEN:-}
+      NEXORA_LICENSE_PUBLIC_KEY_DIR: /etc/nexora/license-public-keys
     ports:
       - "${NEXORA_BIND_ADDRESS:-127.0.0.1}:${NEXORA_APP_PORT:-50505}:8000"
     volumes:
       - nexora_chat_attachments:/data/chat-attachments
+      - ./deploy/license-public-keys:/etc/nexora/license-public-keys:ro
     healthcheck:
       test:
         - CMD

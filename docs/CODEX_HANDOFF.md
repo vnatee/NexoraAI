@@ -1262,9 +1262,25 @@ See `docs/usage-quotas.md`.
   existing installations do not change behavior.
 - The focused deterministic licensing suite passes (`20 passed`), the complete
   service-free backend suite passes (`896 passed, 1 deselected`), Ruff passes
-  for the new Python files, and the frontend production build passes. Signed
-  offline verification and stable installation identity are the next licensing
-  slice; see `docs/licensing.md`.
+  for the initial Python files, and the frontend production build passes.
+
+The next licensing slice is now implemented in audit mode. System Admins have a
+**System administration → License** page showing a stable MongoDB-backed
+Installation ID and safe status. They can start one 14-day Trial or import an
+`NX1` offline license. Imports verify an Ed25519 signature against a bounded,
+rotatable read-only public-key directory before validating product, period,
+features, capacities, and installation binding. The raw license is Fernet
+encrypted, never returned to the Portal, and excluded from metadata-only
+365-day Trial/import audit events. `scripts/license_key_tool.py` generates
+vendor keypairs and signed license files but is excluded from the application
+image; the private signing key must remain outside this repository and customer
+deployments. Feature and capacity enforcement remains disabled pending an
+explicit audit-mode comparison slice. See `docs/licensing.md`.
+- Focused license schema, signature, persistence, route, and issuer-tool tests
+  pass (`33 passed`); the complete service-free backend suite passes (`909
+  passed, 1 deselected`), Ruff passes for the focused licensing modules and
+  tests, the frontend production build passes, and the local Compose schema
+  renders with the read-only public-key mount.
 
 ### Chat workspace polish
 

@@ -20,6 +20,7 @@ import {
     MCPServerPayload,
     IntegrationConnectionSummary,
     SystemHealthSnapshot,
+    LicenseStatusResponse,
     AgentAuditEvent,
     User,
     RegisterUserPayload,
@@ -1964,6 +1965,34 @@ export async function getSystemHealthApi(idToken: string): Promise<SystemHealthS
     const response = await fetch("/admin/system-health", { headers: await getHeaders(idToken) });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Unable to load system health");
+    return data;
+}
+
+export async function getLicenseStatusApi(idToken: string): Promise<LicenseStatusResponse> {
+    const response = await fetch("/admin/license", { headers: await getHeaders(idToken) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to load license status");
+    return data;
+}
+
+export async function startLicenseTrialApi(idToken: string): Promise<LicenseStatusResponse> {
+    const response = await fetch("/admin/license/trial", {
+        method: "POST",
+        headers: await getHeaders(idToken)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to start trial");
+    return data;
+}
+
+export async function importLicenseApi(licenseKey: string, idToken: string): Promise<LicenseStatusResponse> {
+    const response = await fetch("/admin/license", {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ license_key: licenseKey })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to import license");
     return data;
 }
 

@@ -110,6 +110,16 @@ managed Azure connection. It is the only service with Docker socket access.
 Protect `INTEGRATION_CONTROLLER_TOKEN`; do not reuse the Fernet key or another
 application credential. See [`azure-drawio-mcp.md`](azure-drawio-mcp.md).
 
+## Trial and offline license
+
+System Administrators can open **System administration → License** to copy the
+stable Installation ID, start the one-time 14-day Trial, or import an NX1
+offline license. Put only approved vendor Ed25519 public keys in
+`deploy/license-public-keys/` and recreate the application container after
+adding or rotating a key. The directory is mounted read-only; `*.pem` files are
+Git-ignored. Keep the signing private key exclusively in the vendor licensing
+environment. See [`licensing.md`](licensing.md).
+
 ## Optional OCR service
 
 Start Docling only when a processing profile needs it:
