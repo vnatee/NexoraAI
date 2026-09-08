@@ -11,6 +11,7 @@ application itself is down.
 - active MongoDB ping;
 - active MinIO, Qdrant, Ollama, and Integration Controller health probes when
   those local services are configured;
+- active Nginx HTTPS gateway probe when the production TLS overlay is enabled;
 - initialized status for Azure storage/search and non-local model clients;
 - secret-free counts of configured, enabled, disabled, and attention-required
   integrations;
@@ -38,6 +39,7 @@ partial results when a dependency is unavailable.
 ## Follow-up
 
 Add explicit host/container metrics, restart count, request latency/error-rate
-time series, alert rules, and external Prometheus/Grafana or Datadog monitoring.
+time series, TLS certificate-expiry inspection and warning thresholds, alert
+rules, and external Prometheus/Grafana or Datadog monitoring.
 External alerts remain mandatory for production because they can detect a full
 NexoraAI outage.

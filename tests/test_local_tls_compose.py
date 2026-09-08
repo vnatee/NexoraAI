@@ -2,14 +2,15 @@ from pathlib import Path
 
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_tls_gateway_terminates_https_without_exposing_application_dependencies():
     compose = yaml.safe_load((ROOT / "docker-compose.local-tls.yml").read_text(encoding="utf-8"))
     gateway = compose["services"]["tls-gateway"]
+    app = compose["services"]["app"]
 
+    assert app["environment"]["NEXORA_TLS_GATEWAY_HEALTH_URL"] == "http://tls-gateway:8081"
     assert gateway["depends_on"]["app"]["condition"] == "service_healthy"
     assert gateway["read_only"] is True
     assert "no-new-privileges:true" in gateway["security_opt"]
@@ -32,3 +33,5 @@ def test_tls_gateway_enforces_modern_tls_redirect_and_proxy_headers():
     assert "proxy_buffering off;" in config
     assert "ssl_certificate /etc/nginx/tls/fullchain.pem;" in config
     assert "ssl_certificate_key /etc/nginx/tls/privkey.pem;" in config
+    assert "listen 8081;" in config
+    assert "location = /gateway-healthz" in config
