@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Box, Typography, Card, CardContent, Stack, Chip } from "@mui/material";
+import { Alert, Box, Typography, Card, CardContent, Stack, Chip, CircularProgress, InputAdornment, MenuItem, TextField } from "@mui/material";
 import ApiIcon from "@mui/icons-material/Api";
 import ChatIcon from "@mui/icons-material/Chat";
 import EmailIcon from "@mui/icons-material/Email";
@@ -8,6 +8,8 @@ import StorageIcon from "@mui/icons-material/Storage";
 import DocumentScannerIcon from "@mui/icons-material/DocumentScanner";
 import HubOutlinedIcon from "@mui/icons-material/HubOutlined";
 import FolderSharedOutlinedIcon from "@mui/icons-material/FolderSharedOutlined";
+import SearchIcon from "@mui/icons-material/Search";
+import { useMsal } from "@azure/msal-react";
 
 import { ExternalApiListPage } from "./ExternalApiListPage";
 import { DatabaseQueryListPage } from "./DatabaseQueryListPage";
@@ -15,10 +17,14 @@ import { MailIntegrationListPage } from "./MailIntegrationListPage";
 import { MessagingIntegrationListPage } from "./MessagingIntegrationListPage";
 import { DocumentProcessingPage } from "./DocumentProcessingPage";
 import { BusinessDocumentsIntegrationPage } from "./BusinessDocumentsIntegrationPage";
-import { TeamProfile } from "../../../api/models";
+import { IntegrationConnectionSummary, TeamProfile } from "../../../api/models";
+import { listIntegrationConnectionsApi } from "../../../api/api";
+import { getToken } from "../../../authConfig";
 import { MCPServerManagement } from "../../MCPServerManagement";
 
 type ViewMode = "types" | "external_api" | "database" | "mail" | "messaging" | "mcp" | "document_processing" | "business_documents";
+
+const connectionView = (kind: IntegrationConnectionSummary["kind"]): ViewMode => (kind === "rest_api" ? "external_api" : kind);
 
 interface Props {
     team: TeamProfile | null;
@@ -26,12 +32,38 @@ interface Props {
 }
 
 export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
+    const { instance } = useMsal();
     const [view, setView] = useState<ViewMode>("types");
+    const [connections, setConnections] = useState<IntegrationConnectionSummary[]>([]);
+    const [loadingConnections, setLoadingConnections] = useState(false);
+    const [connectionError, setConnectionError] = useState("");
+    const [connectionSearch, setConnectionSearch] = useState("");
+    const [connectionType, setConnectionType] = useState<"all" | "mcp" | "native">("all");
 
     // ✅ reset view ถ้า team เปลี่ยน
     useEffect(() => {
         setView("types");
+        setConnectionSearch("");
+        setConnectionType("all");
     }, [team?._id]);
+
+    useEffect(() => {
+        if (view !== "types") return;
+        let active = true;
+        setLoadingConnections(true);
+        setConnectionError("");
+        getToken(instance)
+            .then(token => {
+                if (!token) throw new Error("No authentication token");
+                return listIntegrationConnectionsApi(team?._id ?? "", token);
+            })
+            .then(items => active && setConnections(items))
+            .catch(error => active && setConnectionError(error instanceof Error ? error.message : "Failed to load connections"))
+            .finally(() => active && setLoadingConnections(false));
+        return () => {
+            active = false;
+        };
+    }, [instance, team?._id, view]);
 
     if (view === "external_api") {
         return <ExternalApiListPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
@@ -58,6 +90,7 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
             icon: <ApiIcon fontSize="large" />,
             enabled: true,
             badges: [
+                { label: "Native", color: "secondary" as const },
                 { label: "Read / Write", color: "warning" as const },
                 { label: "Connection catalog", color: "default" as const }
             ]
@@ -69,6 +102,7 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
             icon: <StorageIcon fontSize="large" />,
             enabled: true,
             badges: [
+                { label: "Native", color: "secondary" as const },
                 { label: "Read-only", color: "success" as const },
                 { label: "Connection catalog", color: "default" as const }
             ]
@@ -80,6 +114,7 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
             icon: <FolderSharedOutlinedIcon fontSize="large" />,
             enabled: true,
             badges: [
+                { label: "Native", color: "secondary" as const },
                 { label: "Microsoft 365", color: "primary" as const },
                 { label: "Google Workspace", color: "success" as const },
                 { label: "Read / Create", color: "warning" as const }
@@ -92,19 +127,20 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
             icon: <EmailIcon fontSize="large" />,
             enabled: true,
             badges: [
+                { label: "Native", color: "secondary" as const },
                 { label: "Read / Write", color: "warning" as const },
                 { label: "Connection catalog", color: "default" as const }
             ]
         },
         {
             key: "mcp",
-            title: "MCP Servers",
-            description: "Manage Streamable HTTP MCP connections and assign them to Agents",
+            title: "Remote Tool Providers",
+            description: "Connect Datadog, Azure, Draw.io, Atlassian, ServiceNow and other MCP providers",
             icon: <HubOutlinedIcon fontSize="large" />,
             enabled: true,
             badges: [
-                { label: "Datadog", color: "primary" as const },
-                { label: "Custom", color: "default" as const }
+                { label: "MCP", color: "primary" as const },
+                { label: "Hosted / Managed", color: "default" as const }
             ]
         },
         {
@@ -136,9 +172,25 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
             description: "Manage LINE, Slack and Discord messaging channels",
             icon: <ChatIcon fontSize="large" />,
             enabled: true,
-            badges: [{ label: "LINE", color: "success" as const }, { label: "Slack", color: "primary" as const }, { label: "Discord", color: "info" as const }]
+            badges: [
+                { label: "Native", color: "secondary" as const },
+                { label: "LINE", color: "success" as const },
+                { label: "Slack", color: "primary" as const },
+                { label: "Discord", color: "info" as const }
+            ]
         },
     ];
+
+    const normalizedSearch = connectionSearch.trim().toLocaleLowerCase();
+    const visibleConnections = connections.filter(connection => {
+        if (connectionType !== "all" && connection.connection_type !== connectionType) return false;
+        return (
+            !normalizedSearch ||
+            connection.name.toLocaleLowerCase().includes(normalizedSearch) ||
+            connection.provider.toLocaleLowerCase().includes(normalizedSearch) ||
+            connection.detail.toLocaleLowerCase().includes(normalizedSearch)
+        );
+    });
 
     return (
         <Box
@@ -158,6 +210,54 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
                     : "Create and test connections before assigning them to a team. Unassigned connections cannot be used by Agents."}
             </Typography>
 
+            <Typography fontWeight={700} mb={1.5}>
+                Connections ({connections.length})
+            </Typography>
+            <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} mb={2}>
+                <TextField
+                    fullWidth
+                    size="small"
+                    placeholder="Search connections"
+                    value={connectionSearch}
+                    onChange={event => setConnectionSearch(event.target.value)}
+                    InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
+                />
+                <TextField
+                    select
+                    size="small"
+                    label="Connection type"
+                    value={connectionType}
+                    onChange={event => setConnectionType(event.target.value as "all" | "mcp" | "native")}
+                    sx={{ minWidth: 190 }}
+                >
+                    <MenuItem value="all">All</MenuItem>
+                    <MenuItem value="mcp">MCP</MenuItem>
+                    <MenuItem value="native">Native</MenuItem>
+                </TextField>
+            </Stack>
+
+            {connectionError && <Alert severity="error" sx={{ mb: 2 }}>{connectionError}</Alert>}
+            {loadingConnections ? (
+                <Box display="flex" justifyContent="center" py={3}><CircularProgress size={28} /></Box>
+            ) : (
+                <Stack spacing={1.25} mb={4}>
+                    {visibleConnections.map(connection => (
+                        <ConnectionCard
+                            key={`${connection.kind}:${connection.id}`}
+                            connection={connection}
+                            onClick={() => setView(connectionView(connection.kind))}
+                        />
+                    ))}
+                    {!visibleConnections.length && (
+                        <Card variant="outlined"><CardContent><Typography color="text.secondary">
+                            {connections.length ? "No connections match these filters." : "No connections have been configured yet."}
+                        </Typography></CardContent></Card>
+                    )}
+                </Stack>
+            )}
+
+            <Typography fontWeight={700} mb={1.5}>Add integration</Typography>
+
             <Stack spacing={2}>
                 {integrationTypes.filter(type => !("systemAdminOnly" in type) || !type.systemAdminOnly || isSystemAdmin).map(type => (
                     <IntegrationCard
@@ -173,6 +273,26 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
                 ))}
             </Stack>
         </Box>
+    );
+}
+
+function ConnectionCard({ connection, onClick }: { connection: IntegrationConnectionSummary; onClick: () => void }) {
+    const statusColor = connection.enabled && !["failed", "cleanup_pending", "stop_pending"].includes(connection.status) ? "success" : "default";
+    return (
+        <Card variant="outlined" onClick={onClick} sx={{ cursor: "pointer", borderRadius: 2, "&:hover": { boxShadow: 2 } }}>
+            <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
+                <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} alignItems={{ xs: "flex-start", md: "center" }}>
+                    <Box flex={1} minWidth={0}>
+                        <Typography fontWeight={650}>{connection.name}</Typography>
+                        <Typography variant="body2" color="text.secondary" noWrap>{connection.detail || connection.provider}</Typography>
+                    </Box>
+                    <Chip size="small" label={connection.provider} variant="outlined" />
+                    <Chip size="small" label={connection.connection_type === "mcp" ? "MCP" : "Native"} color={connection.connection_type === "mcp" ? "primary" : "secondary"} variant="outlined" />
+                    <Chip size="small" label={connection.status} color={statusColor} />
+                    <Typography variant="body2" color="text.secondary">{connection.agent_usage_count} Agent(s)</Typography>
+                </Stack>
+            </CardContent>
+        </Card>
     );
 }
 
