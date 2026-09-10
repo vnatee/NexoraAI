@@ -1963,9 +1963,7 @@ export async function listIntegrationConnectionsApi(teamId: string, idToken: str
 
 export async function getSystemHealthApi(idToken: string): Promise<SystemHealthSnapshot> {
     const response = await fetch("/admin/system-health", { headers: await getHeaders(idToken) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Unable to load system health");
-    return data;
+    return readJsonResponse<SystemHealthSnapshot>(response, "Unable to load system health");
 }
 
 export async function getLicenseStatusApi(idToken: string): Promise<LicenseStatusResponse> {
@@ -1991,11 +1989,15 @@ export async function importLicenseApi(licenseKey: string, idToken: string): Pro
 }
 
 async function readLicenseResponse(response: Response, fallback: string): Promise<LicenseStatusResponse> {
+    return readJsonResponse<LicenseStatusResponse>(response, fallback);
+}
+
+async function readJsonResponse<T>(response: Response, fallback: string): Promise<T> {
     const contentType = response.headers.get("content-type") || "";
     if (!contentType.toLowerCase().includes("application/json")) {
         throw new Error(`${fallback} (HTTP ${response.status})`);
     }
-    const data = await response.json();
+    const data = await response.json() as { error?: string } & T;
     if (!response.ok) throw new Error(data.error || `${fallback} (HTTP ${response.status})`);
     return data;
 }

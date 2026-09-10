@@ -3,7 +3,7 @@ import uuid
 from functools import wraps
 from typing import Any, Callable, TypeVar, cast
 
-from quart import abort, current_app, request
+from quart import abort, current_app, jsonify, request
 
 from config import CONFIG_AUTH_CLIENT, CONFIG_SEARCH_CLIENT
 from core.authentication import AuthError
@@ -12,6 +12,27 @@ from error import error_response
 from mongo_table_connecters.data_group import get_data_group_by_id
 from mongo_table_connecters.teams import get_team_by_id
 from mongo_table_connecters.users import get_user_by_ad_email, get_user_by_id
+
+
+def _authentication_error_response(error: AuthError):
+    """Return a safe JSON response for API authentication failures."""
+    try:
+        status_code = int(error.status_code)
+    except (TypeError, ValueError):
+        status_code = 401
+    if status_code < 400 or status_code > 599:
+        status_code = 401
+
+    if status_code == 401:
+        message = "Your session has expired or is invalid. Please sign in again."
+        code = "authentication_required"
+    elif status_code == 403:
+        message = "You do not have permission to access this resource."
+        code = "access_denied"
+    else:
+        message = "Authentication could not be completed. Please try again."
+        code = "authentication_failed"
+    return jsonify({"error": message, "code": code}), status_code
 
 
 def _content_access_claims(path: str, auth_claims: dict[str, Any]) -> dict[str, Any]:
@@ -66,8 +87,8 @@ def authenticated_path(route_fn: Callable[[str, dict[str, Any]], Any]):
             if getattr(auth_helper, "require_access_control", False):
                 auth_claims = _content_access_claims(path, auth_claims)
             authorized = await auth_helper.check_path_auth(path, auth_claims, search_client)
-        except AuthError:
-            abort(403)
+        except AuthError as error:
+            return _authentication_error_response(error)
         except Exception as error:
             logging.exception("Problem checking path auth %s", error)
             return error_response(error, route="/content")
@@ -93,8 +114,8 @@ def authenticated(route_fn: _C) -> _C:
         auth_helper = current_app.config[CONFIG_AUTH_CLIENT]
         try:
             auth_claims = await auth_helper.get_auth_claims_if_enabled(request.headers)
-        except AuthError:
-            abort(403)
+        except AuthError as error:
+            return _authentication_error_response(error)
 
         return await route_fn(auth_claims, *args, **kwargs)
 
