@@ -9,6 +9,7 @@ WORD_NAMESPACE = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}
 MANUALS = {
     "NexoraAI-User-Manual.docx": 8,
     "NexoraAI-Administrator-Manual.docx": 11,
+    "NexoraAI-Azure-VM-Docker-Compose-Deployment-Guide.docx": 4,
 }
 
 

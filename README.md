@@ -279,6 +279,7 @@ You can find extensive documentation in the [docs](docs/README.md) folder:
 - [Local Knowledge vector search](docs/local-vector-search.md)
 - [Local text embeddings](docs/local-embeddings.md)
 - [Portable local runtime](docs/local-runtime.md)
+- [Azure VM + Docker Compose Deployment Guide](docs/azure-vm-docker-compose-deployment-guide.md)
 - [Local backup and restore](docs/local-backup-restore.md)
 - [Local MongoDB](docs/local-mongodb.md)
 - [Customizing the app](docs/customization.md)
