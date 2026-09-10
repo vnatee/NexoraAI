@@ -1258,12 +1258,15 @@ export async function insert_team_users(team_id: string, user_id: string[], idTo
         body: JSON.stringify({ team_id, user_id })
     });
 
-    if (!response.ok) {
-        throw new Error(`Insert user failed: ${response.statusText}`);
-    }
+    return readJsonResponse<{ success: string }>(response, "Unable to add users to team");
+}
 
-    const dataResponse: any = await response.json();
-    return await dataResponse;
+export async function get_available_team_users(teamId: string, idToken: string): Promise<User[]> {
+    const response = await fetch(`/teams/${encodeURIComponent(teamId)}/available-users`, {
+        headers: await getHeaders(idToken)
+    });
+    const data = await readJsonResponse<{ users: User[] }>(response, "Unable to load available users");
+    return data.users ?? [];
 }
 
 export async function delete_team_user(team_id: string, user_id: string, idToken: string): Promise<any> {
