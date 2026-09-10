@@ -6588,6 +6588,51 @@ async def get_users_by_team_id(auth_claims: dict[str, Any]):
         return error_response(error_txt, "/get_users_by_team_id")
 
 
+@bp.get("/teams/<team_id>/available-users")
+@authenticated
+async def get_available_team_users(auth_claims: dict[str, Any], team_id: str):
+    """List active non-admin users that may be added to the selected Team."""
+
+    try:
+        _, team = _require_team_access(
+            auth_claims, str(team_id or ""), permission="Manage team users"
+        )
+        member_ids = {str(item) for item in (team.get("user_id") or [])}
+        users = [
+            user
+            for user in get_all_user_by_is_sys_admin(False)
+            if user.get("active", True) is True
+            and str(user.get("_id") or "") not in member_ids
+        ]
+        local_identities = list_local_identities_by_user_ids(
+            [str(user.get("_id") or "") for user in users]
+        )
+        result = []
+        for user in users:
+            user_id = str(user.get("_id") or "")
+            serialized = _serialize_user_auth(user, local_identities.get(user_id))
+            result.append(
+                {
+                    field: serialized.get(field)
+                    for field in (
+                        "_id",
+                        "active",
+                        "ad_email",
+                        "email",
+                        "employee_id",
+                        "first_name",
+                        "last_name",
+                        "tel",
+                        "local_username",
+                        "auth_providers",
+                    )
+                }
+            )
+        return jsonify({"users": result}), 200
+    except Exception as error:
+        return error_response(error, "/teams/<team_id>/available-users")
+
+
 @bp.get("/get_all_users")
 @authenticated
 async def get_all_users_function(auth_claims: dict[str, Any]):
@@ -6795,7 +6840,11 @@ async def insert_team_users(auth_claims: dict[str, Any]):
                 auth_claims, str(team_id), permission="Manage team users"
             )
             user_id_list = team.get("user_id")
-            known_user_ids = {str(item.get("_id")) for item in get_all_user_by_is_sys_admin(False)}
+            known_user_ids = {
+                str(item.get("_id"))
+                for item in get_all_user_by_is_sys_admin(False)
+                if item.get("active", True) is True
+            }
             requested_user_ids = list(dict.fromkeys(str(item) for item in user_id))
             if any(item not in known_user_ids for item in requested_user_ids):
                 raise AccessControlError("One or more users do not exist", status_code=400)

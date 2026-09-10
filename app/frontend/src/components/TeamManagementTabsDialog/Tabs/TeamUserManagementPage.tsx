@@ -13,15 +13,17 @@ import {
     DialogActions,
     Button,
     Checkbox,
-    TextField
+    TextField,
+    CircularProgress
 } from "@mui/material";
 import DeleteIcon from "@mui/icons-material/Delete";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import CancelIcon from "@mui/icons-material/Cancel";
+import PersonAddAltOutlinedIcon from "@mui/icons-material/PersonAddAltOutlined";
 import { User, TeamProfile } from "../../../api/models";
 import { useMsal } from "@azure/msal-react";
-import { get_users_by_team_id, delete_team_user, approve_users, reject_users } from "../../../api/api";
+import { get_users_by_team_id, delete_team_user, approve_users, reject_users, get_available_team_users, insert_team_users } from "../../../api/api";
 import { getToken } from "../../../authConfig";
 import Skeleton from "@mui/material/Skeleton";
 import { useNotification } from "../../../utill/NotificationProvider";
@@ -56,6 +58,12 @@ export function TeamUserManagementPage({ team }: TeamUserManagementPageProps) {
     const [isApprove, setIsApprove] = useState<boolean>(false);
     const [isReject, setIsReject] = useState<boolean>(false);
     const [isRemove, setIsRemove] = useState<boolean>(false);
+    const [addOpen, setAddOpen] = useState(false);
+    const [availableUsers, setAvailableUsers] = useState<User[]>([]);
+    const [selectedAddIds, setSelectedAddIds] = useState<string[]>([]);
+    const [addSearch, setAddSearch] = useState("");
+    const [loadingAvailable, setLoadingAvailable] = useState(false);
+    const [adding, setAdding] = useState(false);
 
     /* =========================
        FILTER
@@ -79,6 +87,16 @@ export function TeamUserManagementPage({ team }: TeamUserManagementPageProps) {
         () => waiting.filter(u => `${u.first_name} ${u.last_name} ${u.email}`.toLowerCase().includes(searchWaiting.toLowerCase())),
         [waiting, searchWaiting]
     );
+
+    const filteredAvailableUsers = useMemo(() => {
+        const query = addSearch.trim().toLowerCase();
+        if (!query) return availableUsers;
+        return availableUsers.filter(user =>
+            `${user.first_name} ${user.last_name} ${user.email} ${user.ad_email} ${user.local_username || ""}`
+                .toLowerCase()
+                .includes(query)
+        );
+    }, [availableUsers, addSearch]);
 
     /* =========================
        ACTIONS
@@ -137,6 +155,41 @@ export function TeamUserManagementPage({ team }: TeamUserManagementPageProps) {
         }
     };
 
+    const openAddUsers = async () => {
+        if (!team?._id) return;
+        setAddOpen(true);
+        setSelectedAddIds([]);
+        setAddSearch("");
+        setLoadingAvailable(true);
+        try {
+            const token = await getToken(msalInstance);
+            if (!token) throw new Error("Your session has expired. Please sign in again.");
+            setAvailableUsers(await get_available_team_users(team._id, token));
+        } catch (err) {
+            setAvailableUsers([]);
+            showNotification(err instanceof Error ? err.message : "Failed to load available users", "error");
+        } finally {
+            setLoadingAvailable(false);
+        }
+    };
+
+    const addSelectedUsers = async () => {
+        if (!team?._id || selectedAddIds.length === 0) return;
+        setAdding(true);
+        try {
+            const token = await getToken(msalInstance);
+            if (!token) throw new Error("Your session has expired. Please sign in again.");
+            await insert_team_users(team._id, selectedAddIds, token);
+            setAddOpen(false);
+            await loadUsers();
+            showNotification(`${selectedAddIds.length} user(s) added to ${team.name}`, "success");
+        } catch (err) {
+            showNotification(err instanceof Error ? err.message : "Failed to add users", "error");
+        } finally {
+            setAdding(false);
+        }
+    };
+
     useEffect(() => {
         loadUsers();
     }, [team?._id]);
@@ -152,7 +205,12 @@ export function TeamUserManagementPage({ team }: TeamUserManagementPageProps) {
 
             {/* ================= USERS IN TEAM ================= */}
             <Paper variant="outlined" sx={{ p: 2 }}>
-                <Typography variant="subtitle1">Users in Team ({filteredUsers.length})</Typography>
+                <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ xs: "stretch", sm: "center" }} gap={1}>
+                    <Typography variant="subtitle1">Users in Team ({filteredUsers.length})</Typography>
+                    <Button variant="contained" size="small" startIcon={<PersonAddAltOutlinedIcon />} onClick={() => void openAddUsers()}>
+                        Add existing users
+                    </Button>
+                </Stack>
 
                 <TextField
                     size="small"
@@ -260,6 +318,54 @@ export function TeamUserManagementPage({ team }: TeamUserManagementPageProps) {
 
             {/* ================= DIALOGS ================= */}
             <UserDetailDialog user={selectedUser} onClose={() => setSelectedUser(null)} />
+
+            <Dialog open={addOpen} onClose={() => !adding && setAddOpen(false)} fullWidth maxWidth="sm">
+                <DialogTitle>Add users to {team?.name}</DialogTitle>
+                <DialogContent dividers>
+                    <Stack spacing={2}>
+                        <TextField
+                            autoFocus
+                            size="small"
+                            label="Search users"
+                            value={addSearch}
+                            onChange={event => setAddSearch(event.target.value)}
+                            placeholder="Name, email, or local username"
+                        />
+                        {loadingAvailable ? (
+                            <Box textAlign="center" py={4}><CircularProgress size={28} /></Box>
+                        ) : filteredAvailableUsers.length === 0 ? (
+                            <Typography color="text.secondary">No active users are available to add.</Typography>
+                        ) : (
+                            <Stack spacing={0.5} sx={{ maxHeight: 360, overflowY: "auto" }}>
+                                {filteredAvailableUsers.map(user => {
+                                    const checked = selectedAddIds.includes(user._id);
+                                    const provider = user.auth_providers?.includes("local") ? `Local · ${user.local_username || user.ad_email}` : "Microsoft Entra";
+                                    return (
+                                        <Paper
+                                            key={user._id}
+                                            variant="outlined"
+                                            sx={{ p: 1, display: "flex", alignItems: "center", cursor: "pointer" }}
+                                            onClick={() => setSelectedAddIds(current => checked ? current.filter(id => id !== user._id) : [...current, user._id])}
+                                        >
+                                            <Checkbox checked={checked} tabIndex={-1} />
+                                            <Box minWidth={0}>
+                                                <Typography fontWeight={600}>{user.first_name} {user.last_name}</Typography>
+                                                <Typography variant="body2" color="text.secondary" noWrap>{user.email} · {provider}</Typography>
+                                            </Box>
+                                        </Paper>
+                                    );
+                                })}
+                            </Stack>
+                        )}
+                    </Stack>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setAddOpen(false)} disabled={adding}>Cancel</Button>
+                    <Button variant="contained" onClick={() => void addSelectedUsers()} disabled={adding || selectedAddIds.length === 0}>
+                        {adding ? "Adding..." : `Add selected (${selectedAddIds.length})`}
+                    </Button>
+                </DialogActions>
+            </Dialog>
 
             <ConfirmRemoveDialog
                 user={confirmRemove}
