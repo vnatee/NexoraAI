@@ -198,7 +198,14 @@ def configure_document(document: Document, title: str) -> None:
         run.font.color.rgb = RGBColor.from_string(GRAY)
 
 
-def add_cover(document: Document, title: str, audience: str) -> None:
+def add_cover(
+    document: Document,
+    title: str,
+    audience: str,
+    *,
+    document_type: str = "Product Manual",
+    last_verified: str = "8 September 2026",
+) -> None:
     if LOGO.is_file():
         paragraph = document.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -208,7 +215,7 @@ def add_cover(document: Document, title: str, audience: str) -> None:
     paragraph.add_run(title)
     subtitle = document.add_paragraph()
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = subtitle.add_run("Product Manual")
+    run = subtitle.add_run(document_type)
     run.bold = True
     run.font.size = Pt(16)
     run.font.color.rgb = RGBColor.from_string(BLUE)
@@ -216,7 +223,7 @@ def add_cover(document: Document, title: str, audience: str) -> None:
     for label, value in (
         ("Audience", audience),
         ("Language", "English"),
-        ("Last verified", "8 September 2026"),
+        ("Last verified", last_verified),
         ("Document status", "Controlled working manual — update in place"),
     ):
         paragraph = document.add_paragraph()
@@ -394,7 +401,17 @@ def render_markdown(document: Document, source: Path, placeholders: dict[str, tu
         add_inline(paragraph, " ".join(paragraph_lines))
 
 
-def build(source: Path, output: Path, audience: str, placeholders: dict[str, tuple[str, str]]) -> None:
+def build(
+    source: Path,
+    output: Path,
+    audience: str,
+    placeholders: dict[str, tuple[str, str]],
+    *,
+    document_type: str = "Product Manual",
+    last_verified: str = "8 September 2026",
+    subject: str = "NexoraAI product usage and administration",
+    keywords: str = "NexoraAI, manual, user guide, administrator guide",
+) -> None:
     source_text = source.read_text(encoding="utf-8")
     missing_headings = [heading for heading in placeholders if f"## {heading}" not in source_text]
     if missing_headings:
@@ -402,13 +419,19 @@ def build(source: Path, output: Path, audience: str, placeholders: dict[str, tup
     title = source_text.splitlines()[0].removeprefix("# ").strip()
     document = Document()
     configure_document(document, title)
-    add_cover(document, title, audience)
+    add_cover(
+        document,
+        title,
+        audience,
+        document_type=document_type,
+        last_verified=last_verified,
+    )
     render_markdown(document, source, placeholders)
     properties = document.core_properties
     properties.title = title
-    properties.subject = "NexoraAI product usage and administration"
+    properties.subject = subject
     properties.author = "NexoraAI"
-    properties.keywords = "NexoraAI, manual, user guide, administrator guide"
+    properties.keywords = keywords
     document.save(output)
 
 
