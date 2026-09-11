@@ -1487,12 +1487,7 @@ export async function create_edit_user_permissions(
         body: JSON.stringify({ user_id, team_id, permission_id, is_sys_admin })
     });
 
-    if (!response.ok) {
-        throw new Error(`get user permission failed: ${response.statusText}`);
-    }
-
-    const dataResponse: any = await response.json();
-    return await dataResponse.user_permissions;
+    return readJsonResponse<{ Success: string }>(response, "Unable to save permissions");
 }
 
 export async function get_users_by_team_id(team_id: string, idToken: string): Promise<any> {

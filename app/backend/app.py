@@ -7258,18 +7258,25 @@ async def create_edit_user_permissions(auth_claims: dict[str, Any]):
                 update_user_permission(
                     user_per[0]["_id"], team_id, user_id, permissions_id)
         else:
-            _, target_user = _require_user_management_target(
+            actor, target_user = _require_user_management_target(
                 auth_claims, str(user_id or "")
             )
-            if target_user.get("is_sys_admin") is True and not bool(is_sys_admin):
+            current_is_sys_admin = target_user.get("is_sys_admin") is True
+            requested_is_sys_admin = bool(is_sys_admin)
+            if current_is_sys_admin != requested_is_sys_admin and actor.get("is_sys_admin") is not True:
+                raise AccessControlError(
+                    "Only a system administrator can change the System Admin role"
+                )
+            if current_is_sys_admin and not requested_is_sys_admin:
                 _require_user_management_target(
                     auth_claims, str(user_id or ""), destructive=True
                 )
-            permissions_id = _validate_permission_ids(
-                permissions_id, permission_type="system"
-            )
-            update_user(user_id=user_id, is_sys_admin=bool(is_sys_admin))
-            if not is_sys_admin:
+            if not requested_is_sys_admin:
+                permissions_id = _validate_permission_ids(
+                    permissions_id, permission_type="system"
+                )
+            update_user(user_id=user_id, is_sys_admin=requested_is_sys_admin)
+            if not requested_is_sys_admin:
                 user_per = get_user_permission_by_user_team_id(user_id, "")
                 if user_per == []:
                     insert_user_permission("", user_id, permissions_id)

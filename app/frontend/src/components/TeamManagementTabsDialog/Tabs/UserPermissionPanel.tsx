@@ -131,10 +131,17 @@ export function UserPermissionPanel() {
             if (mode === "TEAM") {
                 await create_edit_user_permissions(selectedUser._id, selectedTeamId, teamPermissions, false, token);
             }
+            if (mode !== "TEAM") {
+                const nextIsSystemAdmin = mode === "ADMIN";
+                setSelectedUser(current => current ? { ...current, is_sys_admin: nextIsSystemAdmin } : current);
+                setUsers(current => current.map(user =>
+                    user._id === selectedUser._id ? { ...user, is_sys_admin: nextIsSystemAdmin } : user
+                ));
+            }
             showNotification("Permissions saved successfully", "success");
             setEditing(false);
         } catch (err) {
-            showNotification("Failed to save permissions", "error");
+            showNotification(err instanceof Error ? err.message : "Failed to save permissions", "error");
         } finally {
             setSaving(false);
         }
@@ -255,7 +262,7 @@ export function UserPermissionPanel() {
 
                             {/* SYSTEM ADMIN */}
                             <FormControlLabel
-                                control={<Checkbox checked={isSystemAdmin} disabled={!editing || selectedUser._id === signedInUser?._id} onChange={e => setIsSystemAdmin(e.target.checked)} />}
+                                control={<Checkbox checked={isSystemAdmin} disabled={!editing || selectedUser._id === signedInUser?._id || signedInUser?.is_sys_admin !== true} onChange={e => setIsSystemAdmin(e.target.checked)} />}
                                 label="System Admin"
                             />
 
