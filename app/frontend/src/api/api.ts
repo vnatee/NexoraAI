@@ -16,6 +16,9 @@ import {
     AgentConfig,
     LLMProviderPayload,
     ManagedLLMProvider,
+    EmbeddingProfilePayload,
+    EmbeddingProfileSettings,
+    ManagedEmbeddingProfile,
     ManagedMCPServer,
     MCPServerPayload,
     IntegrationConnectionSummary,
@@ -212,9 +215,64 @@ export async function configApi(): Promise<Config> {
 async function parseProviderAdminResponse(response: Response): Promise<any> {
     const data = await response.json();
     if (!response.ok) {
-        throw new Error(data.error || `LLM provider request failed (${response.status})`);
+        throw new Error(data.error || `Provider request failed (${response.status})`);
     }
     return data;
+}
+
+export async function listEmbeddingProfilesApi(idToken: string): Promise<{ profiles: ManagedEmbeddingProfile[]; settings: EmbeddingProfileSettings }> {
+    const response = await fetch("/admin/embedding-profiles", { headers: await getHeaders(idToken) });
+    return parseProviderAdminResponse(response);
+}
+
+export async function createEmbeddingProfileApi(payload: EmbeddingProfilePayload, idToken: string): Promise<ManagedEmbeddingProfile> {
+    const response = await fetch("/admin/embedding-profiles", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function updateEmbeddingProfileApi(profileId: string, payload: EmbeddingProfilePayload, idToken: string): Promise<ManagedEmbeddingProfile> {
+    const response = await fetch(`/admin/embedding-profiles/${profileId}`, {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function deleteEmbeddingProfileApi(profileId: string, idToken: string): Promise<void> {
+    const response = await fetch(`/admin/embedding-profiles/${profileId}`, {
+        method: "DELETE",
+        headers: await getHeaders(idToken)
+    });
+    await parseProviderAdminResponse(response);
+}
+
+export async function activateEmbeddingProfileApi(profileId: string, idToken: string): Promise<{ settings: EmbeddingProfileSettings }> {
+    const response = await fetch(`/admin/embedding-profiles/${profileId}/activate`, {
+        method: "POST",
+        headers: await getHeaders(idToken)
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function testEmbeddingProfileApi(profileId: string, idToken: string): Promise<{ success: boolean; model: string; dimensions: number }> {
+    const response = await fetch(`/admin/embedding-profiles/${profileId}/test`, {
+        method: "POST",
+        headers: await getHeaders(idToken)
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function completeEmbeddingReindexApi(profileId: string, idToken: string): Promise<{ settings: EmbeddingProfileSettings }> {
+    const response = await fetch(`/admin/embedding-profiles/${profileId}/reindex-complete`, {
+        method: "POST",
+        headers: await getHeaders(idToken)
+    });
+    return parseProviderAdminResponse(response);
 }
 
 export async function listLLMProvidersApi(idToken: string): Promise<ManagedLLMProvider[]> {

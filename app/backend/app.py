@@ -92,6 +92,18 @@ from mongo_table_connecters.llm_providers import (
     soft_delete_llm_provider,
     update_llm_provider,
 )
+from mongo_table_connecters.embedding_profiles import (
+    ENVIRONMENT_PROFILE_ID,
+    activate_embedding_profile,
+    get_embedding_profile,
+    get_embedding_settings,
+    insert_embedding_profile,
+    list_embedding_profiles,
+    mark_embedding_runtime_started,
+    mark_embedding_reindex_complete,
+    soft_delete_embedding_profile,
+    update_embedding_profile,
+)
 from mongo_table_connecters.mcp_servers import (
     azure_mcp_runtime_config,
     decrypt_mcp_entra_client_secret,
@@ -331,6 +343,7 @@ from core.effective_access import AccessControlError, EffectiveAccess, resolve_e
 from chat_history.cosmosdb import chat_history_cosmosdb_bp
 from config import (
     CONFIG_AGENT_CLIENT,
+    CONFIG_ACTIVE_EMBEDDING_PROFILE_ID,
     CONFIG_AGENTIC_RETRIEVAL_ENABLED,
     CONFIG_ASK_APPROACH,
     CONFIG_ASK_VISION_APPROACH,
@@ -400,7 +413,7 @@ from core.integration_controller import (
 )
 from core.system_health import build_system_health_snapshot
 from core.mcp_auth import EntraClientCredentials
-from core.runtime_settings import LLMProviderSettings, ModelProvider, RuntimeSettings, parse_model_provider
+from core.runtime_settings import EmbeddingProviderSettings, LLMProviderSettings, ModelProvider, RuntimeSettings, parse_model_provider
 from agent_runtime.policy import normalize_tool_policy
 from core.guardrails import (
     GuardrailPolicy,
@@ -1160,6 +1173,172 @@ def _serialize_llm_provider(document: dict[str, Any]) -> dict[str, Any]:
         "create_at": document.get("create_at").isoformat() if document.get("create_at") else None,
         "update_at": document.get("update_at").isoformat() if document.get("update_at") else None,
     }
+
+
+def _normalize_embedding_profile_payload(
+    body: dict[str, Any], existing: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    name = str(body.get("name") or "").strip()
+    provider = parse_model_provider(str(body.get("provider") or ""))
+    model = str(body.get("model") or "").strip()
+    deployment = str(body.get("deployment") or "").strip() or None
+    endpoint = str(body.get("endpoint") or "").strip().rstrip("/") or None
+    base_url = str(body.get("base_url") or "").strip().rstrip("/") or None
+    collection_name = str(body.get("collection_name") or "").strip()
+    try:
+        dimensions = int(body.get("dimensions"))
+    except (TypeError, ValueError) as error:
+        raise ValueError("Embedding dimensions must be an integer") from error
+
+    if not name:
+        raise ValueError("Profile name is required")
+    if not model:
+        raise ValueError("Embedding model is required")
+    if dimensions <= 0 or dimensions > 65536:
+        raise ValueError("Embedding dimensions must be between 1 and 65536")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", collection_name):
+        raise ValueError("Qdrant collection must use 1-128 letters, numbers, dots, underscores, or hyphens")
+    if provider == ModelProvider.AZURE_OPENAI:
+        parsed_endpoint = urlparse(endpoint or "")
+        if not endpoint or parsed_endpoint.scheme not in {"http", "https"} or not parsed_endpoint.netloc:
+            raise ValueError("Azure OpenAI embedding profile requires an HTTP(S) endpoint")
+        if parsed_endpoint.username or parsed_endpoint.password or parsed_endpoint.query or parsed_endpoint.fragment:
+            raise ValueError("Embedding endpoint must not contain credentials, query parameters, or fragments")
+        if not deployment:
+            raise ValueError("Azure OpenAI embedding profile requires a deployment")
+    if provider == ModelProvider.OPENAI_COMPATIBLE:
+        parsed_base_url = urlparse(base_url or "")
+        if not base_url or parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.netloc:
+            raise ValueError("OpenAI-compatible embedding profile requires an HTTP(S) base URL")
+        if parsed_base_url.username or parsed_base_url.password or parsed_base_url.query or parsed_base_url.fragment:
+            raise ValueError("Embedding base URL must not contain credentials, query parameters, or fragments")
+
+    api_key_ciphertext = existing.get("api_key_ciphertext") if existing else None
+    if body.get("clear_api_key"):
+        api_key_ciphertext = None
+    elif str(body.get("api_key") or "").strip():
+        api_key_ciphertext = encrypt_provider_secret(str(body["api_key"]).strip())
+    enabled = bool(body.get("enabled", True))
+    if provider == ModelProvider.OPENAI and enabled and not api_key_ciphertext:
+        raise ValueError("OpenAI embedding profile requires an API key")
+
+    return {
+        "name": name,
+        "provider": provider.value,
+        "model": model,
+        "deployment": deployment if provider == ModelProvider.AZURE_OPENAI else None,
+        "dimensions": dimensions,
+        "collection_name": collection_name,
+        "endpoint": endpoint if provider == ModelProvider.AZURE_OPENAI else None,
+        "base_url": base_url if provider == ModelProvider.OPENAI_COMPATIBLE else None,
+        "api_version": (
+            str(body.get("api_version") or "").strip() or "2024-10-21"
+            if provider == ModelProvider.AZURE_OPENAI
+            else None
+        ),
+        "organization": str(body.get("organization") or "").strip() or None,
+        "enabled": enabled,
+        "api_key_ciphertext": api_key_ciphertext,
+    }
+
+
+def _serialize_embedding_profile(document: dict[str, Any], *, environment: bool = False) -> dict[str, Any]:
+    def public_url(value: object) -> str | None:
+        parsed = urlparse(str(value or ""))
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        host = parsed.hostname
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        return f"{parsed.scheme}://{host}{parsed.path}".rstrip("/")
+
+    return {
+        "_id": str(document["_id"]),
+        "name": str(document["name"]),
+        "provider": str(document["provider"]),
+        "model": str(document["model"]),
+        "deployment": document.get("deployment"),
+        "dimensions": int(document["dimensions"]),
+        "collection_name": str(document["collection_name"]),
+        "endpoint": public_url(document.get("endpoint")),
+        "base_url": public_url(document.get("base_url")),
+        "api_version": document.get("api_version"),
+        "organization": document.get("organization"),
+        "enabled": bool(document.get("enabled", True)),
+        "has_api_key": bool(document.get("api_key_ciphertext")) or bool(document.get("has_api_key")),
+        "environment": environment,
+        "created_at": document.get("created_at").isoformat() if document.get("created_at") else None,
+        "updated_at": document.get("updated_at").isoformat() if document.get("updated_at") else None,
+    }
+
+
+def _environment_embedding_profile() -> dict[str, Any]:
+    settings = RuntimeSettings.from_env(os.environ).embedding
+    return {
+        "_id": ENVIRONMENT_PROFILE_ID,
+        "name": "Environment default",
+        "provider": settings.provider.value,
+        "model": settings.model,
+        "deployment": settings.deployment,
+        "dimensions": settings.dimensions,
+        "collection_name": os.getenv("QDRANT_COLLECTION", os.getenv("AZURE_SEARCH_INDEX", "gptkbindex")),
+        "endpoint": settings.endpoint,
+        "base_url": settings.base_url,
+        "api_version": settings.api_version,
+        "organization": settings.organization,
+        "enabled": True,
+        "has_api_key": bool(settings.api_key),
+    }
+
+
+def _settings_for_embedding_profile(profile: dict[str, Any]) -> EmbeddingProviderSettings:
+    return EmbeddingProviderSettings(
+        provider=parse_model_provider(str(profile["provider"])),
+        model=str(profile["model"]),
+        deployment=profile.get("deployment"),
+        dimensions=int(profile["dimensions"]),
+        api_version=str(profile.get("api_version") or "2024-10-21"),
+        endpoint=profile.get("endpoint"),
+        base_url=profile.get("base_url"),
+        api_key=decrypt_provider_secret(profile.get("api_key_ciphertext")),
+        organization=profile.get("organization"),
+    )
+
+
+def _serialize_embedding_settings() -> dict[str, Any]:
+    value = get_embedding_settings()
+    return {
+        **value,
+        "activated_at": value["activated_at"].isoformat() if value.get("activated_at") else None,
+        "runtime_started_at": value["runtime_started_at"].isoformat() if value.get("runtime_started_at") else None,
+    }
+
+
+async def _probe_embedding_profile(profile_id: str) -> tuple[EmbeddingProviderSettings, int]:
+    profile = _environment_embedding_profile() if profile_id == ENVIRONMENT_PROFILE_ID else get_embedding_profile(profile_id)
+    if not profile:
+        raise ValueError("Embedding profile not found")
+    settings = (
+        RuntimeSettings.from_env(os.environ).embedding
+        if profile_id == ENVIRONMENT_PROFILE_ID
+        else _settings_for_embedding_profile(profile)
+    )
+    service = create_embedding_service(settings, current_app.config[CONFIG_CREDENTIAL])
+    vectors = await service.create_embeddings(["NexoraAI embedding connection test"]) if service else []
+    actual_dimensions = len(vectors[0]) if vectors else 0
+    if actual_dimensions != settings.dimensions:
+        raise ValueError(
+            f"Provider returned {actual_dimensions} dimensions; profile expects {settings.dimensions}"
+        )
+    qdrant = QdrantKnowledgeSearchClient(
+        endpoint=os.getenv("QDRANT_URL", "http://127.0.0.1:6333"),
+        collection_name=str(profile["collection_name"]),
+        vector_size=settings.dimensions,
+        vector_field=os.getenv("AZURE_SEARCH_FIELD_NAME_EMBEDDING", "embedding"),
+        api_key=os.getenv("QDRANT_API_KEY") or None,
+    )
+    await qdrant.ensure_ready()
+    return settings, actual_dimensions
 
 
 def _settings_for_managed_model(provider: dict[str, Any], model: dict[str, Any]) -> LLMProviderSettings:
@@ -3268,6 +3447,131 @@ async def admin_list_llm_providers(auth_claims: dict[str, Any]):
     return jsonify({"providers": [_serialize_llm_provider(item) for item in list_llm_providers()]})
 
 
+@bp.get("/admin/embedding-profiles")
+@authenticated
+async def admin_list_embedding_profiles(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    environment = _serialize_embedding_profile(_environment_embedding_profile(), environment=True)
+    managed = [_serialize_embedding_profile(item) for item in list_embedding_profiles()]
+    return jsonify({"profiles": [environment, *managed], "settings": _serialize_embedding_settings()})
+
+
+def _embedding_collection_in_use(collection_name: str, *, exclude_id: str = "") -> bool:
+    environment = _environment_embedding_profile()
+    if exclude_id != ENVIRONMENT_PROFILE_ID and environment["collection_name"] == collection_name:
+        return True
+    return any(
+        str(item.get("_id")) != exclude_id
+        and str(item.get("collection_name") or "") == collection_name
+        for item in list_embedding_profiles()
+    )
+
+
+@bp.post("/admin/embedding-profiles")
+@authenticated
+async def admin_create_embedding_profile(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        normalized = _normalize_embedding_profile_payload(await request.get_json() or {})
+        if _embedding_collection_in_use(normalized["collection_name"]):
+            return jsonify({"error": "Qdrant collection is already assigned to another embedding profile"}), 409
+        profile = insert_embedding_profile(normalized)
+        return jsonify(_serialize_embedding_profile(profile)), 201
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.put("/admin/embedding-profiles/<profile_id>")
+@authenticated
+async def admin_update_embedding_profile(auth_claims: dict[str, Any], profile_id: str):
+    _require_system_admin(auth_claims)
+    existing = get_embedding_profile(profile_id)
+    if not existing:
+        return jsonify({"error": "Embedding profile not found"}), 404
+    state = get_embedding_settings()
+    if profile_id in {state["active_profile_id"], state["runtime_profile_id"]}:
+        return jsonify({"error": "Activate another profile before editing the active or running profile"}), 409
+    try:
+        normalized = _normalize_embedding_profile_payload(await request.get_json() or {}, existing)
+        if _embedding_collection_in_use(normalized["collection_name"], exclude_id=profile_id):
+            return jsonify({"error": "Qdrant collection is already assigned to another embedding profile"}), 409
+        profile = update_embedding_profile(profile_id, normalized)
+        return jsonify(_serialize_embedding_profile(profile or existing))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.delete("/admin/embedding-profiles/<profile_id>")
+@authenticated
+async def admin_delete_embedding_profile(auth_claims: dict[str, Any], profile_id: str):
+    _require_system_admin(auth_claims)
+    existing = get_embedding_profile(profile_id)
+    if not existing:
+        return jsonify({"error": "Embedding profile not found"}), 404
+    state = get_embedding_settings()
+    if profile_id in {state["active_profile_id"], state["runtime_profile_id"]}:
+        return jsonify({"error": "Activate another profile before deleting the active or running profile"}), 409
+    soft_delete_embedding_profile(profile_id)
+    return jsonify({"success": True})
+
+
+@bp.post("/admin/embedding-profiles/<profile_id>/activate")
+@authenticated
+async def admin_activate_embedding_profile(auth_claims: dict[str, Any], profile_id: str):
+    _require_system_admin(auth_claims)
+    if os.getenv("KNOWLEDGE_SEARCH_PROVIDER", "azure").strip().lower() != "qdrant":
+        return jsonify({"error": "Managed embedding profile activation currently requires Qdrant"}), 409
+    if profile_id != ENVIRONMENT_PROFILE_ID:
+        profile = get_embedding_profile(profile_id)
+        if not profile:
+            return jsonify({"error": "Embedding profile not found"}), 404
+        if not profile.get("enabled", True):
+            return jsonify({"error": "Enable the embedding profile before activation"}), 409
+    try:
+        await _probe_embedding_profile(profile_id)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        current_app.logger.warning("Embedding profile activation probe failed: %s", type(error).__name__)
+        return jsonify({"error": "Embedding connection or Qdrant validation failed"}), 400
+    state = activate_embedding_profile(profile_id)
+    return jsonify({"settings": {
+        **state,
+        "activated_at": state["activated_at"].isoformat() if state.get("activated_at") else None,
+        "runtime_started_at": state["runtime_started_at"].isoformat() if state.get("runtime_started_at") else None,
+    }})
+
+
+@bp.post("/admin/embedding-profiles/<profile_id>/test")
+@authenticated
+async def admin_test_embedding_profile(auth_claims: dict[str, Any], profile_id: str):
+    _require_system_admin(auth_claims)
+    try:
+        settings, actual_dimensions = await _probe_embedding_profile(profile_id)
+        return jsonify({"success": True, "model": settings.model, "dimensions": actual_dimensions})
+    except ValueError as error:
+        status = 404 if str(error) == "Embedding profile not found" else 400
+        return jsonify({"error": str(error)}), status
+    except Exception as error:
+        current_app.logger.warning("Embedding profile connection test failed: %s", type(error).__name__)
+        return jsonify({"error": "Embedding connection test failed"}), 400
+
+
+@bp.post("/admin/embedding-profiles/<profile_id>/reindex-complete")
+@authenticated
+async def admin_complete_embedding_reindex(auth_claims: dict[str, Any], profile_id: str):
+    _require_system_admin(auth_claims)
+    try:
+        state = mark_embedding_reindex_complete(profile_id)
+        return jsonify({"settings": {
+            **state,
+            "activated_at": state["activated_at"].isoformat() if state.get("activated_at") else None,
+            "runtime_started_at": state["runtime_started_at"].isoformat() if state.get("runtime_started_at") else None,
+        }})
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 409
+
+
 @bp.post("/admin/llm-providers")
 @authenticated
 async def admin_create_llm_provider(auth_claims: dict[str, Any]):
@@ -3979,6 +4283,9 @@ async def config():
             ),
             "llmProvider": runtime_settings.llm.provider.value,
             "embeddingProvider": runtime_settings.embedding.provider.value,
+            "embeddingProfileId": current_app.config.get(CONFIG_ACTIVE_EMBEDDING_PROFILE_ID, ENVIRONMENT_PROFILE_ID),
+            "embeddingModel": runtime_settings.embedding.model,
+            "embeddingDimensions": runtime_settings.embedding.dimensions,
             "llmProfiles": [profile.public_dict() for profile in llm_profiles.values()],
             "showGPT4VOptions": current_app.config[CONFIG_GPT4V_DEPLOYED],
             "showSemanticRankerOption": current_app.config[CONFIG_SEMANTIC_RANKER_DEPLOYED],
@@ -7876,6 +8183,27 @@ async def setup_clients():
     # Model provider settings support both the legacy OPENAI_* variables and
     # the new provider-specific LLM_*/EMBEDDING_* variables.
     runtime_settings = RuntimeSettings.from_env(os.environ)
+    active_embedding_profile_id = ENVIRONMENT_PROFILE_ID
+    if os.getenv("SKIP_MANAGED_EMBEDDING_PROFILE_LOAD", "").lower() != "true":
+        try:
+            embedding_state = get_embedding_settings()
+            selected_profile_id = embedding_state["active_profile_id"]
+            if selected_profile_id != ENVIRONMENT_PROFILE_ID:
+                selected_profile = get_embedding_profile(selected_profile_id)
+                if not selected_profile or not selected_profile.get("enabled", True):
+                    raise ValueError("The active managed embedding profile is unavailable or disabled")
+                if KNOWLEDGE_SEARCH_PROVIDER != "qdrant":
+                    raise ValueError("Managed embedding profiles currently require Qdrant")
+                runtime_settings = dataclasses.replace(
+                    runtime_settings,
+                    embedding=_settings_for_embedding_profile(selected_profile),
+                )
+                QDRANT_COLLECTION = str(selected_profile["collection_name"])
+                active_embedding_profile_id = selected_profile_id
+        except Exception:
+            current_app.logger.exception(
+                "Unable to load the active managed embedding profile; using environment configuration"
+            )
     OPENAI_CHATGPT_MODEL = runtime_settings.llm.model
     AZURE_OPENAI_SEARCHAGENT_MODEL = os.getenv(
         "AZURE_OPENAI_SEARCHAGENT_MODEL")
@@ -8181,6 +8509,12 @@ async def setup_clients():
         disable_vectors=os.getenv("USE_VECTORS", "").lower() == "false",
         disable_batch=os.getenv("OPENAI_EMB_DISABLE_BATCH", "").lower() == "true",
     )
+    current_app.config[CONFIG_ACTIVE_EMBEDDING_PROFILE_ID] = active_embedding_profile_id
+    if os.getenv("SKIP_MANAGED_EMBEDDING_PROFILE_LOAD", "").lower() != "true":
+        try:
+            mark_embedding_runtime_started(active_embedding_profile_id)
+        except Exception:
+            current_app.logger.exception("Unable to record the active embedding runtime profile")
 
     if USE_USER_UPLOAD:
         current_app.logger.info(

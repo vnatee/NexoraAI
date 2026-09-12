@@ -44,6 +44,7 @@ import { useNotification } from "../../utill/NotificationProvider";
 import { TeamManagement } from "../TeamManagement/TeamManagement";
 import { IntegrationManagementPage } from "./Tabs/IntegrationManagementPage";
 import { LLMProviderManagement } from "../LLMProviderManagement";
+import { EmbeddingProfileManagement } from "../EmbeddingProfileManagement/EmbeddingProfileManagement";
 import { AgentAuditManagement } from "../AgentAuditManagement";
 import { GuardrailPolicyPage } from "./Tabs/GuardrailPolicyPage";
 import { UsageQuotaPolicyPage } from "./Tabs/UsageQuotaPolicyPage";
@@ -233,6 +234,14 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             group: "system",
             systemAdminOnly: true,
             element: <LLMProviderManagement />
+        },
+        {
+            id: "embedding-profiles",
+            label: "Embedding profiles",
+            permission: [],
+            group: "system",
+            systemAdminOnly: true,
+            element: <EmbeddingProfileManagement />
         },
         {
             id: "agent-audit",

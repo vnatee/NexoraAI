@@ -137,6 +137,8 @@ and retrieval with Qdrant, see
 [docs/local-vector-search.md](docs/local-vector-search.md).
 For local Thai/English text embeddings with Ollama and BGE-M3, see
 [docs/local-embeddings.md](docs/local-embeddings.md).
+For managed system-wide embedding profiles and the safe activation/re-index
+workflow, see [docs/embedding-profiles.md](docs/embedding-profiles.md).
 For the complete single-host runtime (application, MongoDB, MinIO, Qdrant, and
 Ollama) suitable for a workstation or Azure VM, see
 [docs/local-runtime.md](docs/local-runtime.md).
