@@ -153,6 +153,9 @@ export type Config = {
     agentRuntimeMode?: "legacy" | "langgraph" | "per_agent";
     llmProvider?: string;
     embeddingProvider?: string;
+    embeddingProfileId?: string;
+    embeddingModel?: string;
+    embeddingDimensions?: number;
     llmProfiles: LLMProfile[];
     defaultReasoningEffort: string;
     showGPT4VOptions: boolean;
@@ -238,6 +241,41 @@ export type ManagedLLMProvider = {
 export type LLMProviderPayload = Omit<ManagedLLMProvider, "_id" | "vendor_label" | "has_api_key" | "create_at" | "update_at"> & {
     api_key?: string;
     clear_api_key?: boolean;
+};
+
+export type EmbeddingProviderAdapter = "azure_openai" | "openai" | "openai_compatible";
+
+export type ManagedEmbeddingProfile = {
+    _id: string;
+    name: string;
+    provider: EmbeddingProviderAdapter;
+    model: string;
+    deployment?: string | null;
+    dimensions: number;
+    collection_name: string;
+    endpoint?: string | null;
+    base_url?: string | null;
+    api_version?: string | null;
+    organization?: string | null;
+    enabled: boolean;
+    has_api_key: boolean;
+    environment: boolean;
+    created_at?: string | null;
+    updated_at?: string | null;
+};
+
+export type EmbeddingProfilePayload = Omit<ManagedEmbeddingProfile, "_id" | "has_api_key" | "environment" | "created_at" | "updated_at"> & {
+    api_key?: string;
+    clear_api_key?: boolean;
+};
+
+export type EmbeddingProfileSettings = {
+    active_profile_id: string;
+    runtime_profile_id: string;
+    restart_required: boolean;
+    reindex_required: boolean;
+    activated_at?: string | null;
+    runtime_started_at?: string | null;
 };
 
 export interface ManagedMCPServer {

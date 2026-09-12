@@ -106,6 +106,25 @@ Decisions already made with the product owner:
 
 See `docs/model_provider_configuration.md`.
 
+### Embedding profiles — current working tree
+
+- System administrators can save multiple Azure OpenAI, OpenAI, or
+  OpenAI-compatible embedding profiles in **Administration → Embedding
+  profiles**. Provider secrets use the existing Fernet helper and are never
+  returned to the browser.
+- Phase 1 deliberately permits one active embedding profile system-wide. The
+  environment profile remains a read-only fallback. Managed profiles define a
+  unique Qdrant collection, model, and dimensions.
+- Activation is restart-safe rather than a hot swap: the Portal distinguishes
+  the selected profile from the running profile and retains a `Full re-index
+  required` warning until the administrator confirms that all Knowledge was
+  re-indexed. Profile deletion never deletes Qdrant data.
+- Per-Data Group embedding is deferred because a source can belong to multiple
+  groups and a request can search multiple scopes; correct support requires
+  duplicate indexing and cross-vector-space rank fusion.
+
+See `docs/embedding-profiles.md`.
+
 ### LangGraph Agent Runtime
 
 - Opt-in/per-Agent LangGraph runtime with the Legacy runtime retained for
