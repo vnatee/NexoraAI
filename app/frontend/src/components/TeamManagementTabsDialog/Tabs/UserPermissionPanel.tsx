@@ -163,12 +163,14 @@ export function UserPermissionPanel() {
         <Stack spacing={2}>
             <Typography variant="h6">User Permission</Typography>
 
-            <Stack direction="row" spacing={2}>
+            <Stack direction={{ xs: "column", lg: "row" }} spacing={2}>
                 {/* USER LIST */}
                 <Paper
                     sx={{
                         p: 2,
-                        width: selectedUser ? 280 : "100%",
+                        width: selectedUser ? { xs: "100%", lg: 280 } : "100%",
+                        minWidth: 0,
+                        boxSizing: "border-box",
                         transition: "width 0.2s ease"
                     }}
                 >
@@ -192,12 +194,16 @@ export function UserPermissionPanel() {
                                             borderColor: selectedUser?._id === u._id ? "primary.main" : "divider",
                                             cursor: "pointer",
                                             display: "flex",
-                                            justifyContent: "space-between"
+                                            flexDirection: selectedUser ? "column" : { xs: "column", md: "row" },
+                                            alignItems: selectedUser ? "flex-start" : { xs: "flex-start", md: "center" },
+                                            justifyContent: "space-between",
+                                            gap: 1,
+                                            minWidth: 0
                                         }}
                                     >
-                                        <Box>
-                                            <Typography fontWeight={500}>{getFullName(u) || u.email || u.ad_email}</Typography>
-                                            <Typography variant="body2" color="text.secondary">
+                                        <Box sx={{ minWidth: 0 }}>
+                                            <Typography fontWeight={500} sx={{ overflowWrap: "anywhere" }}>{getFullName(u) || u.email || u.ad_email}</Typography>
+                                            <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
                                                 {u.employee_id || u.email || u.ad_email}
                                             </Typography>
                                         </Box>
@@ -224,6 +230,7 @@ export function UserPermissionPanel() {
                     <Paper
                         sx={{
                             flex: 1,
+                            minWidth: 0,
                             p: 2,
                             opacity: saving ? 0.6 : 1,
                             pointerEvents: saving ? "none" : "auto",
@@ -235,15 +242,16 @@ export function UserPermissionPanel() {
                             <Box
                                 sx={{
                                     display: "grid",
-                                    gridTemplateColumns: "auto 1fr auto",
-                                    alignItems: "center"
+                                    gridTemplateColumns: { xs: "1fr", sm: "auto minmax(0, 1fr) auto" },
+                                    alignItems: "center",
+                                    gap: 1
                                 }}
                             >
                                 <Button onClick={() => setSelectedUser(null)} size="small">
                                     ← Back
                                 </Button>
 
-                                <Typography variant="h6" sx={{ textAlign: "center", fontWeight: 600 }}>
+                                <Typography variant="h6" sx={{ textAlign: { xs: "left", sm: "center" }, fontWeight: 600, overflowWrap: "anywhere" }}>
                                     {getFullName(selectedUser)}
                                 </Typography>
 
@@ -298,7 +306,7 @@ export function UserPermissionPanel() {
 
                             {/* SAVE */}
                             {editing && (
-                                <Box display="flex" justifyContent="flex-end" gap={1}>
+                                <Box display="flex" justifyContent="flex-end" gap={1} flexWrap="wrap">
                                     {isSystemAdmin ? (
                                         <Button
                                             variant="contained"

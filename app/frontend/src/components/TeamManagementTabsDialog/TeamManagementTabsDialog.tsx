@@ -15,6 +15,7 @@ import {
     ListItemIcon,
     ListItemText,
     MenuItem,
+    Stack,
     TextField,
     Typography,
     useMediaQuery,
@@ -27,6 +28,7 @@ import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import PolicyOutlinedIcon from "@mui/icons-material/PolicyOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import CloseIcon from "@mui/icons-material/Close";
 import { useMsal } from "@azure/msal-react";
 
 import { TeamUserManagementPage } from "./Tabs/TeamUserManagementPage";
@@ -69,6 +71,7 @@ interface SettingsPage {
     label: string;
     permission: string[];
     group: MenuGroup;
+    scope: "team" | "system" | "both";
     teamScoped?: boolean;
     systemAdminOnly?: boolean;
     selfPadded?: boolean;
@@ -163,6 +166,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "Members",
             permission: ["Manage team users"],
             group: "people",
+            scope: "team",
             teamScoped: true,
             element: <TeamUserManagementPage team={managedTeam} />
         },
@@ -171,6 +175,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "Roles & permissions",
             permission: ["Manage team permissions"],
             group: "people",
+            scope: "team",
             teamScoped: true,
             element: <RBACManagementPage team={managedTeam} />
         },
@@ -179,6 +184,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "Data access",
             permission: ["Manage team data groups"],
             group: "people",
+            scope: "team",
             teamScoped: true,
             element: <DataGroupManagementPage team={managedTeam} />
         },
@@ -187,6 +193,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "Agents",
             permission: ["Manage agents"],
             group: "workspace",
+            scope: "team",
             teamScoped: true,
             element: <AgentManagementPage team={managedTeam} onAgentsChanged={onAgentsChanged} />
         },
@@ -195,6 +202,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: managedTeam ? "Team integrations" : "Integration catalog",
             permission: ["Manage integrations"],
             group: managedTeam ? "workspace" : "system",
+            scope: "both",
             selfPadded: true,
             element: <IntegrationManagementPage team={managedTeam} isSystemAdmin={is_sys_admin} />
         },
@@ -203,6 +211,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "Teams",
             permission: ["Manage teams"],
             group: "user-team",
+            scope: "system",
             element: <TeamManagement onTeamCreated={handleTeamCreated} onTeamManage={handleTeamManage} />
         },
         {
@@ -210,6 +219,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "Users",
             permission: ["Manage users"],
             group: "user-team",
+            scope: "system",
             element: <UserManagementPage />
         },
         {
@@ -217,6 +227,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "User permissions",
             permission: ["Manage users"],
             group: "user-team",
+            scope: "system",
             element: <UserPermissionPanel />
         },
         {
@@ -224,6 +235,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "System health",
             permission: [],
             group: "system",
+            scope: "system",
             systemAdminOnly: true,
             element: <SystemHealthManagement />
         },
@@ -232,6 +244,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "LLM providers",
             permission: ["Manage users", "Manage teams"],
             group: "system",
+            scope: "system",
             systemAdminOnly: true,
             element: <LLMProviderManagement />
         },
@@ -240,6 +253,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "Embedding profiles",
             permission: [],
             group: "system",
+            scope: "system",
             systemAdminOnly: true,
             element: <EmbeddingProfileManagement />
         },
@@ -248,6 +262,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "Agent audit",
             permission: ["Manage users", "Manage teams"],
             group: managedTeam ? "system" : "governance",
+            scope: "system",
             systemAdminOnly: true,
             element: <AgentAuditManagement />
         },
@@ -256,6 +271,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "Guardrail policy",
             permission: ["Manage agents"],
             group: "governance",
+            scope: "both",
             systemAdminOnly: !managedTeam,
             selfPadded: true,
             element: <GuardrailPolicyPage team={managedTeam} />
@@ -265,6 +281,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "Usage quotas",
             permission: ["Manage team permissions", "Manage users"],
             group: "governance",
+            scope: "both",
             systemAdminOnly: !managedTeam,
             selfPadded: true,
             element: <UsageQuotaPolicyPage team={managedTeam} isSystemAdmin={is_sys_admin} />
@@ -274,6 +291,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "Team chat history",
             permission: ["Manage agents"],
             group: "governance",
+            scope: "team",
             teamScoped: true,
             selfPadded: true,
             element: <ChatHistoryPolicyPage team={managedTeam} />
@@ -283,6 +301,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "System chat history",
             permission: [],
             group: "governance",
+            scope: "system",
             systemAdminOnly: true,
             selfPadded: true,
             element: <ChatHistoryPolicyPage team={null} />
@@ -292,6 +311,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "License",
             permission: [],
             group: "system",
+            scope: "system",
             systemAdminOnly: true,
             element: <LicenseSettingsPage />
         },
@@ -300,6 +320,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             label: "Sign-in & authentication",
             permission: [],
             group: "system",
+            scope: "system",
             systemAdminOnly: true,
             element: <AuthenticationSettingsPage />
         }
@@ -307,6 +328,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
 
     const allowedPages = pages.filter(
         page =>
+            (page.scope === "both" || page.scope === (managedTeam ? "team" : "system")) &&
             (!page.teamScoped || Boolean(managedTeam)) &&
             (page.id !== "integrations" || Boolean(managedTeam) || is_sys_admin) &&
             (!page.systemAdminOnly || is_sys_admin) &&
@@ -318,13 +340,17 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             })
     );
     const groupOrder: MenuGroup[] = managedTeam
-        ? ["people", "workspace", "governance", "user-team", "system"]
+        ? ["people", "workspace", "governance"]
         : ["user-team", "governance", "system"];
     const groupDetails: Record<MenuGroup, { label: string; icon: React.ReactNode }> = {
         ...GROUP_DETAILS,
         people: {
             ...GROUP_DETAILS.people,
             label: managedTeam ? `Team · ${managedTeam.name}` : GROUP_DETAILS.people.label
+        },
+        governance: {
+            ...GROUP_DETAILS.governance,
+            label: managedTeam ? "Team governance" : "Platform governance"
         }
     };
     const groupedPages = useMemo(
@@ -346,8 +372,18 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
         setExpandedGroups(current => ({ ...current, [page.group]: true }));
     };
 
+    const keepOpenUnlessCloseButton = (_event: object, reason: "backdropClick" | "escapeKeyDown") => {
+        if (reason === "backdropClick" || reason === "escapeKeyDown") return;
+    };
+
     return (
-        <Dialog open={open} onClose={onClose} maxWidth="xl" fullWidth>
+        <Dialog
+            open={open}
+            onClose={keepOpenUnlessCloseButton}
+            disableEscapeKeyDown
+            maxWidth="xl"
+            fullWidth
+        >
             <DialogTitle
                 sx={{
                     px: 3,
@@ -389,37 +425,42 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
                         </Box>
                         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                             {managedTeam
-                                ? `Changes on this screen apply to ${managedTeam.name}, unless a section is explicitly marked System.`
+                                ? `All pages in this workspace apply only to ${managedTeam.name}. Use System administration for platform-wide settings.`
                                 : "Changes on this screen apply across the platform or to unassigned catalog resources."}
                         </Typography>
                     </Box>
-                    {managedTeam && (canManageUsers || canManageTeams) && (
-                        <Button
-                            size="small"
-                            variant="outlined"
-                            startIcon={<AdminPanelSettingsOutlinedIcon />}
-                            onClick={() => {
-                                setManagedTeam(null);
-                                setSelectedPageId(canManageUsers ? "users" : "teams");
-                                setExpandedGroups({ ...COLLAPSED_GROUPS });
-                            }}
-                        >
-                            Switch to system administration
+                    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                        {managedTeam && (canManageUsers || canManageTeams) && (
+                            <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={<AdminPanelSettingsOutlinedIcon />}
+                                onClick={() => {
+                                    setManagedTeam(null);
+                                    setSelectedPageId(canManageUsers ? "users" : "teams");
+                                    setExpandedGroups({ ...COLLAPSED_GROUPS });
+                                }}
+                            >
+                                Open system administration
+                            </Button>
+                        )}
+                        {!managedTeam && selectTeamData && (
+                            <Button
+                                size="small"
+                                variant="outlined"
+                                startIcon={<GroupsOutlinedIcon />}
+                                onClick={() => {
+                                    setManagedTeam(selectTeamData);
+                                    setSelectedPageId("members");
+                                }}
+                            >
+                                Return to {selectTeamData.name} team
+                            </Button>
+                        )}
+                        <Button size="small" variant="contained" startIcon={<CloseIcon />} onClick={onClose}>
+                            Close
                         </Button>
-                    )}
-                    {!managedTeam && selectTeamData && (
-                        <Button
-                            size="small"
-                            variant="outlined"
-                            startIcon={<GroupsOutlinedIcon />}
-                            onClick={() => {
-                                setManagedTeam(selectTeamData);
-                                setSelectedPageId("members");
-                            }}
-                        >
-                            Return to {selectTeamData.name} team
-                        </Button>
-                    )}
+                    </Stack>
                 </Box>
             </DialogTitle>
 
@@ -515,10 +556,6 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
                     </Button>
                 </DialogActions>
             </Dialog>
-
-            <DialogActions>
-                <Button onClick={onClose}>Close</Button>
-            </DialogActions>
         </Dialog>
     );
 }

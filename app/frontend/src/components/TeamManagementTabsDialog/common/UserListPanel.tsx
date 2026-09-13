@@ -56,19 +56,37 @@ export function UserListPanel({ users, selected, onSelect, fullWidth, onCreate }
                             sx={{
                                 px: 2,
                                 py: 1.5,
+                                minWidth: 0,
                                 "&.Mui-selected": {
                                     bgcolor: "action.selected"
                                 }
                             }}
                         >
-                            <Stack direction="row" alignItems="center" justifyContent="space-between" width="100%">
+                            <Box
+                                sx={{
+                                    display: "grid",
+                                    gridTemplateColumns: fullWidth ? { xs: "minmax(0, 1fr)", md: "minmax(0, 1fr) auto" } : "minmax(0, 1fr)",
+                                    alignItems: "center",
+                                    gap: 1,
+                                    width: "100%",
+                                    minWidth: 0
+                                }}
+                            >
                                 <ListItemText
                                     primary={`${u.first_name || ""} ${u.last_name || ""}`.trim() || u.email || u.ad_email}
                                     secondary={u.employee_id || u.email || u.ad_email}
-                                    primaryTypographyProps={{ fontWeight: 500 }}
+                                    sx={{ minWidth: 0, m: 0 }}
+                                    primaryTypographyProps={{ fontWeight: 500, sx: { overflowWrap: "anywhere" } }}
+                                    secondaryTypographyProps={{ sx: { overflowWrap: "anywhere" } }}
                                 />
 
-                                <Stack direction="row" spacing={0.5}>
+                                <Stack
+                                    direction="row"
+                                    spacing={0.5}
+                                    flexWrap="wrap"
+                                    useFlexGap
+                                    justifyContent={fullWidth ? { xs: "flex-start", md: "flex-end" } : "flex-start"}
+                                >
                                     {u.is_sys_admin && <Chip label="System admin" size="small" color="primary" variant="outlined" />}
                                     <Chip
                                         label={u.active ? "Active" : "Inactive"}
@@ -82,7 +100,7 @@ export function UserListPanel({ users, selected, onSelect, fullWidth, onCreate }
                                         }}
                                     />
                                 </Stack>
-                            </Stack>
+                            </Box>
                         </ListItemButton>
                     ))}
                 </List>

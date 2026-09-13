@@ -119,12 +119,12 @@ export function UserManagementPage() {
             )}
 
             {selectedUser !== null && (
-                <Stack direction="row" spacing={2}>
-                    <Paper sx={{ width: 280, p: 2 }}>
+                <Stack direction={{ xs: "column", lg: "row" }} spacing={2}>
+                    <Paper sx={{ width: { xs: "100%", lg: 280 }, minWidth: 0, p: 2, boxSizing: "border-box" }}>
                         <UserListPanel users={users} selected={selectedUser} onSelect={setSelectedUser} onCreate={() => setCreateOpen(true)} />
                     </Paper>
 
-                    <Paper sx={{ flex: 1, p: 3 }}>
+                    <Paper sx={{ flex: 1, minWidth: 0, p: { xs: 2, sm: 3 } }}>
                         <UserDetailPanel
                             user={selectedUser}
                             onSave={handleSave}

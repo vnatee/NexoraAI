@@ -287,12 +287,14 @@ function RolePresetPanel({ team, permissions, permissionsLoading }: { team: { _i
     const isRoleSelected = !!selectedRole;
 
     return (
-        <Stack direction="row" spacing={2}>
+        <Stack direction={{ xs: "column", lg: "row" }} spacing={2}>
             {/* ROLE LIST */}
             <Paper
                 variant="outlined"
                 sx={{
-                    width: isRoleSelected ? 320 : "100%",
+                    width: isRoleSelected ? { xs: "100%", lg: 320 } : "100%",
+                    minWidth: 0,
+                    boxSizing: "border-box",
                     p: 2,
                     borderRadius: 2,
                     transition: "width 200ms ease"
@@ -753,12 +755,14 @@ function UserPermissionPanel({
     const isUserSelected = !!selectedUser;
 
     return (
-        <Stack direction="row" spacing={2}>
+        <Stack direction={{ xs: "column", lg: "row" }} spacing={2}>
             {/* USER LIST */}
             <Paper
                 variant="outlined"
                 sx={{
-                    width: isUserSelected ? 320 : "100%",
+                    width: isUserSelected ? { xs: "100%", lg: 320 } : "100%",
+                    minWidth: 0,
+                    boxSizing: "border-box",
                     p: 2,
                     borderRadius: 2,
                     transition: "width 200ms ease"

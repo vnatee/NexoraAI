@@ -159,9 +159,9 @@ export function UsageQuotaPolicyPage({ team, isSystemAdmin }: { team: TeamProfil
         {status.length > 0 && <Paper variant="outlined" sx={{ p: 2 }}><Stack spacing={1.5}>
             <Typography variant="subtitle1" fontWeight={600}>Current period</Typography>
             {status.map((item, index) => <Stack key={`${item.kind}:${item.label}:${index}`} spacing={0.5}>
-                <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-                    <Typography variant="body2">{item.label}</Typography>
-                    <Stack direction="row" spacing={1} alignItems="center">
+                <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }} spacing={1}>
+                    <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{item.label}</Typography>
+                    <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                         {item.reserved > 0 && <Chip size="small" label={`${item.reserved.toLocaleString()} reserved`} />}
                         <Typography variant="body2" color={item.severity === "normal" ? "text.secondary" : "warning.main"}>{`${item.used.toLocaleString()} / ${item.limit.toLocaleString()} (${item.percentage}%)`}</Typography>
                     </Stack>
