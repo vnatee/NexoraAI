@@ -21,6 +21,12 @@ export function UserDetailPanel({ user, onSave, onClose, onDelete, isDelete, onR
     // 🆕 draft user (ใช้แก้ไข)
     const [draft, setDraft] = useState<User>(user);
     const [newPassword, setNewPassword] = useState("");
+    const loginUsername = draft.local_username || draft.ad_email || draft.email || "Not configured";
+    const loginUsernameSource = draft.local_username
+        ? "Local account username"
+        : draft.ad_email || draft.email
+            ? "Microsoft Entra sign-in ID"
+            : "No login identity is configured for this user";
 
     // 🆕 sync เมื่อเปลี่ยน user
     useEffect(() => {
@@ -50,7 +56,12 @@ export function UserDetailPanel({ user, onSave, onClose, onDelete, isDelete, onR
     return (
         <Stack spacing={3}>
             {/* Header */}
-            <Stack direction="row" justifyContent="space-between">
+            <Stack
+                direction={{ xs: "column", sm: "row" }}
+                justifyContent="space-between"
+                alignItems={{ xs: "flex-start", sm: "center" }}
+                gap={1}
+            >
                 <Button onClick={handleClose} size="small">
                     ← Back
                 </Button>
@@ -71,6 +82,8 @@ export function UserDetailPanel({ user, onSave, onClose, onDelete, isDelete, onR
             <Divider />
 
             {/* Fields */}
+            <TextField label="Login Username" value={loginUsername} helperText={loginUsernameSource} disabled />
+
             <TextField label="Employee ID" value={draft.employee_id} disabled />
 
             <TextField
@@ -89,14 +102,14 @@ export function UserDetailPanel({ user, onSave, onClose, onDelete, isDelete, onR
             <TextField label="Tel" value={draft.tel || ""} disabled={!isEditing} onChange={e => setDraft({ ...draft, tel: e.target.value })} />
 
             {draft.auth_providers?.includes("local") && onResetPassword && canResetPassword && (
-                <Stack direction="row" spacing={2}>
+                <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
                     <TextField fullWidth label={`New password for ${draft.local_username || "local user"}`} type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} helperText="At least 12 characters; all existing local sessions will be signed out." />
                     <Button disabled={newPassword.length < 12} onClick={async () => { await onResetPassword(newPassword); setNewPassword(""); }}>Reset password</Button>
                 </Stack>
             )}
 
             {/* Actions */}
-            <Stack direction="row" spacing={2}>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                 {!isEditing ? (
                     <Button variant="contained" onClick={() => setIsEditing(true)} disabled={!canEdit}>
                         Edit

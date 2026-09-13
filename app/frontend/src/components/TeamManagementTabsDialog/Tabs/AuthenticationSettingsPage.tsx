@@ -90,7 +90,7 @@ export function AuthenticationSettingsPage() {
             <TextField label="SPA application (client) ID" value={settings.client_app_id} onChange={event => setSettings({ ...settings, client_app_id: event.target.value })} disabled={!settings.entra_enabled} />
             <TextField label={settings.has_client_secret ? "API client secret (stored; enter to replace)" : "API client secret"} type="password" value={clientSecret} onChange={event => setClientSecret(event.target.value)} disabled={!settings.entra_enabled} autoComplete="new-password" />
             <Typography variant="body2" color="text.secondary">Configuration source: {settings.source || "managed"}. Client secrets are never returned to the browser.</Typography>
-            <Stack direction="row" spacing={2}>
+            <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                 <Button variant="contained" onClick={() => void save()} disabled={saving}>{saving ? "Saving…" : "Save authentication settings"}</Button>
                 {settings.source === "managed" && <Button onClick={() => void restoreEnvironment()} disabled={saving}>Use environment settings</Button>}
             </Stack>
