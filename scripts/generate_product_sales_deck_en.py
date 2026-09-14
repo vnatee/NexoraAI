@@ -2,7 +2,7 @@ from pathlib import Path
 
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Inches
 
 from generate_product_sales_deck import (
@@ -34,6 +34,7 @@ from generate_product_sales_deck import (
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "docs" / "presentations" / "InsightSphere_Product_Sales_Deck_EN.pptx"
+ENGLISH_FONT = "Arial"
 
 
 TRANSLATIONS = {
@@ -142,6 +143,7 @@ TRANSLATIONS = {
         "Select models per agent to balance cost, latency, privacy, and quality.",
     "เปลี่ยน provider ได้โดยรักษา Agent, ACL และ Knowledge architecture เดิม":
         "Change providers while preserving agents, ACLs, and the Knowledge architecture.",
+    "Specialized": "Model & Inference",
     "Deployment ที่ยืดหยุ่น: Azure, Local หรือ Hybrid":
         "Flexible Deployment: Azure, Local, or Hybrid",
     "Local data plane\nเลือก Cloud LLM\nหรือ Local Model\nตาม Agent / Policy":
@@ -276,14 +278,52 @@ def normalize(value: str) -> str:
     return value.strip().replace("\v", "\n")
 
 
+def normalize_english_typography(prs: Presentation) -> None:
+    """Use a PowerPoint-safe font and let Office shrink text within its box."""
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if not hasattr(shape, "text_frame"):
+                continue
+            frame = shape.text_frame
+            frame.word_wrap = True
+            frame.auto_size = MSO_AUTO_SIZE.TEXT_TO_FIT_SHAPE
+            for paragraph in frame.paragraphs:
+                for run in paragraph.runs:
+                    run.font.name = ENGLISH_FONT
+
+
 def add_feature_slides(prs: Presentation) -> None:
-    """Add English-first feature slides before the original closing slide."""
+    """Add English-first feature slides and arrange the complete sales story."""
+    base_slide_ids = list(prs.slides._sldIdLst)
     feature_slide_ids = []
+
+    def add_portal_capture_slide(title: str, capture_target: str, proof_point: str, page: int) -> None:
+        """Add a replaceable 16:9 Portal screenshot frame beside the feature story."""
+        capture_slide = new_slide(prs, LIGHT)
+        feature_slide_ids.append(prs.slides._sldIdLst[-1])
+        add_header(capture_slide, title, "Portal View", page)
+        add_rect(capture_slide, Inches(0.72), Inches(1.86), Inches(11.85), Inches(4.55), WHITE, True,
+                 RGBColor(190, 205, 219))
+        add_rect(capture_slide, Inches(0.72), Inches(1.86), Inches(11.85), Inches(0.42), NAVY, True, NAVY)
+        for offset, color in enumerate((RED, ORANGE, GREEN)):
+            add_rect(capture_slide, Inches(0.94 + offset * 0.22), Inches(2.0), Inches(0.09), Inches(0.09),
+                     color, True, color)
+        add_rect(capture_slide, Inches(1.72), Inches(1.97), Inches(7.3), Inches(0.18), RGBColor(48, 65, 82), True)
+        add_text(capture_slide, "PORTAL SCREENSHOT PLACEHOLDER", Inches(3.08), Inches(3.02), Inches(7.15),
+                 Inches(0.38), 17, BLUE, True, PP_ALIGN.CENTER)
+        add_text(capture_slide, capture_target, Inches(2.2), Inches(3.62), Inches(8.9), Inches(0.75), 20, INK, True,
+                 PP_ALIGN.CENTER, MSO_ANCHOR.MIDDLE)
+        add_text(capture_slide, "Replace this frame with a current 16:9 Portal capture.", Inches(3.0), Inches(4.62),
+                 Inches(7.3), Inches(0.34), 11, MUTED, False, PP_ALIGN.CENTER)
+        add_rect(capture_slide, Inches(1.52), Inches(5.42), Inches(10.25), Inches(0.58), PALE_BLUE, True, BLUE)
+        add_text(capture_slide, proof_point, Inches(1.78), Inches(5.56), Inches(9.73), Inches(0.3), 11, BLUE, True,
+                 PP_ALIGN.CENTER)
+        add_footer(capture_slide)
 
     # 15 — Guardrails and usage governance
     slide = new_slide(prs, LIGHT)
     feature_slide_ids.append(prs.slides._sldIdLst[-1])
-    add_header(slide, "Enterprise AI Guardrails and Usage Governance", "Feature Update", 15)
+    add_header(slide, "Enterprise AI Guardrails and Usage Governance", "Governance", 15)
     add_text(slide, "Policy inheritance keeps every team and agent within the enterprise minimum.",
              Inches(0.72), Inches(1.86), Inches(11.85), Inches(0.45), 18, INK, True)
     hierarchy = [
@@ -313,7 +353,7 @@ def add_feature_slides(prs: Presentation) -> None:
     # 16 — Team-scoped integrations and MCP
     slide = new_slide(prs, NAVY)
     feature_slide_ids.append(prs.slides._sldIdLst[-1])
-    add_header(slide, "Team-Scoped Integration and MCP Catalog", "Feature Update", 16, True)
+    add_header(slide, "Team-Scoped Integration and MCP Catalog", "Connected Workflows", 16, True)
     add_text(slide, "Multiple connections per provider—isolated by Team and assignable only to authorized Agents.",
              Inches(0.72), Inches(1.85), Inches(11.85), Inches(0.45), 18, WHITE, True)
     flow = [
@@ -348,7 +388,7 @@ def add_feature_slides(prs: Presentation) -> None:
     # 17 — Azure inventory to Draw.io
     slide = new_slide(prs)
     feature_slide_ids.append(prs.slides._sldIdLst[-1])
-    add_header(slide, "Azure Inventory to Draw.io Architecture", "Feature Update", 17)
+    add_header(slide, "Azure Inventory to Draw.io Architecture", "Use Case", 17)
     add_text(slide, "Turn live Azure inventory into an editable architecture artifact—with evidence preserved.",
              Inches(0.72), Inches(1.84), Inches(11.85), Inches(0.5), 18, INK, True)
     stages = [
@@ -378,7 +418,7 @@ def add_feature_slides(prs: Presentation) -> None:
     # 18 — Durable operations
     slide = new_slide(prs, LIGHT)
     feature_slide_ids.append(prs.slides._sldIdLst[-1])
-    add_header(slide, "Durable Operations: History, Ingestion, and Recovery", "Feature Update", 18)
+    add_header(slide, "Durable Operations: History, Ingestion, and Recovery", "Operations", 18)
     feature_cards = [
         ("DATABASE CHAT HISTORY", "Owner-isolated conversations persist across browser sessions and devices.", BLUE),
         ("RETENTION GOVERNANCE", "System policy: 30/90/180/365 days or no expiry. Teams may choose a shorter period.", CYAN),
@@ -396,17 +436,288 @@ def add_feature_slides(prs: Presentation) -> None:
              Inches(0.95), Inches(6.25), Inches(11.35), Inches(0.3), 12, INK, True, PP_ALIGN.CENTER)
     add_footer(slide)
 
-    # Slides were appended for stable python-pptx creation. Move them before the
-    # original closing slide so they remain part of the main sales narrative.
-    slide_id_list = prs.slides._sldIdLst
-    for slide_id in feature_slide_ids:
-        slide_id_list.remove(slide_id)
-    for offset, slide_id in enumerate(feature_slide_ids):
-        slide_id_list.insert(14 + offset, slide_id)
+    # 19 — Unified integration workspace
+    slide = new_slide(prs, NAVY)
+    feature_slide_ids.append(prs.slides._sldIdLst[-1])
+    add_header(slide, "One Integration Workspace, Multiple Connection Types", "Connected Workflows", 19, True)
+    add_text(slide, "Users work with one governed connection catalog; the platform handles each connection protocol.",
+             Inches(0.72), Inches(1.84), Inches(11.85), Inches(0.5), 18, WHITE, True)
+    connection_types = [
+        ("MCP SERVERS", "Discover and invoke tools\nfrom hosted or managed MCP", BLUE),
+        ("BUSINESS APIS", "REST APIs and controlled\nread-only database access", CYAN),
+        ("PRODUCTIVITY", "Microsoft 365 and Google\ndocument workflows", ORANGE),
+        ("WORK MANAGEMENT", "Jira and ServiceNow\nthrough approved connectors", GREEN),
+    ]
+    for i, (title, body, color) in enumerate(connection_types):
+        x = 0.72 + i * 3.08
+        add_rect(slide, Inches(x), Inches(2.63), Inches(2.68), Inches(1.55), RGBColor(24, 47, 72), True,
+                 RGBColor(48, 78, 107))
+        add_rect(slide, Inches(x + 0.95), Inches(2.88), Inches(0.78), Inches(0.46), color, True)
+        add_text(slide, str(i + 1), Inches(x + 0.95), Inches(2.88), Inches(0.78), Inches(0.46), 12, WHITE, True,
+                 PP_ALIGN.CENTER, MSO_ANCHOR.MIDDLE)
+        add_text(slide, title, Inches(x + 0.2), Inches(3.48), Inches(2.28), Inches(0.3), 11, color, True,
+                 PP_ALIGN.CENTER)
+        add_text(slide, body, Inches(x + 0.2), Inches(3.88), Inches(2.28), Inches(0.55), 10, WHITE, False,
+                 PP_ALIGN.CENTER)
+    add_rect(slide, Inches(0.72), Inches(4.78), Inches(11.85), Inches(1.12), RGBColor(24, 47, 72), True, BLUE)
+    add_text(slide, "CATALOG", Inches(0.98), Inches(5.02), Inches(1.15), Inches(0.32), 11, BLUE, True)
+    add_text(slide, "Browse templates", Inches(2.1), Inches(5.02), Inches(1.55), Inches(0.32), 12, WHITE, True)
+    add_text(slide, "→", Inches(3.7), Inches(5.0), Inches(0.35), Inches(0.35), 18, CYAN, True, PP_ALIGN.CENTER)
+    add_text(slide, "Configure Team connection", Inches(4.12), Inches(5.02), Inches(2.25), Inches(0.32), 12, WHITE, True)
+    add_text(slide, "→", Inches(6.45), Inches(5.0), Inches(0.35), Inches(0.35), 18, CYAN, True, PP_ALIGN.CENTER)
+    add_text(slide, "Bind approved capabilities", Inches(6.86), Inches(5.02), Inches(2.25), Inches(0.32), 12, WHITE, True)
+    add_text(slide, "→", Inches(9.2), Inches(5.0), Inches(0.35), Inches(0.35), 18, CYAN, True, PP_ALIGN.CENTER)
+    add_text(slide, "Agent execution", Inches(9.62), Inches(5.02), Inches(1.7), Inches(0.32), 12, WHITE, True)
+    add_text(slide, "Team ownership, encrypted credentials, connection health, allowlists, and audit remain server-enforced.",
+             Inches(0.78), Inches(6.35), Inches(11.75), Inches(0.35), 12, CYAN, True, PP_ALIGN.CENTER)
+    add_footer(slide, dark=True)
 
-    # The original hardware backup slides now follow the new closing slide.
-    for slide_number in range(20, 23):
-        slide = prs.slides[slide_number - 1]
+    # 20 — Agent Catalog
+    slide = new_slide(prs, LIGHT)
+    feature_slide_ids.append(prs.slides._sldIdLst[-1])
+    add_header(slide, "Agent Catalog: Reuse Without Sharing Mutable Agents", "Agent Platform", 20)
+    add_text(slide, "Publish governed templates, control Team visibility, and install independent Team-local copies.",
+             Inches(0.72), Inches(1.84), Inches(11.85), Inches(0.5), 18, INK, True)
+    catalog_steps = [
+        ("CREATE", "Team or System admin\ndefines purpose and usage", BLUE),
+        ("PUBLISH", "Immutable versioned\ntemplate snapshot", CYAN),
+        ("DISCOVER", "Searchable cards with\nsafe metadata only", ORANGE),
+        ("INSTALL", "Independent Team-local\nAgent copy", GREEN),
+    ]
+    for i, (title, body, color) in enumerate(catalog_steps):
+        x = 0.72 + i * 3.08
+        add_card(slide, title, body, Inches(x), Inches(2.55), Inches(2.68), Inches(1.7), color, WHITE,
+                 f"{i + 1:02d}")
+        if i < 3:
+            add_text(slide, "→", Inches(x + 2.68), Inches(3.14), Inches(0.38), Inches(0.38), 18, MUTED, True,
+                     PP_ALIGN.CENTER)
+    safeguards = [
+        "Prompts and full configuration remain server-only",
+        "MCP connection IDs and Team bindings are never copied",
+        "Installed versions remain pinned until an approved upgrade",
+    ]
+    for i, item in enumerate(safeguards):
+        add_rect(slide, Inches(0.88 + i * 4.08), Inches(4.82), Inches(3.62), Inches(0.88), WHITE, True,
+                 RGBColor(220, 230, 240))
+        add_text(slide, "✓", Inches(1.08 + i * 4.08), Inches(5.05), Inches(0.36), Inches(0.34), 16, GREEN, True,
+                 PP_ALIGN.CENTER)
+        add_text(slide, item, Inches(1.55 + i * 4.08), Inches(4.98), Inches(2.65), Inches(0.5), 10, INK, True)
+    add_rect(slide, Inches(0.72), Inches(6.12), Inches(11.85), Inches(0.58), PALE_BLUE, True, BLUE)
+    add_text(slide, "Catalog cards show creator, purpose, usage guidance, category, tags, version, publisher, and dependencies.",
+             Inches(0.95), Inches(6.25), Inches(11.35), Inches(0.3), 12, BLUE, True, PP_ALIGN.CENTER)
+    add_footer(slide)
+
+    # 21 — Guided Agent setup
+    slide = new_slide(prs)
+    feature_slide_ids.append(prs.slides._sldIdLst[-1])
+    add_header(slide, "Guided Agent Setup with Safe Draft Lifecycle", "Agent Platform", 21)
+    add_text(slide, "Configure integrations before activation—without exposing an incomplete Agent to end users.",
+             Inches(0.72), Inches(1.84), Inches(11.85), Inches(0.5), 18, INK, True)
+    stages = [
+        ("AGENT INFO", "Name, model, runtime,\nattachments, and prompt", BLUE),
+        ("AUTO-SAVE DRAFT", "Stable Team-scoped ID\ncreated on tab change", CYAN),
+        ("INTEGRATIONS", "Bind native tools, MCP,\ndata, and sub-agents", ORANGE),
+        ("FINISH SETUP", "Validate, save, and\nactivate for the Team", GREEN),
+    ]
+    for i, (title, body, color) in enumerate(stages):
+        x = 0.72 + i * 3.08
+        add_rect(slide, Inches(x), Inches(2.62), Inches(2.68), Inches(1.75), WHITE, True, color)
+        add_text(slide, title, Inches(x + 0.18), Inches(2.9), Inches(2.32), Inches(0.34), 12, color, True,
+                 PP_ALIGN.CENTER)
+        add_text(slide, body, Inches(x + 0.2), Inches(3.48), Inches(2.28), Inches(0.58), 11, INK, False,
+                 PP_ALIGN.CENTER)
+        if i < 3:
+            add_text(slide, "→", Inches(x + 2.68), Inches(3.2), Inches(0.38), Inches(0.38), 18, MUTED, True,
+                     PP_ALIGN.CENTER)
+    for x, title, body, color, fill in (
+        (0.72, "PRIVATE UNTIL READY",
+         "Drafts cannot run in Chat or Ask, cannot be published, and cannot be selected as sub-agents.",
+         BLUE, PALE_BLUE),
+        (6.84, "CLEAN CANCELLATION AND EXPIRY",
+         "Cancel cascade-deletes bindings. Abandoned drafts expire automatically after a configurable period.",
+         ORANGE, PALE_ORANGE),
+    ):
+        add_rect(slide, Inches(x), Inches(4.82), Inches(5.72), Inches(1.32), fill, True,
+                 RGBColor(220, 230, 240))
+        add_rect(slide, Inches(x), Inches(4.82), Inches(0.09), Inches(1.32), color, False)
+        add_text(slide, title, Inches(x + 0.34), Inches(5.02), Inches(5.1), Inches(0.3), 12, INK, True)
+        add_text(slide, body, Inches(x + 0.34), Inches(5.47), Inches(5.02), Inches(0.46), 10, MUTED)
+    add_text(slide, "Result: a smoother setup experience with the same Team authorization and runtime safety boundaries.",
+             Inches(0.78), Inches(6.42), Inches(11.75), Inches(0.34), 12, BLUE, True, PP_ALIGN.CENTER)
+    add_footer(slide)
+
+    # 22 — Managed embedding profiles
+    slide = new_slide(prs, NAVY)
+    feature_slide_ids.append(prs.slides._sldIdLst[-1])
+    add_header(slide, "Managed Embedding Profiles and Safe Re-indexing", "Model & Data", 22, True)
+    add_text(slide, "Move embedding configuration into the Portal while protecting vector compatibility and credentials.",
+             Inches(0.72), Inches(1.84), Inches(11.85), Inches(0.5), 18, WHITE, True)
+    profile_cards = [
+        ("MULTI-PROVIDER", "Azure OpenAI\nOpenAI\nOpenAI-compatible", BLUE),
+        ("ENCRYPTED CONFIG", "Secrets use the existing\nFernet protection and are\nnever returned to the UI", CYAN),
+        ("ONE ACTIVE PROFILE", "One system-wide vector\nspace avoids incompatible\nembedding comparisons", ORANGE),
+        ("RESTART-SAFE CHANGE", "Selected and running\nprofiles stay distinct until\nfull re-index is confirmed", GREEN),
+    ]
+    for i, (title, body, color) in enumerate(profile_cards):
+        x = 0.72 + i * 3.08
+        add_rect(slide, Inches(x), Inches(2.6), Inches(2.68), Inches(2.42), RGBColor(24, 47, 72), True,
+                 RGBColor(48, 78, 107))
+        add_rect(slide, Inches(x + 0.2), Inches(2.87), Inches(0.1), Inches(1.78), color, False)
+        add_text(slide, title, Inches(x + 0.46), Inches(2.83), Inches(1.98), Inches(0.48), 12, color, True)
+        add_text(slide, body, Inches(x + 0.46), Inches(3.55), Inches(1.98), Inches(1.05), 11, WHITE)
+    add_rect(slide, Inches(0.72), Inches(5.55), Inches(11.85), Inches(0.72), RGBColor(24, 47, 72), True, CYAN)
+    add_text(slide, "Each managed profile defines its model, dimensions, and dedicated Qdrant collection; deleting a profile never deletes vector data.",
+             Inches(0.95), Inches(5.75), Inches(11.35), Inches(0.35), 12, CYAN, True, PP_ALIGN.CENTER)
+    add_text(slide, "The environment-based profile remains available as a read-only fallback for existing deployments.",
+             Inches(0.78), Inches(6.48), Inches(11.75), Inches(0.3), 11, RGBColor(178, 198, 218), False,
+             PP_ALIGN.CENTER)
+    add_footer(slide, dark=True)
+
+    # 23 — Production operations and licensing
+    slide = new_slide(prs, LIGHT)
+    feature_slide_ids.append(prs.slides._sldIdLst[-1])
+    add_header(slide, "Production Operations and Offline Licensing", "Operations", 23)
+    add_text(slide, "Operate on-premises or in Azure with explicit health, transport security, and entitlement foundations.",
+             Inches(0.72), Inches(1.84), Inches(11.85), Inches(0.5), 18, INK, True)
+    operations = [
+        ("ON-DEMAND HEALTH", "CPU, memory, disk, application RSS, core services, integrations, queues, and workers—without continuous polling.", BLUE),
+        ("OPTIONAL TLS GATEWAY", "Nginx overlay provides TLS 1.2/1.3, HTTP redirect, streaming-safe proxying, security headers, and health visibility.", CYAN),
+        ("OFFLINE LICENSE", "Stable Installation ID, one 14-day trial, signed NX1 imports, validity and feature claims, and metadata-only audit.", ORANGE),
+    ]
+    for i, (title, body, color) in enumerate(operations):
+        x = 0.72 + i * 4.08
+        add_card(slide, title, body, Inches(x), Inches(2.58), Inches(3.68), Inches(2.08), color, WHITE,
+                 f"{i + 1:02d}")
+    add_rect(slide, Inches(0.72), Inches(5.17), Inches(11.85), Inches(0.9), WHITE, True, RGBColor(220, 230, 240))
+    add_text(slide, "DEPLOYMENT", Inches(0.98), Inches(5.46), Inches(1.28), Inches(0.3), 11, BLUE, True)
+    add_text(slide, "Docker Compose on Azure VM", Inches(2.26), Inches(5.46), Inches(2.25), Inches(0.3), 12, INK, True)
+    add_text(slide, "•", Inches(4.58), Inches(5.43), Inches(0.25), Inches(0.3), 14, CYAN, True)
+    add_text(slide, "Persistent application and data volumes", Inches(4.86), Inches(5.46), Inches(2.8), Inches(0.3), 12, INK, True)
+    add_text(slide, "•", Inches(7.75), Inches(5.43), Inches(0.25), Inches(0.3), 14, CYAN, True)
+    add_text(slide, "External signing keys stay outside customer runtime", Inches(8.04), Inches(5.46), Inches(3.95), Inches(0.3), 12, INK, True)
+    add_text(slide, "Current license enforcement is intentionally staged: verified entitlements are visible before contractual feature gating is enabled.",
+             Inches(0.78), Inches(6.42), Inches(11.75), Inches(0.34), 11, MUTED, False, PP_ALIGN.CENTER)
+    add_footer(slide)
+
+    # 24 — Role-scoped administration experience
+    slide = new_slide(prs)
+    feature_slide_ids.append(prs.slides._sldIdLst[-1])
+    add_header(slide, "Clear, Role-Scoped Administration Experience", "Governance", 24)
+    add_text(slide, "The Portal makes Team and System scope explicit, reducing accidental changes in the wrong context.",
+             Inches(0.72), Inches(1.84), Inches(11.85), Inches(0.5), 18, INK, True)
+    add_rect(slide, Inches(0.72), Inches(2.52), Inches(5.7), Inches(2.4), PALE_BLUE, True, BLUE)
+    add_text(slide, "TEAM WORKSPACE", Inches(1.02), Inches(2.82), Inches(2.2), Inches(0.34), 13, BLUE, True)
+    add_text(slide, "Presale", Inches(1.02), Inches(3.28), Inches(2.4), Inches(0.42), 21, INK, True)
+    add_bullets(slide, [
+        "Team members, Agents, Knowledge, and connections",
+        "Only Team-authorized menus and actions",
+        "Destination-labelled switch to System Administration",
+    ], Inches(1.02), Inches(3.83), Inches(5.0), Inches(0.95), 11, INK, BLUE, 4)
+    add_rect(slide, Inches(6.86), Inches(2.52), Inches(5.7), Inches(2.4), LIGHT, True, RGBColor(180, 190, 200))
+    add_text(slide, "SYSTEM ADMINISTRATION", Inches(7.16), Inches(2.82), Inches(2.8), Inches(0.34), 13, MUTED, True)
+    add_text(slide, "Platform-wide", Inches(7.16), Inches(3.28), Inches(2.8), Inches(0.42), 21, INK, True)
+    add_bullets(slide, [
+        "Organization, policy, providers, health, and license",
+        "System-wide scope chip and distinct visual treatment",
+        "Return action names the destination Team",
+    ], Inches(7.16), Inches(3.83), Inches(5.0), Inches(0.95), 11, INK, CYAN, 4)
+    improvements = [
+        ("RESPONSIVE CARDS", "Catalog, Agents, users, Teams, providers, and profiles", BLUE),
+        ("TASK-APPROPRIATE VIEWS", "Tables remain where comparison and bulk selection matter", CYAN),
+        ("PREDICTABLE DIALOGS", "Explicit Close control; no accidental backdrop dismissal", ORANGE),
+    ]
+    for i, (title, body, color) in enumerate(improvements):
+        x = 0.72 + i * 4.08
+        add_rect(slide, Inches(x), Inches(5.38), Inches(3.68), Inches(0.88), WHITE, True,
+                 RGBColor(220, 230, 240))
+        add_text(slide, title, Inches(x + 0.2), Inches(5.56), Inches(3.28), Inches(0.25), 10, color, True,
+                 PP_ALIGN.CENTER)
+        add_text(slide, body, Inches(x + 0.2), Inches(5.88), Inches(3.28), Inches(0.28), 9, INK, False,
+                 PP_ALIGN.CENTER)
+    add_text(slide, "Responsive layouts preserve readable names, identities, status badges, and actions on lower-resolution screens.",
+             Inches(0.78), Inches(6.5), Inches(11.75), Inches(0.3), 11, BLUE, True, PP_ALIGN.CENTER)
+    add_footer(slide)
+
+    # Dedicated visual proof slides. These intentionally use one large capture
+    # area so Portal text remains legible in a customer presentation.
+    add_portal_capture_slide(
+        "Portal View: Discover and Install an Agent",
+        "Agent Catalog card grid with Search, Category, and Install action",
+        "Show creator, purpose, version, visibility, and concise capability metadata in one view.",
+        25,
+    )
+    add_portal_capture_slide(
+        "Portal View: Configure an Agent Before Activation",
+        "Create New Agent dialog on the Integrations step",
+        "Show the Agent Info → Integrations flow and the final Finish setup action.",
+        26,
+    )
+    add_portal_capture_slide(
+        "Portal View: Manage Team Integrations",
+        "Team Integrations page with Installed and Catalog tabs",
+        "Show Team context, connection status, provider cards, and the Add or Configure workflow.",
+        27,
+    )
+    add_portal_capture_slide(
+        "Portal View: Switch Administrative Scope",
+        "Team Workspace and System Administration navigation",
+        "Show the scope chip, destination-labelled switch, grouped menus, and explicit Close action.",
+        28,
+    )
+    add_portal_capture_slide(
+        "Portal View: Verify Runtime and Entitlement Status",
+        "System Health or License page with sensitive values excluded",
+        "Show an on-demand health snapshot or signed offline license status without exposing secrets.",
+        29,
+    )
+
+    # Slides are appended for stable python-pptx creation, then arranged into a
+    # deliberate narrative instead of collecting feature updates at the end:
+    # problem -> knowledge -> agents -> integrations -> governance -> operations
+    # -> deployment -> business value -> next steps -> technical backup.
+    slide_id_list = prs.slides._sldIdLst
+    story_order = [
+        base_slide_ids[0],   # Cover
+        base_slide_ids[1],   # Executive summary
+        base_slide_ids[2],   # Customer challenges
+        base_slide_ids[3],   # Solution overview
+        base_slide_ids[4],   # Knowledge and RAG
+        base_slide_ids[6],   # Document intelligence
+        base_slide_ids[5],   # AI Agents
+        feature_slide_ids[5],  # Agent Catalog
+        feature_slide_ids[10],  # Agent Catalog Portal capture
+        feature_slide_ids[6],  # Guided Agent setup
+        feature_slide_ids[11],  # Agent setup Portal capture
+        feature_slide_ids[4],  # Unified integration workspace
+        feature_slide_ids[1],  # Team-scoped MCP controls
+        feature_slide_ids[12],  # Integration workspace Portal capture
+        feature_slide_ids[2],  # Azure-to-Draw.io use case
+        base_slide_ids[7],   # Security and governance
+        feature_slide_ids[0],  # Guardrails and usage governance
+        feature_slide_ids[9],  # Role-scoped administration
+        feature_slide_ids[13],  # Administration scope Portal capture
+        base_slide_ids[8],   # Model flexibility
+        feature_slide_ids[7],  # Managed embedding profiles
+        feature_slide_ids[3],  # Durable operations
+        feature_slide_ids[8],  # Health, TLS, and licensing
+        feature_slide_ids[14],  # Health and license Portal capture
+        base_slide_ids[9],   # Deployment
+        base_slide_ids[10],  # Use cases
+        base_slide_ids[11],  # Business value
+        base_slide_ids[12],  # Engagement
+        base_slide_ids[13],  # Differentiators
+        base_slide_ids[14],  # Closing / next steps
+        base_slide_ids[15],  # Capacity backup
+        base_slide_ids[16],  # Hardware backup
+        base_slide_ids[17],  # Scale backup
+    ]
+    for slide_id in list(slide_id_list):
+        slide_id_list.remove(slide_id)
+    for slide_id in story_order:
+        slide_id_list.append(slide_id)
+
+    # Renumber every conventional footer page after the narrative reorder.
+    for slide_number, slide in enumerate(prs.slides, start=1):
         for shape in slide.shapes:
             if not hasattr(shape, "text_frame") or shape.left < Inches(12) or shape.top < Inches(6.8):
                 continue
@@ -434,6 +745,7 @@ def translate_deck():
     if missing:
         raise RuntimeError("Missing English translations: " + repr(sorted(missing)))
     add_feature_slides(prs)
+    normalize_english_typography(prs)
     prs.save(OUTPUT)
     print(OUTPUT)
 

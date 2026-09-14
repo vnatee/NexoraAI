@@ -15,7 +15,10 @@ import {
     Checkbox,
     Skeleton,
     Alert,
+    Avatar,
     Chip,
+    Menu,
+    MenuItem,
     FormControl,
     FormControlLabel,
     FormLabel,
@@ -26,6 +29,8 @@ import AddIcon from "@mui/icons-material/Add";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import GroupAddIcon from "@mui/icons-material/GroupAdd";
 import DeleteIcon from "@mui/icons-material/Delete";
+import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
+import FolderSharedIcon from "@mui/icons-material/FolderShared";
 import { useMsal } from "@azure/msal-react";
 
 import {
@@ -57,6 +62,8 @@ export function DataGroupManagementPage({ team }: { team: TeamProfile | null }) 
     const [viewGroup, setViewGroup] = useState<DataGroupDisplay | null>(null);
     const [assignGroup, setAssignGroup] = useState<DataGroupDisplay | null>(null);
     const [deleteGroup, setDeleteGroup] = useState<DataGroupDisplay | null>(null);
+    const [actionAnchor, setActionAnchor] = useState<HTMLElement | null>(null);
+    const [actionGroup, setActionGroup] = useState<DataGroupDisplay | null>(null);
     const [usersLoading, setUsersLoading] = useState(false);
     const { showNotification } = useNotification();
     /* =========================
@@ -138,68 +145,71 @@ export function DataGroupManagementPage({ team }: { team: TeamProfile | null }) 
 
             <Divider />
 
-            {/* LIST */}
-            <Box sx={{ maxHeight: 400, overflowY: "auto" }}>
+            {/* CARD GRID */}
+            <Box sx={{ maxHeight: 560, overflowY: "auto", pr: 0.5 }}>
                 {loading ? (
                     <DataGroupListSkeleton count={6} />
                 ) : filteredGroups.length === 0 ? (
                     <Typography color="text.secondary">No data group found</Typography>
                 ) : (
-                    <Stack spacing={1}>
-                        {/* LIST (Virtualized) */}
-                        <Box>
-                            {loading ? (
-                                <Typography color="text.secondary">Loading...</Typography>
-                            ) : filteredGroups.length === 0 ? (
-                                <Typography color="text.secondary">No data group found</Typography>
-                            ) : (
-                                <VirtualizedDataGroupList
-                                    items={filteredGroups}
-                                    height={400}
-                                    itemHeight={92} // ✅ ปรับตามความสูง Paper จริง
-                                    overscan={6}
-                                    renderItem={(dg: DataGroupDisplay) => (
-                                        <Paper
-                                            key={dg._id}
-                                            variant="outlined"
-                                            sx={{
-                                                p: 2,
-                                                width: "100%",
-                                                display: "flex",
-                                                justifyContent: "space-between",
-                                                alignItems: "center"
-                                            }}
-                                        >
-                                            <Box>
-                                                <Typography fontWeight={600}>{dg.name}</Typography>
-                                                <Stack direction="row" spacing={1} alignItems="center" mt={0.5}>
-                                                    <Chip
-                                                        size="small"
-                                                        color={dg.access_mode === "team" ? "success" : "default"}
-                                                        label={dg.access_mode === "team" ? "Entire team" : `Selected users (${dg.user_id?.length ?? 0})`}
-                                                    />
-                                                </Stack>
-                                            </Box>
-
-                                            <Box>
-                                                <IconButton onClick={() => setViewGroup(dg)}>
-                                                    <VisibilityIcon />
-                                                </IconButton>
-                                                <IconButton onClick={() => setAssignGroup(dg)}>
-                                                    <GroupAddIcon />
-                                                </IconButton>
-                                                <IconButton color="error" disabled={deletingId === dg._id} onClick={() => setDeleteGroup(dg)}>
-                                                    <DeleteIcon />
-                                                </IconButton>
-                                            </Box>
-                                        </Paper>
-                                    )}
-                                />
-                            )}
-                        </Box>
-                    </Stack>
+                    <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 240px), 1fr))", gap: 2, p: 0.25 }}>
+                        {filteredGroups.map(dg => (
+                            <Paper
+                                key={dg._id}
+                                variant="outlined"
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => setViewGroup(dg)}
+                                onKeyDown={event => {
+                                    if (event.key === "Enter" || event.key === " ") {
+                                        event.preventDefault();
+                                        setViewGroup(dg);
+                                    }
+                                }}
+                                sx={{
+                                    p: 2,
+                                    minHeight: 260,
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    alignItems: "center",
+                                    textAlign: "center",
+                                    position: "relative",
+                                    cursor: "pointer",
+                                    transition: "transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease",
+                                    "&:hover": { transform: "translateY(-2px)", boxShadow: 3, borderColor: "primary.light" },
+                                    "&:focus-visible": { outline: "3px solid", outlineColor: "primary.light", outlineOffset: 2 }
+                                }}
+                            >
+                                <Chip size="small" color={dg.access_mode === "team" ? "success" : "default"} label={dg.access_mode === "team" ? "Entire team" : "Selected users"} sx={{ position: "absolute", top: 12, left: 12 }} />
+                                <IconButton size="small" aria-label={`Actions for ${dg.name}`} onClick={event => { event.stopPropagation(); setActionGroup(dg); setActionAnchor(event.currentTarget); }} sx={{ position: "absolute", top: 8, right: 8 }}>
+                                    <MoreHorizIcon />
+                                </IconButton>
+                                <Avatar variant="rounded" sx={{ width: 72, height: 72, mt: 3, mb: 2, bgcolor: "info.main", boxShadow: 1 }}>
+                                    <FolderSharedIcon sx={{ fontSize: 40 }} />
+                                </Avatar>
+                                <Typography variant="h6" fontSize="1rem" fontWeight={700} sx={{ minHeight: 42, overflowWrap: "anywhere" }}>{dg.name}</Typography>
+                                <Typography variant="body2" color="text.secondary">
+                                    {dg.access_mode === "team" ? "Available to every Team member" : "Available only to selected members"}
+                                </Typography>
+                                <Box sx={{ flex: 1 }} />
+                                <Chip size="small" variant="outlined" label={`${dg.user_id?.length ?? 0} selected users`} sx={{ mt: 2 }} />
+                            </Paper>
+                        ))}
+                    </Box>
                 )}
             </Box>
+
+            <Menu anchorEl={actionAnchor} open={Boolean(actionAnchor)} onClose={() => { setActionAnchor(null); setActionGroup(null); }}>
+                <MenuItem onClick={() => { if (actionGroup) setViewGroup(actionGroup); setActionAnchor(null); setActionGroup(null); }}>
+                    <VisibilityIcon fontSize="small" sx={{ mr: 1.5 }} /> View details
+                </MenuItem>
+                <MenuItem onClick={() => { if (actionGroup) setAssignGroup(actionGroup); setActionAnchor(null); setActionGroup(null); }}>
+                    <GroupAddIcon fontSize="small" sx={{ mr: 1.5 }} /> Manage access
+                </MenuItem>
+                <MenuItem disabled={!actionGroup || deletingId === actionGroup._id} onClick={() => { if (actionGroup) setDeleteGroup(actionGroup); setActionAnchor(null); setActionGroup(null); }} sx={{ color: "error.main" }}>
+                    <DeleteIcon fontSize="small" sx={{ mr: 1.5 }} /> Delete
+                </MenuItem>
+            </Menu>
 
             {/* CREATE */}
             <NewDataGroupDialog
@@ -631,31 +641,21 @@ function AssignUserDialog({
 
 function DataGroupListSkeleton({ count = 6 }: { count?: number }) {
     return (
-        <Stack spacing={1}>
+        <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 240px), 1fr))", gap: 2, p: 0.25 }}>
             {Array.from({ length: count }).map((_, idx) => (
                 <Paper
                     key={idx}
                     variant="outlined"
-                    sx={{
-                        p: 2,
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center"
-                    }}
+                    sx={{ p: 2, minHeight: 260, display: "flex", flexDirection: "column", alignItems: "center" }}
                 >
-                    <Box sx={{ width: "70%" }}>
-                        <Skeleton variant="text" width="40%" height={26} />
-                        <Skeleton variant="text" width="25%" height={18} />
-                    </Box>
-
-                    <Box sx={{ display: "flex", gap: 1 }}>
-                        <Skeleton variant="circular" width={32} height={32} />
-                        <Skeleton variant="circular" width={32} height={32} />
-                        <Skeleton variant="circular" width={32} height={32} />
-                    </Box>
+                    <Skeleton variant="rounded" width={72} height={72} sx={{ mt: 3, mb: 2 }} />
+                    <Skeleton variant="text" width="65%" height={28} />
+                    <Skeleton variant="text" width="85%" />
+                    <Box sx={{ flex: 1 }} />
+                    <Skeleton variant="rounded" width={120} height={24} />
                 </Paper>
             ))}
-        </Stack>
+        </Box>
     );
 }
 

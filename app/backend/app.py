@@ -46,6 +46,58 @@ from mongo_table_connecters.local_auth import (
     reset_local_password,
     revoke_local_session,
 )
+from mongo_table_connecters.oidc_auth import (
+    OIDCAuthError,
+    begin_oidc_login,
+    complete_oidc_login,
+    discover_oidc_provider,
+    ensure_oidc_auth_indexes,
+    oidc_provider_identity_key,
+    resolve_oidc_session,
+    revoke_oidc_session,
+    revoke_oidc_provider_sessions,
+)
+from mongo_table_connecters.oidc_providers import (
+    delete_oidc_provider,
+    ensure_oidc_provider_indexes,
+    get_oidc_provider,
+    list_oidc_providers,
+    public_oidc_providers,
+    save_oidc_provider,
+    serialize_oidc_provider,
+)
+from mongo_table_connecters.saml_auth import (
+    SAMLAuthError,
+    begin_saml_login,
+    complete_saml_login,
+    ensure_saml_auth_indexes,
+    resolve_saml_session,
+    revoke_saml_provider_sessions,
+    revoke_saml_session,
+    saml_metadata,
+    saml_provider_identity_key,
+)
+from mongo_table_connecters.saml_providers import (
+    delete_saml_provider,
+    ensure_saml_provider_indexes,
+    get_saml_provider,
+    list_saml_providers,
+    public_saml_providers,
+    saml_settings,
+    save_saml_provider,
+    serialize_saml_provider,
+)
+from mongo_table_connecters.identity_management import (
+    approve_identity_link,
+    ensure_identity_management_indexes,
+    federated_identity_types_by_user_ids,
+    get_identity_link_request,
+    list_identity_audit_events,
+    list_identity_link_requests,
+    list_federated_identities,
+    reject_identity_link,
+    unlink_federated_identity,
+)
 from mongo_table_connecters.auth_settings import (
     delete_auth_settings,
     get_auth_settings,
@@ -84,7 +136,29 @@ from mongo_table_connecters.usage_quotas import (
     team_member_quota_policy,
 )
 from core.usage_quotas import UsageQuotaPolicy
-from mongo_table_connecters.agents import insert_agent, get_agent_by_id, update_agent, delete_agent_by_id
+from mongo_table_connecters.agents import (
+    activate_agent_by_id,
+    delete_agent_cascade,
+    ensure_agent_indexes,
+    get_agent_by_id,
+    insert_agent,
+    is_active_agent,
+    is_expired_agent_draft,
+    list_expired_agent_draft_ids,
+    update_agent,
+)
+from mongo_table_connecters.agent_catalog import (
+    ensure_agent_catalog_indexes,
+    get_active_installation,
+    get_catalog_item,
+    get_catalog_version,
+    insert_catalog_audit_event,
+    is_visible_to_team,
+    list_catalog_items,
+    publish_agent,
+    record_installation,
+    update_catalog_item,
+)
 from mongo_table_connecters.llm_providers import (
     get_llm_provider,
     insert_llm_provider,
@@ -588,7 +662,7 @@ def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> N
     agent_found = not agent_id
     if agent_id:
         agent = get_agent_by_id(agent_id)
-        if agent:
+        if is_active_agent(agent):
             agent_found = True
             agent_config = agent.get("config") or {}
             profile_id = agent_config.get("llm_profile_id") or DEFAULT_LLM_PROFILE_ID
@@ -789,18 +863,28 @@ def _application_user_for_claims(auth_claims: dict[str, Any]) -> dict[str, Any] 
     return get_user_by_ad_email(str(username)) if username else None
 
 
-def _serialize_user_auth(user: dict[str, Any], identity: dict[str, Any] | None = None) -> dict[str, Any]:
+def _serialize_user_auth(
+    user: dict[str, Any],
+    identity: dict[str, Any] | None = None,
+    *,
+    has_oidc_identity: bool = False,
+    has_saml_identity: bool = False,
+) -> dict[str, Any]:
     result = dict(user)
     identity = identity if identity is not None else get_local_identity_for_user(str(user.get("_id") or ""))
     providers = []
     # Legacy users with an Entra login predate this marker. A user created by
     # the local administrator flow is local-only unless an identity-linking
     # flow explicitly records Entra ownership in a future migration.
-    if user.get("ad_email") and user.get("created_by_auth_provider") != "local":
+    if user.get("ad_email") and user.get("created_by_auth_provider") not in {"local", "oidc", "saml"}:
         providers.append("entra")
     if identity:
         providers.append("local")
         result["local_username"] = identity.get("username")
+    if has_oidc_identity or user.get("created_by_auth_provider") == "oidc":
+        providers.append("oidc")
+    if has_saml_identity or user.get("created_by_auth_provider") == "saml":
+        providers.append("saml")
     result["auth_providers"] = providers
     return result
 
@@ -1009,6 +1093,10 @@ def _authorized_request_claims(
     *,
     agent_id: str | None,
 ) -> dict[str, Any]:
+    if agent_id:
+        selected_agent = get_agent_by_id(str(agent_id))
+        if selected_agent and not is_active_agent(selected_agent):
+            raise AccessControlError("The selected agent is still a draft", status_code=409)
     team_id = str(request_json.get("team_id") or request_json.get("gid") or "").strip()
     requested_groups = request_json.get("data_groups_id")
     requested_scopes = request_json.get("selected_scopes")
@@ -1690,6 +1778,13 @@ async def ask(auth_claims: dict[str, Any]):
         context["auth_claims"] = _authorized_request_claims(
             request_json, auth_claims, agent_id=agent_id
         )
+        selected_scopes = context["auth_claims"].get("selected_scopes") or []
+        current_app.logger.info(
+            "Knowledge selection: personal=%s global=%s data_groups=%d",
+            "personal" in selected_scopes,
+            "global" in selected_scopes,
+            len(context["auth_claims"].get("data_groups_id") or []),
+        )
         _prepare_usage_request(request_json, context)
         context["conversation_id"] = ensure_conversation_id(request_json.get("conversation_id"))
         _apply_agent_llm_profile(context, agent_id)
@@ -1910,7 +2005,7 @@ def _use_langgraph_runtime(agent_id: str | None) -> bool:
         return mode == "langgraph"
     if agent_id:
         agent = get_agent_by_id(agent_id)
-        configured = str((agent or {}).get("config", {}).get("runtime") or "").strip().lower()
+        configured = str((agent or {}).get("config", {}).get("runtime") or "").strip().lower() if is_active_agent(agent) else ""
         if configured in ("legacy", "langgraph"):
             return configured == "langgraph"
     return False
@@ -1920,6 +2015,8 @@ def _guardrail_policy_for_agent(
     agent_id: str | None, team_id: str | None = None
 ) -> GuardrailPolicy:
     agent = get_agent_by_id(agent_id) if agent_id else None
+    if not is_active_agent(agent):
+        agent = None
     system_config = get_guardrail_settings()
     team_config = get_guardrail_settings(team_id) if team_id else None
     return merge_guardrail_policies(
@@ -2597,6 +2694,13 @@ async def chat(auth_claims: dict[str, Any]):
         context["auth_claims"] = _authorized_request_claims(
             request_json, auth_claims, agent_id=agent_id
         )
+        selected_scopes = context["auth_claims"].get("selected_scopes") or []
+        current_app.logger.info(
+            "Knowledge selection: personal=%s global=%s data_groups=%d",
+            "personal" in selected_scopes,
+            "global" in selected_scopes,
+            len(context["auth_claims"].get("data_groups_id") or []),
+        )
         _prepare_usage_request(request_json, context)
         guardrail_policy, guardrail_audit = await _enforce_input_guardrails(
             messages=request_json.get("messages"),
@@ -2667,6 +2771,13 @@ async def chat_stream(auth_claims: dict[str, Any]):
     try:
         context["auth_claims"] = _authorized_request_claims(
             request_json, auth_claims, agent_id=agent_id
+        )
+        selected_scopes = context["auth_claims"].get("selected_scopes") or []
+        current_app.logger.info(
+            "Knowledge selection: personal=%s global=%s data_groups=%d",
+            "personal" in selected_scopes,
+            "global" in selected_scopes,
+            len(context["auth_claims"].get("data_groups_id") or []),
         )
         _prepare_usage_request(request_json, context)
         guardrail_policy, guardrail_audit = await _enforce_input_guardrails(
@@ -2983,6 +3094,221 @@ def auth_setup():
     return jsonify(auth_helper.get_auth_setup_for_client())
 
 
+def _oidc_callback_url() -> str:
+    configured_base = str(os.getenv("NEXORA_PUBLIC_URL") or "").strip().rstrip("/")
+    base = configured_base or request.url_root.rstrip("/")
+    return f"{base}/auth/oidc/callback"
+
+
+@bp.post("/auth/oidc/start")
+async def oidc_login_start():
+    try:
+        enforce_local_login_rate_limit(request.remote_addr or "unknown")
+        body = await request.get_json(silent=True) or {}
+        provider_id = str(body.get("provider_id") or "legacy")
+        settings = get_oidc_provider(provider_id, decrypt_client_secret=True) or {}
+        authorization_url = await begin_oidc_login(settings, _oidc_callback_url())
+        return jsonify({"authorization_url": authorization_url})
+    except OIDCAuthError as error:
+        return jsonify({"error": str(error)}), error.status_code
+
+
+@bp.post("/auth/oidc/route")
+async def oidc_login_route():
+    try:
+        enforce_local_login_rate_limit(request.remote_addr or "unknown")
+        body = await request.get_json(silent=True) or {}
+        email = str(body.get("email") or "").strip().lower()
+        if "@" not in email or len(email) > 254:
+            raise OIDCAuthError("Enter a valid work email address")
+        domain = email.rsplit("@", 1)[1]
+        matches = [
+            item
+            for item in list_oidc_providers()
+            if item.get("enabled") is True
+            and domain in {str(value).lower() for value in (item.get("allowed_domains") or [])}
+        ]
+        if len(matches) != 1:
+            raise OIDCAuthError("No unique SSO provider is configured for this email domain", status_code=404)
+        return jsonify({"provider_id": str(matches[0]["_id"])})
+    except (OIDCAuthError, LocalAuthError) as error:
+        return jsonify({"error": str(error)}), error.status_code
+
+
+async def _oidc_callback_page(payload: dict[str, Any], *, status_code: int = 200):
+    # The session token is delivered to the same-origin opener and never placed
+    # in a query string, browser history, referrer, or application log.
+    encoded = json.dumps(payload, separators=(",", ":")).replace("<", "\\u003c")
+    html = f"""<!doctype html><html><head><meta charset=\"utf-8\"><title>Sign in</title></head>
+<body><p>You may close this window.</p><script>
+if (window.opener) window.opener.postMessage({encoded}, window.location.origin);
+window.close();
+</script></body></html>"""
+    response = await make_response(html, status_code)
+    response.headers["Content-Type"] = "text/html; charset=utf-8"
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; script-src 'unsafe-inline'; style-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    return response
+
+
+@bp.get("/auth/oidc/callback")
+async def oidc_login_callback():
+    if request.args.get("error"):
+        return await _oidc_callback_page(
+            {"type": "nexora:oidc", "error": "The identity provider did not complete sign-in."},
+            status_code=401,
+        )
+    try:
+        state = str(request.args.get("state") or "")
+        code = str(request.args.get("code") or "")
+        if not state or not code:
+            raise OIDCAuthError("OIDC callback is missing code or state", status_code=400)
+        token, user = await complete_oidc_login(
+            lambda provider_id: get_oidc_provider(provider_id, decrypt_client_secret=True),
+            state,
+            code,
+        )
+        return await _oidc_callback_page(
+            {
+                "type": "nexora:oidc",
+                "access_token": token,
+                "username": user.get("email") or user.get("ad_email") or "",
+            }
+        )
+    except OIDCAuthError as error:
+        return await _oidc_callback_page(
+            {"type": "nexora:oidc", "error": str(error)}, status_code=error.status_code
+        )
+    except Exception:
+        current_app.logger.exception("OIDC callback failed")
+        return await _oidc_callback_page(
+            {"type": "nexora:oidc", "error": "OIDC sign-in could not be completed."},
+            status_code=500,
+        )
+
+
+@bp.post("/auth/oidc/logout")
+@authenticated
+async def oidc_auth_logout(auth_claims: dict[str, Any]):
+    if auth_claims.get("auth_provider") != "oidc":
+        return jsonify({"success": True}), 200
+    try:
+        token = current_app.config[CONFIG_AUTH_CLIENT].get_token_auth_header(request.headers)
+        revoke_oidc_session(token)
+    except Exception:
+        pass
+    return jsonify({"success": True}), 200
+
+
+def _public_base_url() -> str:
+    return str(os.getenv("NEXORA_PUBLIC_URL") or request.url_root).strip().rstrip("/")
+
+
+def _saml_urls(provider_id: str) -> tuple[str, str]:
+    base = _public_base_url()
+    return (
+        f"{base}/auth/saml/{provider_id}/acs",
+        f"{base}/auth/saml/{provider_id}/metadata",
+    )
+
+
+def _saml_request_data(post_data: dict[str, Any] | None = None) -> dict[str, Any]:
+    parsed = urlparse(_public_base_url())
+    return {
+        "https": "on" if parsed.scheme == "https" else "off",
+        "http_host": parsed.netloc,
+        "server_port": str(parsed.port or (443 if parsed.scheme == "https" else 80)),
+        "script_name": request.path,
+        "get_data": request.args.to_dict(flat=True),
+        "post_data": post_data or {},
+    }
+
+
+@bp.post("/auth/saml/<provider_id>/start")
+async def saml_login_start(provider_id: str):
+    try:
+        enforce_local_login_rate_limit(request.remote_addr or "unknown")
+        provider = get_saml_provider(provider_id) or {}
+        acs_url, metadata_url = _saml_urls(provider_id)
+        redirect_url = begin_saml_login(
+            provider,
+            _saml_request_data(),
+            acs_url=acs_url,
+            metadata_url=metadata_url,
+        )
+        return jsonify({"authorization_url": redirect_url})
+    except (SAMLAuthError, ValueError) as error:
+        return jsonify({"error": str(error)}), getattr(error, "status_code", 400)
+
+
+@bp.post("/auth/saml/<provider_id>/acs")
+async def saml_login_acs(provider_id: str):
+    try:
+        form = (await request.form).to_dict(flat=True)
+        relay_state = str(form.get("RelayState") or "")
+        if not relay_state or not form.get("SAMLResponse"):
+            raise SAMLAuthError("SAML response or RelayState is missing")
+        provider = get_saml_provider(provider_id) or {}
+        if provider.get("enabled") is not True:
+            raise SAMLAuthError("SAML authentication is not enabled", status_code=404)
+        acs_url, metadata_url = _saml_urls(provider_id)
+        token, user = complete_saml_login(
+            provider,
+            _saml_request_data(form),
+            relay_state,
+            acs_url=acs_url,
+            metadata_url=metadata_url,
+        )
+        return await _oidc_callback_page(
+            {
+                "type": "nexora:saml",
+                "access_token": token,
+                "username": user.get("email") or user.get("ad_email") or "",
+            }
+        )
+    except SAMLAuthError as error:
+        return await _oidc_callback_page(
+            {"type": "nexora:saml", "error": str(error)}, status_code=error.status_code
+        )
+    except Exception:
+        current_app.logger.exception("SAML ACS failed")
+        return await _oidc_callback_page(
+            {"type": "nexora:saml", "error": "SAML sign-in could not be completed."},
+            status_code=500,
+        )
+
+
+@bp.get("/auth/saml/<provider_id>/metadata")
+async def saml_service_provider_metadata(provider_id: str):
+    try:
+        provider = get_saml_provider(provider_id) or {}
+        if not provider:
+            return jsonify({"error": "SAML provider not found"}), 404
+        acs_url, metadata_url = _saml_urls(provider_id)
+        response = await make_response(
+            saml_metadata(provider, acs_url=acs_url, metadata_url=metadata_url), 200
+        )
+        response.headers["Content-Type"] = "application/samlmetadata+xml; charset=utf-8"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except SAMLAuthError as error:
+        return jsonify({"error": str(error)}), error.status_code
+
+
+@bp.post("/auth/saml/logout")
+@authenticated
+async def saml_auth_logout(auth_claims: dict[str, Any]):
+    if auth_claims.get("auth_provider") != "saml":
+        return jsonify({"success": True}), 200
+    try:
+        token = current_app.config[CONFIG_AUTH_CLIENT].get_token_auth_header(request.headers)
+        revoke_saml_session(token)
+    except Exception:
+        pass
+    return jsonify({"success": True}), 200
+
+
 def _local_auth_enabled() -> bool:
     auth_helper = current_app.config[CONFIG_AUTH_CLIENT]
     return bool(getattr(auth_helper, "local_authentication_enabled", False))
@@ -3136,8 +3462,17 @@ async def admin_get_auth_settings(auth_claims: dict[str, Any]):
             "client_app_id": auth_helper.client_app_id or "",
             "has_client_secret": bool(auth_helper.server_app_secret),
             "source": "environment",
+            "oidc_enabled": False,
+            "oidc_display_name": "Enterprise SSO",
+            "oidc_issuer": "",
+            "oidc_client_id": "",
+            "oidc_token_auth_method": "client_secret_basic",
+            "oidc_has_client_secret": False,
+            "oidc_jit_enabled": False,
+            "oidc_allowed_domains": [],
         }
     settings["local_enabled"] = _local_auth_enabled()
+    settings["oidc_callback_url"] = _oidc_callback_url()
     return jsonify(settings)
 
 
@@ -3147,12 +3482,32 @@ async def admin_update_auth_settings(auth_claims: dict[str, Any]):
     _require_system_admin(auth_claims)
     try:
         body = await request.get_json()
+        if (body or {}).get("oidc_enabled") is True and not _local_auth_enabled():
+            return jsonify({"error": "Managed Generic OIDC requires Local authentication as a break-glass administrator path"}), 400
         if (body or {}).get("entra_enabled") is not True and not (
             _local_auth_enabled() and local_identity_exists()
         ):
             return jsonify({"error": "Create a local administrator before disabling Microsoft Entra ID"}), 400
+        if (body or {}).get("oidc_enabled") is True:
+            requested_domains = {
+                str(value).strip().lower().lstrip("@")
+                for value in ((body or {}).get("oidc_allowed_domains") or [])
+                if str(value).strip()
+            }
+            if any(
+                item.get("legacy") is not True
+                and item.get("enabled") is True
+                and requested_domains.intersection(item.get("allowed_domains") or [])
+                for item in list_oidc_providers()
+            ):
+                return jsonify({"error": "An enabled managed OIDC provider already uses one of these email domains"}), 400
+        previous_settings = get_auth_settings(decrypt_client_secret=True) or {}
         settings = save_auth_settings(body or {})
         runtime_settings = get_auth_settings(decrypt_client_secret=True) or {}
+        if runtime_settings.get("oidc_enabled") is True:
+            ensure_local_auth_indexes()
+            ensure_oidc_auth_indexes()
+            ensure_identity_management_indexes()
         current_app.config[CONFIG_AUTH_CLIENT].configure_entra(
             enabled=runtime_settings.get("entra_enabled") is True,
             tenant_id=runtime_settings.get("tenant_id"),
@@ -3160,7 +3515,306 @@ async def admin_update_auth_settings(auth_claims: dict[str, Any]):
             server_app_secret=runtime_settings.get("client_secret"),
             client_app_id=runtime_settings.get("client_app_id"),
         )
+        if previous_settings.get("oidc_enabled") is True and (
+            runtime_settings.get("oidc_enabled") is not True
+            or str(previous_settings.get("oidc_issuer") or "").rstrip("/")
+            != str(runtime_settings.get("oidc_issuer") or "").rstrip("/")
+        ):
+            revoke_oidc_provider_sessions(
+                "legacy", legacy_issuer=str(previous_settings.get("oidc_issuer") or "")
+            )
+        _refresh_oidc_runtime()
         return jsonify(serialize_auth_settings(settings))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.post("/admin/auth-settings/oidc/test")
+@authenticated
+async def admin_test_oidc_settings(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        body = await request.get_json()
+        issuer = str((body or {}).get("issuer") or "").strip().rstrip("/")
+        discovery = await discover_oidc_provider(issuer)
+        return jsonify(
+            {
+                "success": True,
+                "issuer": discovery.get("issuer"),
+                "authorization_endpoint": discovery.get("authorization_endpoint"),
+                "token_endpoint": discovery.get("token_endpoint"),
+            }
+        )
+    except OIDCAuthError as error:
+        return jsonify({"error": str(error)}), error.status_code
+
+
+def _refresh_oidc_runtime() -> None:
+    providers = public_oidc_providers()
+    current_app.config[CONFIG_AUTH_CLIENT].configure_oidc(
+        enabled=bool(providers),
+        display_name=providers[0]["display_name"] if providers else "Enterprise SSO",
+        providers=providers,
+    )
+
+
+def _refresh_saml_runtime() -> None:
+    providers = public_saml_providers()
+    current_app.config[CONFIG_AUTH_CLIENT].configure_saml(
+        enabled=bool(providers),
+        providers=providers,
+    )
+
+
+@bp.get("/admin/oidc-providers")
+@authenticated
+async def admin_list_oidc_providers(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    return jsonify({"providers": [serialize_oidc_provider(item) for item in list_oidc_providers()]})
+
+
+@bp.post("/admin/oidc-providers")
+@authenticated
+async def admin_create_oidc_provider(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    if not _local_auth_enabled():
+        return jsonify({"error": "Managed Generic OIDC requires Local authentication as a break-glass administrator path"}), 400
+    try:
+        provider = save_oidc_provider(await request.get_json() or {})
+        ensure_local_auth_indexes()
+        ensure_oidc_auth_indexes()
+        ensure_oidc_provider_indexes()
+        ensure_identity_management_indexes()
+        _refresh_oidc_runtime()
+        return jsonify(serialize_oidc_provider(provider)), 201
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.put("/admin/oidc-providers/<provider_id>")
+@authenticated
+async def admin_update_oidc_provider(auth_claims: dict[str, Any], provider_id: str):
+    _require_system_admin(auth_claims)
+    try:
+        body = await request.get_json() or {}
+        if body.get("enabled") is True and not _local_auth_enabled():
+            return jsonify({"error": "Managed Generic OIDC requires Local authentication as a break-glass administrator path"}), 400
+        provider = save_oidc_provider(body, provider_id)
+        if provider.get("enabled") is not True:
+            revoke_oidc_provider_sessions(provider_id)
+        _refresh_oidc_runtime()
+        return jsonify(serialize_oidc_provider(provider))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.delete("/admin/oidc-providers/<provider_id>")
+@authenticated
+async def admin_delete_oidc_provider(auth_claims: dict[str, Any], provider_id: str):
+    _require_system_admin(auth_claims)
+    try:
+        if not delete_oidc_provider(provider_id):
+            return jsonify({"error": "OIDC provider not found"}), 404
+        revoke_oidc_provider_sessions(provider_id)
+        _refresh_oidc_runtime()
+        return jsonify({"success": True})
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.get("/admin/saml-providers")
+@authenticated
+async def admin_list_saml_providers(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    providers = []
+    for item in list_saml_providers():
+        serialized = serialize_saml_provider(item)
+        acs_url, metadata_url = _saml_urls(serialized["id"])
+        serialized.update({"acs_url": acs_url, "metadata_url": metadata_url})
+        providers.append(serialized)
+    return jsonify({"providers": providers})
+
+
+@bp.post("/admin/saml-providers/test")
+@authenticated
+async def admin_test_saml_provider(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        body = await request.get_json() or {}
+        provider_id = str(body.get("id") or "preview")
+        acs_url, metadata_url = _saml_urls(provider_id)
+        saml_settings(body, acs_url=acs_url, metadata_url=metadata_url)
+        return jsonify({"success": True, "acs_url": acs_url, "metadata_url": metadata_url})
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.post("/admin/saml-providers")
+@authenticated
+async def admin_create_saml_provider(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    if not _local_auth_enabled():
+        return jsonify({"error": "Managed SAML requires Local authentication as a break-glass administrator path"}), 400
+    try:
+        body = await request.get_json() or {}
+        provider = save_saml_provider(body, str(body.get("id") or "") or None)
+        provider_id = str(provider.get("_id") or "")
+        acs_url, metadata_url = _saml_urls(provider_id)
+        saml_settings(provider, acs_url=acs_url, metadata_url=metadata_url)
+        ensure_local_auth_indexes()
+        ensure_saml_auth_indexes()
+        ensure_saml_provider_indexes()
+        ensure_identity_management_indexes()
+        _refresh_saml_runtime()
+        result = serialize_saml_provider(provider)
+        result.update({"acs_url": acs_url, "metadata_url": metadata_url})
+        return jsonify(result), 201
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.put("/admin/saml-providers/<provider_id>")
+@authenticated
+async def admin_update_saml_provider(auth_claims: dict[str, Any], provider_id: str):
+    _require_system_admin(auth_claims)
+    try:
+        body = await request.get_json() or {}
+        if body.get("enabled") is True and not _local_auth_enabled():
+            return jsonify({"error": "Managed SAML requires Local authentication as a break-glass administrator path"}), 400
+        provider = save_saml_provider(body, provider_id)
+        acs_url, metadata_url = _saml_urls(provider_id)
+        saml_settings(provider, acs_url=acs_url, metadata_url=metadata_url)
+        if provider.get("enabled") is not True:
+            revoke_saml_provider_sessions(provider_id)
+        _refresh_saml_runtime()
+        result = serialize_saml_provider(provider)
+        result.update({"acs_url": acs_url, "metadata_url": metadata_url})
+        return jsonify(result)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.delete("/admin/saml-providers/<provider_id>")
+@authenticated
+async def admin_delete_saml_provider(auth_claims: dict[str, Any], provider_id: str):
+    _require_system_admin(auth_claims)
+    if not delete_saml_provider(provider_id):
+        return jsonify({"error": "SAML provider not found"}), 404
+    revoke_saml_provider_sessions(provider_id)
+    _refresh_saml_runtime()
+    return jsonify({"success": True})
+
+
+def _federated_provider_names() -> dict[str, str]:
+    names = {
+        oidc_provider_identity_key(provider): str(provider.get("display_name") or "Enterprise SSO")
+        for provider in list_oidc_providers()
+    }
+    names.update(
+        {
+            saml_provider_identity_key(provider): str(provider.get("display_name") or "Enterprise SAML")
+            for provider in list_saml_providers()
+        }
+    )
+    return names
+
+
+@bp.get("/admin/auth-identities")
+@authenticated
+async def admin_list_auth_identities(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    provider_names = _federated_provider_names()
+    pending = []
+    for item in list_identity_link_requests():
+        suggested = get_user_by_id(str(item.get("suggested_user_id") or ""))
+        pending.append(
+            {
+                "id": str(item.get("_id") or ""),
+                "provider_name": provider_names.get(str(item.get("provider") or ""), "Federated provider"),
+                "email": str(item.get("email") or ""),
+                "suggested_user_id": str(item.get("suggested_user_id") or ""),
+                "suggested_user_name": " ".join(
+                    filter(None, [str((suggested or {}).get("first_name") or ""), str((suggested or {}).get("last_name") or "")])
+                ).strip(),
+                "expires_at": item.get("expires_at"),
+            }
+        )
+    links = []
+    for identity in list_federated_identities():
+        user = get_user_by_id(str(identity.get("user_id") or ""))
+        links.append(
+            {
+                "id": str(identity.get("_id") or ""),
+                "provider_name": provider_names.get(str(identity.get("provider") or ""), "Retired provider"),
+                "username": str(identity.get("username") or ""),
+                "user_id": str(identity.get("user_id") or ""),
+                "user_name": " ".join(
+                    filter(None, [str((user or {}).get("first_name") or ""), str((user or {}).get("last_name") or "")])
+                ).strip(),
+                "active": identity.get("active", True) is True,
+                "created_at": identity.get("created_at"),
+            }
+        )
+    audits = [
+        {
+            "id": str(item.get("_id") or ""),
+            "action": str(item.get("action") or ""),
+            "actor_id": str(item.get("actor_id") or ""),
+            "target_user_id": str(item.get("target_user_id") or ""),
+            "provider": str(item.get("provider") or ""),
+            "created_at": item.get("created_at"),
+        }
+        for item in list_identity_audit_events()
+    ]
+    return jsonify({"pending": pending, "links": links, "audit_events": audits})
+
+
+@bp.post("/admin/auth-identities/requests/<request_id>/approve")
+@authenticated
+async def admin_approve_auth_identity(auth_claims: dict[str, Any], request_id: str):
+    actor = _require_system_admin(auth_claims)
+    try:
+        body = await request.get_json() or {}
+        link_request = get_identity_link_request(request_id)
+        enabled_provider_keys = {
+            oidc_provider_identity_key(provider)
+            for provider in list_oidc_providers()
+            if provider.get("enabled") is True
+        }
+        enabled_provider_keys.update(
+            saml_provider_identity_key(provider)
+            for provider in list_saml_providers()
+            if provider.get("enabled") is True
+        )
+        if not link_request or str(link_request.get("provider") or "") not in enabled_provider_keys:
+            raise ValueError("The identity provider for this request is disabled or unavailable")
+        identity = approve_identity_link(
+            request_id,
+            str(body.get("user_id") or ""),
+            actor_id=str(actor.get("_id") or ""),
+        )
+        return jsonify({"identity_id": str(identity.get("_id") or "")}), 201
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.post("/admin/auth-identities/requests/<request_id>/reject")
+@authenticated
+async def admin_reject_auth_identity(auth_claims: dict[str, Any], request_id: str):
+    actor = _require_system_admin(auth_claims)
+    if not reject_identity_link(request_id, actor_id=str(actor.get("_id") or "")):
+        return jsonify({"error": "Identity link request was not found or is no longer pending"}), 404
+    return jsonify({"success": True})
+
+
+@bp.delete("/admin/auth-identities/<identity_id>")
+@authenticated
+async def admin_unlink_auth_identity(auth_claims: dict[str, Any], identity_id: str):
+    actor = _require_system_admin(auth_claims)
+    try:
+        if not unlink_federated_identity(identity_id, actor_id=str(actor.get("_id") or "")):
+            return jsonify({"error": "Federated identity was not found"}), 404
+        return jsonify({"success": True})
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
@@ -3180,6 +3834,7 @@ async def admin_reset_auth_settings(auth_claims: dict[str, Any]):
         server_app_secret=os.getenv("AZURE_SERVER_APP_SECRET"),
         client_app_id=os.getenv("AZURE_CLIENT_APP_ID"),
     )
+    _refresh_oidc_runtime()
     return jsonify({"success": True}), 200
 
 
@@ -5301,6 +5956,35 @@ INGESTION_TASKS: set[asyncio.Task] = set()
 ATTACHMENT_EXTRACTION_WORKER_ID = f"attachment-{uuid.uuid4()}"
 
 
+def _agent_draft_retention_hours() -> float:
+    try:
+        value = float(os.getenv("AGENT_DRAFT_RETENTION_HOURS", "24"))
+    except ValueError as error:
+        raise ValueError("AGENT_DRAFT_RETENTION_HOURS must be numeric") from error
+    if not math.isfinite(value) or value < 1 or value > 168:
+        raise ValueError("AGENT_DRAFT_RETENTION_HOURS must be between 1 and 168")
+    return value
+
+
+async def _run_agent_draft_cleanup(interval_seconds: float) -> None:
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            expired_ids = await asyncio.to_thread(list_expired_agent_draft_ids)
+            for agent_id in expired_ids:
+                await asyncio.to_thread(
+                    delete_agent_cascade,
+                    agent_id,
+                    reason="draft_expired",
+                )
+            if expired_ids:
+                current_app.logger.info("Expired Agent drafts removed: count=%d", len(expired_ids))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            current_app.logger.exception("Unable to clean up expired Agent drafts")
+
+
 class _NamedAttachmentBytesIO(BytesIO):
     def __init__(self, content: bytes, filename: str):
         super().__init__(content)
@@ -6652,7 +7336,7 @@ async def check_user_login(auth_claims: dict[str, Any]):
                         team_dict = {"_id": team.get(
                             "_id"), "name": team["name"], "permissions": per_list}
                         result_teams.append(team_dict)
-            return jsonify({"user": _serialize_user_auth(user), "teams": result_teams, "sys_permissions": sys_pers}), 200
+            return jsonify({"user": _serialize_user_auth(user, has_oidc_identity=auth_claims.get("auth_provider") == "oidc", has_saml_identity=auth_claims.get("auth_provider") == "saml"), "teams": result_teams, "sys_permissions": sys_pers}), 200
         else:
             return jsonify({"error": "Can't find user"}), 404
     except Exception as error_txt:
@@ -6665,7 +7349,7 @@ async def get_own_profile(auth_claims: dict[str, Any]):
     user = _application_user_for_claims(auth_claims)
     if not user or user.get("active", True) is not True:
         return jsonify({"error": "The application user is unavailable"}), 404
-    return jsonify({"user": _serialize_user_auth(user)}), 200
+    return jsonify({"user": _serialize_user_auth(user, has_oidc_identity=auth_claims.get("auth_provider") == "oidc", has_saml_identity=auth_claims.get("auth_provider") == "saml")}), 200
 
 
 @bp.put("/auth/profile")
@@ -6684,7 +7368,7 @@ async def update_own_profile(auth_claims: dict[str, Any]):
             tel=profile["tel"],
         )
         updated = get_user_by_id(str(user["_id"]))
-        return jsonify({"user": _serialize_user_auth(updated or user)}), 200
+        return jsonify({"user": _serialize_user_auth(updated or user, has_oidc_identity=auth_claims.get("auth_provider") == "oidc", has_saml_identity=auth_claims.get("auth_provider") == "saml")}), 200
     except Exception as error:
         return error_response(error, "/auth/profile")
 
@@ -6701,7 +7385,14 @@ async def create_team(auth_claims: dict[str, Any]):
             agent_config = {"temperature": 0.2, "seed": None,
                             "min_search_score": 0, "max_search_results": 2, "max_tokens": 1024,
                             "llm_profile_id": DEFAULT_LLM_PROFILE_ID}
-            result, agent_id = insert_agent("default", None, agent_config)
+            default_prompt = {
+                "role": "",
+                "task": "",
+                "detail_context": "",
+                "output_format": "",
+                "constraints": "",
+            }
+            result, agent_id = insert_agent("default", default_prompt, agent_config)
             result, data_group_id = insert_data_group("default", [])
             team_result = insert_team(
                 normalized_team_name,
@@ -6765,7 +7456,9 @@ async def get_team_detail(auth_claims: dict[str, Any]):
         for user_id in team_data.get("user_id"):
             user_list.append(get_user_by_id(str(user_id)))
         for agent_id in team_data.get("agent_id"):
-            agent_list.append(get_agent_by_id(str(agent_id)))
+            agent = get_agent_by_id(str(agent_id))
+            if is_active_agent(agent):
+                agent_list.append(agent)
         for data_group_id in team_data.get("data_group_id"):
             user_data_group = []
             data_group = get_data_group_by_id(str(data_group_id))
@@ -6914,10 +7607,21 @@ async def get_available_team_users(auth_claims: dict[str, Any], team_id: str):
         local_identities = list_local_identities_by_user_ids(
             [str(user.get("_id") or "") for user in users]
         )
+        auth_helper = current_app.config[CONFIG_AUTH_CLIENT]
+        federated_types = (
+            federated_identity_types_by_user_ids([str(user.get("_id") or "") for user in users])
+            if auth_helper.oidc_authentication_enabled or auth_helper.saml_authentication_enabled
+            else {}
+        )
         result = []
         for user in users:
             user_id = str(user.get("_id") or "")
-            serialized = _serialize_user_auth(user, local_identities.get(user_id))
+            serialized = _serialize_user_auth(
+                user,
+                local_identities.get(user_id),
+                has_oidc_identity="oidc" in federated_types.get(user_id, set()),
+                has_saml_identity="saml" in federated_types.get(user_id, set()),
+            )
             result.append(
                 {
                     field: serialized.get(field)
@@ -6949,9 +7653,23 @@ async def get_all_users_function(auth_claims: dict[str, Any]):
         local_identities = list_local_identities_by_user_ids(
             [str(user.get("_id") or "") for user in allusers]
         )
+        auth_helper = current_app.config[CONFIG_AUTH_CLIENT]
+        federated_types = (
+            federated_identity_types_by_user_ids([str(user.get("_id") or "") for user in allusers])
+            if auth_helper.oidc_authentication_enabled or auth_helper.saml_authentication_enabled
+            else {}
+        )
         for user in allusers:
-            identity = local_identities.get(str(user.get("_id") or ""))
-            user.update(_serialize_user_auth(user, identity))
+            user_id = str(user.get("_id") or "")
+            identity = local_identities.get(user_id)
+            user.update(
+                _serialize_user_auth(
+                    user,
+                    identity,
+                    has_oidc_identity="oidc" in federated_types.get(user_id, set()),
+                    has_saml_identity="saml" in federated_types.get(user_id, set()),
+                )
+            )
         return jsonify({"result": allusers}), 200
     except Exception as error_txt:
         return error_response(error_txt, "/get_all_users")
@@ -7187,7 +7905,7 @@ async def delete_data_group_function(team_id, data_group_id):
 @authenticated
 async def delete_team(auth_claims: dict[str, Any]):
     try:
-        _require_system_permission(auth_claims, "Manage teams")
+        actor = _require_system_permission(auth_claims, "Manage teams")
         body = await request.get_json()
         team_id = body.get("team_id", None)
         if team_id:
@@ -7199,7 +7917,11 @@ async def delete_team(auth_claims: dict[str, Any]):
             for role in roles_list:
                 delete_role_by_id(role["_id"])
             for agent_id in agent_id_list:
-                delete_agent_by_id(str(agent_id))
+                delete_agent_cascade(
+                    str(agent_id),
+                    reason="team_deleted",
+                    actor_id=str(actor.get("_id") or ""),
+                )
             for group_id in group_id_list:
                 await delete_data_group_function(team_id, group_id)
                 delete_data_group_by_id(str(group_id))
@@ -7219,21 +7941,48 @@ async def create_agent(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         team_id = body.get("team_id", None)
-        _, team = _require_team_access(
+        actor, team = _require_team_access(
             auth_claims, str(team_id or ""), permission="Manage agents"
         )
-        agent_name = body.get("agent_name", None)
+        agent_name = str(body.get("agent_name") or "").strip()
+        if not agent_name:
+            raise AccessControlError("Agent name is required", status_code=400)
+        draft = body.get("draft", False)
+        if not isinstance(draft, bool):
+            raise AccessControlError("draft must be a boolean", status_code=400)
         agent_config = _validate_agent_model_config(body.get("config", None))
         _validate_agent_mcp_connections(agent_config, str(team_id or ""))
         agent_prompt = body.get("prompt", None)
-        result, agent_id = insert_agent(agent_name, agent_prompt, agent_config)
+        draft_expires_at = None
+        if draft:
+            draft_expires_at = datetime.now(timezone.utc) + timedelta(
+                hours=_agent_draft_retention_hours()
+            )
+            agent_id = insert_agent(
+                agent_name,
+                agent_prompt,
+                agent_config,
+                lifecycle_status="draft",
+                draft_expires_at=draft_expires_at,
+                created_by=str(actor.get("_id") or ""),
+            )[1]
+        else:
+            _, agent_id = insert_agent(agent_name, agent_prompt, agent_config)
         agent_team = team.get("agent_id")
         if agent_team:
             agent_team.append(str(agent_id))
         else:
             agent_team = [str(agent_id)]
         update_team(team_id=team_id, agent_id=agent_team)
-        return jsonify({"success": f"Create agent {agent_name} success"}), 200
+        created_agent = {
+            "_id": str(agent_id),
+            "agent_name": agent_name,
+            "prompt": agent_prompt,
+            "config": agent_config,
+            "lifecycle_status": "draft" if draft else "active",
+            "draft_expires_at": draft_expires_at,
+        }
+        return jsonify({"success": f"Create agent {agent_name} success", "agent": created_agent}), 201 if draft else 200
     except Exception as error_txt:
         return error_response(error_txt, "/create_agent")
 
@@ -7244,12 +7993,25 @@ async def get_agent_by_team(auth_claims: dict[str, Any]):
     try:
         body = await request.get_json()
         team_id = body.get("team_id", None)
-        _, team = _require_team_access(auth_claims, str(team_id or ""))
+        include_drafts = body.get("include_drafts", False)
+        if not isinstance(include_drafts, bool):
+            raise AccessControlError("include_drafts must be a boolean", status_code=400)
+        _, team = _require_team_access(
+            auth_claims,
+            str(team_id or ""),
+            permission="Manage agents" if include_drafts else None,
+        )
         agents = []
         for agent_id in team.get("agent_id") or []:
             agent = get_agent_by_id(str(agent_id))
-            if agent:
-                agents.append(agent)
+            if agent and not is_expired_agent_draft(agent) and (include_drafts or is_active_agent(agent)):
+                serialized_agent = dict(agent)
+                prompt = dict(agent.get("prompt") or {})
+                for field in ("role", "task", "detail_context", "output_format", "constraints"):
+                    prompt[field] = str(prompt.get(field) or "")
+                serialized_agent["prompt"] = prompt
+                serialized_agent["config"] = dict(agent.get("config") or {})
+                agents.append(serialized_agent)
         return jsonify({"result": agents}), 200
     except Exception as error_txt:
         return error_response(error_txt, "/get_agent_by_team")
@@ -7278,7 +8040,17 @@ async def edit_agent(auth_claims: dict[str, Any]):
             existing_config=current_agent.get("config") or {},
         )
         agent_prompt = body.get("prompt", None)
-        update_agent(agent_id, agent_name, agent_prompt, agent_config)
+        update_agent(
+            agent_id,
+            agent_name,
+            agent_prompt,
+            agent_config,
+            draft_expires_at=(
+                datetime.now(timezone.utc) + timedelta(hours=_agent_draft_retention_hours())
+                if not is_active_agent(current_agent)
+                else None
+            ),
+        )
         return jsonify({"success": f"Edit agent success"}), 200
     except Exception as error_txt:
         return error_response(error_txt, "/edit_agent")
@@ -7291,18 +8063,391 @@ async def delete_agent(auth_claims: dict[str, Any]):
         body = await request.get_json()
         team_id = body.get("team_id", None)
         agent_id = body.get("agent_id", None)
-        _, team = _require_team_access(
+        actor, team = _require_team_access(
             auth_claims, str(team_id or ""), permission="Manage agents"
         )
-        agent_team = list(team.get("agent_id") or [])
-        if str(agent_id or "") not in {str(item) for item in agent_team}:
+        if str(agent_id or "") not in {str(item) for item in (team.get("agent_id") or [])}:
             raise AccessControlError("Agent does not belong to this team", status_code=404)
-        agent_team.remove(agent_id)
-        update_team(team_id=team_id, agent_id=agent_team)
-        delete_agent_by_id(agent_id)
+        delete_agent_cascade(
+            str(agent_id),
+            reason="user_deleted",
+            actor_id=str(actor.get("_id") or ""),
+        )
         return jsonify({"success": f"Delete agent success"}), 200
     except Exception as error_txt:
         return error_response(error_txt, "/delete_agent")
+
+
+@bp.post("/activate_agent_draft")
+@authenticated
+async def activate_agent_draft(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        team_id = str(body.get("team_id") or "")
+        agent_id = str(body.get("agent_id") or "")
+        actor, team = _require_team_access(
+            auth_claims, team_id, permission="Manage agents"
+        )
+        if agent_id not in {str(item) for item in (team.get("agent_id") or [])}:
+            raise AccessControlError("Agent does not belong to this team", status_code=404)
+        agent = get_agent_by_id(agent_id)
+        if not agent:
+            raise AccessControlError("Agent not found", status_code=404)
+        if is_active_agent(agent):
+            return jsonify({"success": "Agent is already active", "agent": agent}), 200
+        if is_expired_agent_draft(agent):
+            delete_agent_cascade(agent_id, reason="draft_expired")
+            raise AccessControlError("Agent draft has expired", status_code=410)
+        _validate_agent_model_config(agent.get("config"))
+        _validate_agent_mcp_connections(agent.get("config") or {}, team_id)
+        if not str(agent.get("agent_name") or "").strip():
+            raise AccessControlError("Agent name is required", status_code=400)
+        if not activate_agent_by_id(agent_id):
+            raise AccessControlError("Agent draft could not be activated", status_code=409)
+        activated = get_agent_by_id(agent_id) or {**agent, "lifecycle_status": "active", "draft_expires_at": None}
+        get_database()["agent_lifecycle_audit"].insert_one({
+            "_id": str(uuid.uuid4()),
+            "event_type": "agent_activated",
+            "agent_id": agent_id,
+            "actor_id": str(actor.get("_id") or ""),
+            "team_id": team_id,
+            "created_at": datetime.now(timezone.utc),
+        })
+        return jsonify({"success": "Agent activated", "agent": activated}), 200
+    except Exception as error_txt:
+        return error_response(error_txt, "/activate_agent_draft")
+
+
+def _catalog_text(value: object, field: str, maximum: int, *, required: bool = False) -> str:
+    normalized = str(value or "").strip()
+    if required and not normalized:
+        raise AccessControlError(f"{field} is required", status_code=400)
+    if len(normalized) > maximum:
+        raise AccessControlError(f"{field} is too long", status_code=400)
+    return normalized
+
+
+def _catalog_tags(value: object) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise AccessControlError("tags must be an array", status_code=400)
+    result: list[str] = []
+    for raw_tag in value[:12]:
+        tag = _catalog_text(raw_tag, "tag", 40)
+        if tag and tag.lower() not in {item.lower() for item in result}:
+            result.append(tag)
+    return result
+
+
+def _serialize_catalog_item(
+    item: dict[str, Any],
+    *,
+    team_id: str | None = None,
+    include_governance: bool = False,
+) -> dict[str, Any]:
+    latest_version = int(item.get("latest_version") or 1)
+    version = get_catalog_version(str(item.get("_id") or ""), latest_version) or {}
+    publisher_team = get_team_by_id(str(item.get("publisher_team_id") or ""))
+    creator = get_user_by_id(str(version.get("created_by") or item.get("created_by") or ""))
+    creator_name = " ".join(
+        value for value in (
+            str((creator or {}).get("first_name") or "").strip(),
+            str((creator or {}).get("last_name") or "").strip(),
+        ) if value
+    )
+    publisher_type = str(item.get("publisher_type") or "team")
+    installation = (
+        get_active_installation(str(item.get("_id") or ""), team_id)
+        if team_id
+        else None
+    )
+    result = {
+        "_id": str(item.get("_id") or ""),
+        "name": str(item.get("name") or ""),
+        "summary": str(item.get("summary") or ""),
+        "usage_instructions": str(item.get("usage_instructions") or ""),
+        "tags": [str(value) for value in item.get("tags") or []],
+        "category": str(item.get("category") or "General"),
+        "publisher_team": {
+            "_id": str(item.get("publisher_team_id") or ""),
+            "name": "System Administration" if publisher_type == "system" else str((publisher_team or {}).get("name") or "Unknown team"),
+        },
+        "publisher_type": publisher_type,
+        "created_by": {
+            "_id": str((creator or {}).get("_id") or ""),
+            "name": creator_name or ("System administrator" if publisher_type == "system" else "Unknown user"),
+        },
+        "visibility": str(item.get("visibility") or "team"),
+        "status": str(item.get("status") or "published"),
+        "latest_version": latest_version,
+        "requirements": version.get("requirements") or {},
+        "installed": installation is not None,
+        "installed_version": int((installation or {}).get("version") or 0) or None,
+        "update_available": bool(installation and int(installation.get("version") or 0) < latest_version),
+        "installed_agent_id": str((installation or {}).get("installed_agent_id") or "") or None,
+        "updated_at": item.get("updated_at"),
+    }
+    if include_governance:
+        result["source_agent_id"] = str(item.get("source_agent_id") or "")
+        result["allowed_team_ids"] = [str(value) for value in item.get("allowed_team_ids") or []]
+    return result
+
+
+@bp.get("/agent-catalog")
+@authenticated
+async def get_agent_catalog(auth_claims: dict[str, Any]):
+    try:
+        team_id = str(request.args.get("team_id") or "").strip()
+        if team_id:
+            _require_team_access(auth_claims, team_id)
+            items = list_catalog_items(team_id=team_id)
+            return jsonify({
+                "result": [_serialize_catalog_item(item, team_id=team_id) for item in items]
+            }), 200
+        _require_system_admin(auth_claims)
+        return jsonify({
+            "result": [
+                _serialize_catalog_item(item, include_governance=True)
+                for item in list_catalog_items(include_unpublished=True)
+            ]
+        }), 200
+    except Exception as error_txt:
+        return error_response(error_txt, "/agent-catalog")
+
+
+@bp.post("/agent-catalog/publish")
+@authenticated
+async def publish_agent_to_catalog(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        if not isinstance(body, dict):
+            raise AccessControlError("request must be json", status_code=400)
+        team_id = _catalog_text(body.get("team_id"), "team_id", 128, required=True)
+        actor, team = _require_team_access(auth_claims, team_id, permission="Manage agents")
+        agent_id = _catalog_text(body.get("agent_id"), "agent_id", 128, required=True)
+        if agent_id not in {str(value) for value in team.get("agent_id") or []}:
+            raise AccessControlError("Agent does not belong to this team", status_code=404)
+        agent = get_agent_by_id(agent_id)
+        if not agent:
+            raise AccessControlError("Agent not found", status_code=404)
+        if not is_active_agent(agent):
+            raise AccessControlError("Finish the Agent setup before publishing", status_code=409)
+
+        visibility = str(body.get("visibility") or "team").strip()
+        allowed_team_ids = _normalize_id_list(body.get("allowed_team_ids"), "allowed_team_ids")
+        if actor.get("is_sys_admin") is not True:
+            visibility = "team"
+            allowed_team_ids = []
+        if visibility not in {"team", "selected_teams", "all_teams"}:
+            raise AccessControlError("Unsupported catalog visibility", status_code=400)
+        if visibility == "selected_teams":
+            if not allowed_team_ids:
+                raise AccessControlError("Select at least one allowed team", status_code=400)
+            known_team_ids = {str(value.get("_id")) for value in get_all_teams()}
+            if any(value not in known_team_ids for value in allowed_team_ids):
+                raise AccessControlError("One or more allowed teams do not exist", status_code=400)
+        else:
+            allowed_team_ids = []
+
+        item, version = publish_agent(
+            agent=agent,
+            publisher_team_id=team_id,
+            created_by=str(actor.get("_id") or ""),
+            summary=_catalog_text(body.get("summary"), "summary", 500, required=True),
+            usage_instructions=_catalog_text(body.get("usage_instructions"), "usage_instructions", 4000, required=True),
+            tags=_catalog_tags(body.get("tags")),
+            category=_catalog_text(body.get("category") or "General", "category", 80, required=True),
+            visibility=visibility,
+            allowed_team_ids=allowed_team_ids,
+        )
+        insert_catalog_audit_event(
+            "published" if version == 1 else "version_published",
+            actor_id=str(actor.get("_id") or ""),
+            catalog_item_id=str(item.get("_id") or ""),
+            team_id=team_id,
+            version=version,
+        )
+        return jsonify({"result": _serialize_catalog_item(item, team_id=team_id), "version": version}), 200
+    except Exception as error_txt:
+        return error_response(error_txt, "/agent-catalog/publish")
+
+
+@bp.post("/admin/agent-catalog")
+@authenticated
+async def create_system_agent_catalog_item(auth_claims: dict[str, Any]):
+    try:
+        actor = _require_system_admin(auth_claims)
+        body = await request.get_json()
+        if not isinstance(body, dict):
+            raise AccessControlError("request must be json", status_code=400)
+        agent_name = _catalog_text(body.get("agent_name"), "agent_name", 200, required=True)
+        prompt = body.get("prompt")
+        if not isinstance(prompt, dict):
+            raise AccessControlError("prompt must be an object", status_code=400)
+        config = _validate_agent_model_config(body.get("config"))
+        # A system-owned catalog template has no live Agent or Team identity.
+        # Its generated source key exists only to retain immutable versions.
+        template = {
+            "_id": f"system-catalog:{uuid.uuid4()}",
+            "agent_name": agent_name,
+            "prompt": prompt,
+            "config": config,
+        }
+        visibility = str(body.get("visibility") or "all_teams").strip()
+        if visibility not in {"selected_teams", "all_teams"}:
+            raise AccessControlError("System templates must target selected teams or all teams", status_code=400)
+        allowed_team_ids = _normalize_id_list(body.get("allowed_team_ids"), "allowed_team_ids")
+        if visibility == "selected_teams":
+            known_team_ids = {str(value.get("_id")) for value in get_all_teams()}
+            if not allowed_team_ids or any(value not in known_team_ids for value in allowed_team_ids):
+                raise AccessControlError("Select valid allowed teams", status_code=400)
+        else:
+            allowed_team_ids = []
+        item, version = publish_agent(
+            agent=template,
+            publisher_team_id="",
+            created_by=str(actor.get("_id") or ""),
+            summary=_catalog_text(body.get("summary"), "summary", 500, required=True),
+            usage_instructions=_catalog_text(body.get("usage_instructions"), "usage_instructions", 4000, required=True),
+            tags=_catalog_tags(body.get("tags")),
+            category=_catalog_text(body.get("category") or "General", "category", 80, required=True),
+            visibility=visibility,
+            allowed_team_ids=allowed_team_ids,
+            publisher_type="system",
+        )
+        insert_catalog_audit_event(
+            "system_template_created",
+            actor_id=str(actor.get("_id") or ""),
+            catalog_item_id=str(item.get("_id") or ""),
+            version=version,
+        )
+        return jsonify({"result": _serialize_catalog_item(item, include_governance=True), "version": version}), 201
+    except Exception as error_txt:
+        return error_response(error_txt, "/admin/agent-catalog")
+
+
+@bp.post("/agent-catalog/<catalog_item_id>/install")
+@authenticated
+async def install_catalog_agent(auth_claims: dict[str, Any], catalog_item_id: str):
+    try:
+        body = await request.get_json()
+        if not isinstance(body, dict):
+            raise AccessControlError("request must be json", status_code=400)
+        team_id = _catalog_text(body.get("team_id"), "team_id", 128, required=True)
+        actor, team = _require_team_access(auth_claims, team_id, permission="Manage agents")
+        item = get_catalog_item(catalog_item_id)
+        if not item or not is_visible_to_team(item, team_id):
+            raise AccessControlError("Catalog agent is not available to this team", status_code=404)
+        version_number = int(body.get("version") or item.get("latest_version") or 1)
+        if version_number != int(item.get("latest_version") or 1):
+            raise AccessControlError("Phase 1 installs the latest published version only", status_code=400)
+        existing = get_active_installation(catalog_item_id, team_id)
+        if existing:
+            return jsonify({
+                "result": "already_installed",
+                "agent_id": str(existing.get("installed_agent_id") or ""),
+            }), 200
+        version = get_catalog_version(catalog_item_id, version_number)
+        if not version:
+            raise AccessControlError("Catalog version not found", status_code=404)
+        snapshot = version.get("snapshot") or {}
+        config = _validate_agent_model_config(copy.deepcopy(snapshot.get("config") or {}))
+        _validate_agent_mcp_connections(config, team_id)
+        agent_name = _catalog_text(snapshot.get("agent_name"), "agent_name", 200, required=True)
+        _, installed_agent_id = insert_agent(
+            agent_name,
+            copy.deepcopy(snapshot.get("prompt") or {}),
+            config,
+        )
+        team_agent_ids = [str(value) for value in team.get("agent_id") or []]
+        if installed_agent_id not in team_agent_ids:
+            team_agent_ids.append(installed_agent_id)
+            update_team(team_id=team_id, agent_id=team_agent_ids)
+        record_installation(
+            catalog_item_id=catalog_item_id,
+            version=version_number,
+            team_id=team_id,
+            agent_id=installed_agent_id,
+            created_by=str(actor.get("_id") or ""),
+        )
+        insert_catalog_audit_event(
+            "installed",
+            actor_id=str(actor.get("_id") or ""),
+            catalog_item_id=catalog_item_id,
+            team_id=team_id,
+            version=version_number,
+        )
+        return jsonify({"result": "installed", "agent_id": installed_agent_id}), 201
+    except Exception as error_txt:
+        return error_response(error_txt, f"/agent-catalog/{catalog_item_id}/install")
+
+
+@bp.patch("/agent-catalog/<catalog_item_id>")
+@authenticated
+async def edit_agent_catalog_item(auth_claims: dict[str, Any], catalog_item_id: str):
+    try:
+        body = await request.get_json()
+        if not isinstance(body, dict):
+            raise AccessControlError("request must be json", status_code=400)
+        item = get_catalog_item(catalog_item_id)
+        if not item:
+            raise AccessControlError("Catalog agent not found", status_code=404)
+        actor = _application_user_for_claims(auth_claims)
+        if not actor or actor.get("active", True) is not True:
+            raise AccessControlError("The signed-in application user is unavailable")
+        is_system_admin = actor.get("is_sys_admin") is True
+        if not is_system_admin:
+            publisher_team_id = str(item.get("publisher_team_id") or "")
+            _require_team_access(auth_claims, publisher_team_id, permission="Manage agents")
+
+        changes: dict[str, Any] = {}
+        if "summary" in body:
+            changes["summary"] = _catalog_text(body.get("summary"), "summary", 500, required=True)
+        if "usage_instructions" in body:
+            changes["usage_instructions"] = _catalog_text(
+                body.get("usage_instructions"), "usage_instructions", 4000, required=True
+            )
+        if "tags" in body:
+            changes["tags"] = _catalog_tags(body.get("tags"))
+        if "category" in body:
+            changes["category"] = _catalog_text(body.get("category"), "category", 80, required=True)
+        if "status" in body:
+            status = str(body.get("status") or "").strip()
+            if status not in {"published", "unpublished"}:
+                raise AccessControlError("Unsupported catalog status", status_code=400)
+            changes["status"] = status
+        if is_system_admin and "visibility" in body:
+            visibility = str(body.get("visibility") or "").strip()
+            if visibility not in {"team", "selected_teams", "all_teams"}:
+                raise AccessControlError("Unsupported catalog visibility", status_code=400)
+            if str(item.get("publisher_type") or "team") == "system" and visibility == "team":
+                raise AccessControlError(
+                    "System templates must target selected teams or all teams",
+                    status_code=400,
+                )
+            allowed_team_ids = _normalize_id_list(body.get("allowed_team_ids"), "allowed_team_ids")
+            if visibility == "selected_teams":
+                known_team_ids = {str(value.get("_id")) for value in get_all_teams()}
+                if not allowed_team_ids or any(value not in known_team_ids for value in allowed_team_ids):
+                    raise AccessControlError("Select valid allowed teams", status_code=400)
+            else:
+                allowed_team_ids = []
+            changes.update({"visibility": visibility, "allowed_team_ids": allowed_team_ids})
+        if not changes:
+            raise AccessControlError("No supported catalog changes were provided", status_code=400)
+        update_catalog_item(catalog_item_id, changes)
+        insert_catalog_audit_event(
+            "catalog_updated",
+            actor_id=str(actor.get("_id") or ""),
+            catalog_item_id=catalog_item_id,
+            team_id=str(item.get("publisher_team_id") or ""),
+            version=int(item.get("latest_version") or 1),
+        )
+        updated = get_catalog_item(catalog_item_id) or item
+        return jsonify({"result": _serialize_catalog_item(updated, include_governance=is_system_admin)}), 200
+    except Exception as error_txt:
+        return error_response(error_txt, f"/agent-catalog/{catalog_item_id}")
 
 
 @bp.post("/create_data_group")
@@ -8242,12 +9387,22 @@ async def setup_clients():
             current_app.logger.exception(
                 "Unable to load managed authentication settings; using environment configuration"
             )
+    OIDC_AUTHENTICATION_ENABLED = False
+    OIDC_PUBLIC_PROVIDERS: list[dict[str, str]] = []
+    SAML_AUTHENTICATION_ENABLED = False
+    SAML_PUBLIC_PROVIDERS: list[dict[str, str]] = []
     if managed_auth:
         AZURE_USE_AUTHENTICATION = managed_auth.get("entra_enabled") is True
         AZURE_SERVER_APP_ID = managed_auth.get("server_app_id") or None
         AZURE_SERVER_APP_SECRET = managed_auth.get("client_secret") or None
         AZURE_CLIENT_APP_ID = managed_auth.get("client_app_id") or None
         AZURE_AUTH_TENANT_ID = managed_auth.get("tenant_id") or AZURE_TENANT_ID
+        OIDC_AUTHENTICATION_ENABLED = managed_auth.get("oidc_enabled") is True
+    if LOCAL_AUTH_ENABLED:
+        OIDC_PUBLIC_PROVIDERS = public_oidc_providers()
+        OIDC_AUTHENTICATION_ENABLED = bool(OIDC_PUBLIC_PROVIDERS)
+        SAML_PUBLIC_PROVIDERS = public_saml_providers()
+        SAML_AUTHENTICATION_ENABLED = bool(SAML_PUBLIC_PROVIDERS)
 
     KB_FIELDS_CONTENT = os.getenv("KB_FIELDS_CONTENT", "content")
     KB_FIELDS_SOURCEPAGE = os.getenv("KB_FIELDS_SOURCEPAGE", "sourcepage")
@@ -8306,6 +9461,8 @@ async def setup_clients():
     if not SKIP_STARTUP_BOOTSTRAP:
         ensure_usage_quota_indexes()
         ensure_license_indexes()
+        ensure_agent_catalog_indexes()
+        ensure_agent_indexes()
 
     # Use the current user identity for keyless authentication to Azure services.
     # This assumes you use 'azd auth login' locally, and managed identity when deployed on Azure.
@@ -8487,6 +9644,18 @@ async def setup_clients():
         await search_index_client.close()
     if LOCAL_AUTH_ENABLED:
         ensure_local_auth_indexes()
+    if OIDC_AUTHENTICATION_ENABLED:
+        # OIDC sessions share the encrypted/authenticated application identity
+        # store but have their own one-time state collection.
+        ensure_local_auth_indexes()
+        ensure_oidc_auth_indexes()
+        ensure_oidc_provider_indexes()
+        ensure_identity_management_indexes()
+    if SAML_AUTHENTICATION_ENABLED:
+        ensure_local_auth_indexes()
+        ensure_saml_auth_indexes()
+        ensure_saml_provider_indexes()
+        ensure_identity_management_indexes()
     auth_helper = AuthenticationHelper(
         search_index=search_index,
         use_authentication=AZURE_USE_AUTHENTICATION,
@@ -8500,6 +9669,13 @@ async def setup_clients():
         local_authentication_enabled=LOCAL_AUTH_ENABLED,
         local_session_resolver=resolve_local_session,
         local_bootstrap_required=lambda: not local_identity_exists(),
+        oidc_authentication_enabled=OIDC_AUTHENTICATION_ENABLED,
+        oidc_display_name=str((managed_auth or {}).get("oidc_display_name") or "Enterprise SSO"),
+        oidc_providers=OIDC_PUBLIC_PROVIDERS,
+        oidc_session_resolver=resolve_oidc_session,
+        saml_authentication_enabled=SAML_AUTHENTICATION_ENABLED,
+        saml_providers=SAML_PUBLIC_PROVIDERS,
+        saml_session_resolver=resolve_saml_session,
         search_has_auth_fields=True if KNOWLEDGE_SEARCH_PROVIDER == "qdrant" else None,
     )
 
@@ -8775,6 +9951,22 @@ async def setup_clients():
             _reconcile_managed_azure_mcp_servers()
         )
 
+    _agent_draft_retention_hours()
+    try:
+        agent_draft_cleanup_interval = float(
+            os.getenv("AGENT_DRAFT_CLEANUP_INTERVAL_SECONDS", "3600")
+        )
+    except ValueError as error:
+        raise ValueError("AGENT_DRAFT_CLEANUP_INTERVAL_SECONDS must be numeric") from error
+    if not math.isfinite(agent_draft_cleanup_interval) or agent_draft_cleanup_interval < 60:
+        raise ValueError("AGENT_DRAFT_CLEANUP_INTERVAL_SECONDS must be at least 60")
+    agent_draft_cleanup_task = asyncio.create_task(
+        _run_agent_draft_cleanup(agent_draft_cleanup_interval)
+    )
+    BACKGROUND_TASKS.add(agent_draft_cleanup_task)
+    agent_draft_cleanup_task.add_done_callback(BACKGROUND_TASKS.discard)
+    current_app.config["AGENT_DRAFT_CLEANUP_TASK"] = agent_draft_cleanup_task
+
     if SKIP_STARTUP_BOOTSTRAP:
         current_app.logger.info("Skipping application data bootstrap")
         return
@@ -8841,6 +10033,12 @@ Don’t combine sources, list each source separately, for example [info1.txt][in
 
 @bp.after_app_serving
 async def close_clients():
+    if cleanup_task := current_app.config.get("AGENT_DRAFT_CLEANUP_TASK"):
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
     if reconciliation_task := current_app.config.get(
         "MANAGED_MCP_RECONCILIATION_TASK"
     ):

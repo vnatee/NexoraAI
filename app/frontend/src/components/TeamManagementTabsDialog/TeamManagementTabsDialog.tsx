@@ -53,6 +53,8 @@ import { UsageQuotaPolicyPage } from "./Tabs/UsageQuotaPolicyPage";
 import { ChatHistoryPolicyPage } from "./Tabs/ChatHistoryPolicyPage";
 import { SystemHealthManagement } from "../SystemHealthManagement/SystemHealthManagement";
 import { LicenseSettingsPage } from "./Tabs/LicenseSettingsPage";
+import { AgentCatalogPage } from "../AgentCatalog/AgentCatalogPage";
+import { IdentityManagementPage } from "./Tabs/IdentityManagementPage";
 
 interface Props {
     open: boolean;
@@ -139,6 +141,13 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
         requiredPermissions: ["Manage users"]
     });
 
+    const canManageAgents = hasPermission({
+        is_sys_admin,
+        permissions: managedTeam?.permissions ?? [],
+        sys_permissions: sys_permissions ?? [],
+        requiredPermissions: ["Manage agents"]
+    });
+
     const saveTeamName = async () => {
         const normalizedName = teamNameDraft.trim();
         if (!managedTeam || !normalizedName) return;
@@ -195,7 +204,16 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             group: "workspace",
             scope: "team",
             teamScoped: true,
-            element: <AgentManagementPage team={managedTeam} onAgentsChanged={onAgentsChanged} />
+            element: <AgentManagementPage team={managedTeam} isSystemAdmin={is_sys_admin} onAgentsChanged={onAgentsChanged} />
+        },
+        {
+            id: "agent-catalog",
+            label: "Agent Catalog",
+            permission: [],
+            group: "workspace",
+            scope: "team",
+            teamScoped: true,
+            element: <AgentCatalogPage team={managedTeam} canInstall={canManageAgents} onAgentsChanged={onAgentsChanged} />
         },
         {
             id: "integrations",
@@ -221,6 +239,15 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             group: "user-team",
             scope: "system",
             element: <UserManagementPage />
+        },
+        {
+            id: "identity-links",
+            label: "Identity links",
+            permission: [],
+            group: "user-team",
+            scope: "system",
+            systemAdminOnly: true,
+            element: <IdentityManagementPage />
         },
         {
             id: "system-permissions",
@@ -265,6 +292,16 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             scope: "system",
             systemAdminOnly: true,
             element: <AgentAuditManagement />
+        },
+        {
+            id: "agent-catalog-governance",
+            label: "Agent Catalog Governance",
+            permission: [],
+            group: "system",
+            scope: "system",
+            systemAdminOnly: true,
+            selfPadded: true,
+            element: <AgentCatalogPage team={null} governance />
         },
         {
             id: "guardrails",

@@ -26,7 +26,7 @@ import {
 } from "@mui/material";
 import CircularProgress from "@mui/material/CircularProgress";
 import styles from "./LoginButton.module.css";
-import { getRedirectUri, loginRequest, appServicesLogout, getUsername, getToken, isUsingLocalLogin, localLogout } from "../../authConfig";
+import { getRedirectUri, loginRequest, appServicesLogout, getUsername, getToken, isUsingLocalLogin, localLogout, isUsingOidcLogin, oidcLogout, isUsingSamlLogin, samlLogout } from "../../authConfig";
 import { useState, useEffect, useContext } from "react";
 import { LoginContext } from "../../loginContext";
 import { currentAgentConfig, check_user_login, register, check_waiting_approve, updateMyProfile, changeMyLocalPassword } from "../../api/api";
@@ -72,7 +72,7 @@ export const LoginButton = () => {
     // ===============================
     useEffect(() => {
         const restore = async () => {
-            if (isUsingLocalLogin()) {
+            if (isUsingLocalLogin() || isUsingOidcLogin() || isUsingSamlLogin()) {
                 setLoggedIn(true);
                 setUsername((await getUsername(instance)) ?? "");
                 return;
@@ -197,6 +197,14 @@ export const LoginButton = () => {
 
         if (isUsingLocalLogin()) {
             await localLogout();
+            return;
+        }
+        if (isUsingOidcLogin()) {
+            await oidcLogout();
+            return;
+        }
+        if (isUsingSamlLogin()) {
+            await samlLogout();
             return;
         }
         const active = instance.getActiveAccount();
@@ -647,10 +655,22 @@ export const LoginButton = () => {
                                         fullWidth
                                         InputProps={{ readOnly: true }}
                                     />
+                                    <TextField
+                                        label="Generic OIDC identity"
+                                        value={haveUser?.auth_providers?.includes("oidc") ? haveUser?.ad_email ?? "Configured" : "Not configured"}
+                                        fullWidth
+                                        InputProps={{ readOnly: true }}
+                                    />
+                                    <TextField
+                                        label="SAML identity"
+                                        value={haveUser?.auth_providers?.includes("saml") ? haveUser?.ad_email ?? "Configured" : "Not configured"}
+                                        fullWidth
+                                        InputProps={{ readOnly: true }}
+                                    />
                                     <TextField label="Employee ID" value={haveUser?.employee_id ?? ""} fullWidth InputProps={{ readOnly: true }} />
                                     <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                                         {(haveUser?.auth_providers ?? []).map(provider => (
-                                            <Chip key={provider} label={provider === "entra" ? "Microsoft Entra ID" : "Local account"} size="small" />
+                                            <Chip key={provider} label={provider === "entra" ? "Microsoft Entra ID" : provider === "oidc" ? "Enterprise OIDC" : provider === "saml" ? "Enterprise SAML" : "Local account"} size="small" />
                                         ))}
                                         {haveUser?.is_sys_admin && <Chip label="System administrator" color="primary" size="small" />}
                                     </Stack>
@@ -700,7 +720,7 @@ export const LoginButton = () => {
                                             </Button>
                                         </>
                                     ) : (
-                                        <Alert severity="info">Password is managed by Microsoft Entra ID.</Alert>
+                                        <Alert severity="info">Password is managed by the configured enterprise identity provider.</Alert>
                                     )}
                                 </Stack>
                             </DialogContent>

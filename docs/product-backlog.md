@@ -174,6 +174,59 @@ complete for this checkpoint.
 
 Expose selected agents for programmatic invocation by approved external systems.
 
+## Authentication federation — follow-up backlog
+
+Generic OIDC now supports multiple confidential providers, authorization code
+with PKCE, issuer/audience/signature/nonce validation, optional domain-restricted
+JIT users, work-email domain routing, and opaque Nexora sessions. SAML 2.0 now
+supports multiple managed IdPs, signed assertion validation, SP-initiated
+request correlation/replay protection, domain-restricted JIT, reviewed identity
+linking, and local session revocation. Follow-up work:
+
+1. SCIM 2.0 user/group provisioning and deprovisioning with Team mapping.
+2. SAML metadata import, planned signing-certificate rollover, SP-signed
+   metadata/AuthnRequests, IdP single logout, and encrypted assertions where required.
+3. Local TOTP and WebAuthn/passkeys, recovery codes, and step-up authentication
+   for sensitive System Administration operations.
+4. Optional LDAPS for disconnected installations, without storing directory
+   passwords or weakening the internal authorization model.
+5. IdP group-to-Team/role mapping, with System Admin assignment excluded from
+   automatic mapping unless separately reviewed and explicitly enabled.
+6. Login/security audit UI, global/user session revocation, IdP health testing, and
+   metadata-only retention controls.
+
+Delivered: administrator-reviewed OIDC/SAML identity linking/unlinking. A verified
+email collision creates a seven-day pending request; approval is explicit,
+unlinking revokes sessions, the only remaining sign-in identity cannot be
+removed, and audit records contain metadata only.
+
+## Agent Catalog — Phase 2 backlog
+
+Phase 1 of the internal Agent Catalog is implemented. It provides versioned,
+Team-safe template publication, Team/all/selected-Team visibility, metadata-only
+browse responses, Team-local installation, and metadata-only lifecycle audit.
+See `docs/agent-catalog.md`.
+
+Prioritized follow-up work:
+
+1. Controlled upgrade with version diff, explicit approval, rollback, and
+   preservation of Team-local MCP/integration/Data Group bindings.
+   Include editing/versioning of System-owned templates through the same review
+   workflow; Phase 1 creates their initial immutable version.
+2. Strong revocation policy for already installed copies, including active-run
+   behavior, notification, grace periods, and emergency disable semantics.
+3. Catalog approval workflow and separation of publisher/reviewer duties.
+4. Catalog audit query/export UI and retention policy.
+5. Dependency compatibility report before installation, with model/profile,
+   integration type, Knowledge, and license checks.
+6. Export/import of signed Agent packages for disconnected installations and
+   verification of publisher identity/package integrity.
+7. Usage/adoption analytics, favorites, recommendations, ratings, and reviews.
+8. License entitlement gates and capacity ceilings for publishing/installing.
+9. Public/vendor marketplace, commercial listings, billing, and support/SLA
+   metadata. These remain out of scope until package trust and licensing are
+   complete.
+
 Initial discussion scope:
 
 - API styles: synchronous response, streaming response, and asynchronous job/webhook.

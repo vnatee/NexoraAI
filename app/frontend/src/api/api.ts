@@ -25,6 +25,7 @@ import {
     SystemHealthSnapshot,
     LicenseStatusResponse,
     AgentAuditEvent,
+    AgentCatalogItem,
     User,
     RegisterUserPayload,
     Prompt,
@@ -34,6 +35,11 @@ import {
     ChatDocumentAttachment,
     EffectiveAccessResponse,
     AuthenticationSettings,
+    OIDCProvider,
+    OIDCProviderPayload,
+    SAMLProvider,
+    SAMLProviderPayload,
+    IdentityManagementResponse,
     AgentGuardrailPolicy,
     UsageQuotaPolicy,
     UsageQuotaSettingsResponse,
@@ -43,7 +49,7 @@ import {
 import { useLogin, getToken, isUsingAppServicesLogin } from "../authConfig";
 
 export async function getHeaders(idToken: string | undefined): Promise<Record<string, string>> {
-    if (idToken?.startsWith("nx_local_")) {
+    if (idToken?.startsWith("nx_local_") || idToken?.startsWith("nx_oidc_") || idToken?.startsWith("nx_saml_")) {
         return { Authorization: `Bearer ${idToken}` };
     }
     // If using login and not using app services, add the id token of the logged in account as the authorization
@@ -84,6 +90,142 @@ export async function resetAuthenticationSettings(idToken: string): Promise<void
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Unable to restore environment settings");
+}
+
+export async function testOidcAuthenticationSettings(
+    issuer: string,
+    idToken: string
+): Promise<{ success: boolean; issuer: string }> {
+    const response = await fetch("/admin/auth-settings/oidc/test", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ issuer })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to validate OIDC discovery");
+    return data;
+}
+
+export async function listOidcProviders(idToken: string): Promise<OIDCProvider[]> {
+    const response = await fetch("/admin/oidc-providers", { headers: await getHeaders(idToken) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to load OIDC connections");
+    return data.providers || [];
+}
+
+export async function createOidcProvider(payload: OIDCProviderPayload, idToken: string): Promise<OIDCProvider> {
+    const response = await fetch("/admin/oidc-providers", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to create OIDC connection");
+    return data;
+}
+
+export async function updateOidcProvider(providerId: string, payload: OIDCProviderPayload, idToken: string): Promise<OIDCProvider> {
+    const response = await fetch(`/admin/oidc-providers/${encodeURIComponent(providerId)}`, {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to update OIDC connection");
+    return data;
+}
+
+export async function deleteOidcProvider(providerId: string, idToken: string): Promise<void> {
+    const response = await fetch(`/admin/oidc-providers/${encodeURIComponent(providerId)}`, {
+        method: "DELETE",
+        headers: await getHeaders(idToken)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to delete OIDC connection");
+}
+
+export async function listSamlProviders(idToken: string): Promise<SAMLProvider[]> {
+    const response = await fetch("/admin/saml-providers", { headers: await getHeaders(idToken) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to load SAML connections");
+    return data.providers || [];
+}
+
+export async function createSamlProvider(payload: SAMLProviderPayload, idToken: string): Promise<SAMLProvider> {
+    const response = await fetch("/admin/saml-providers", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to create SAML connection");
+    return data;
+}
+
+export async function updateSamlProvider(providerId: string, payload: SAMLProviderPayload, idToken: string): Promise<SAMLProvider> {
+    const response = await fetch(`/admin/saml-providers/${encodeURIComponent(providerId)}`, {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to update SAML connection");
+    return data;
+}
+
+export async function testSamlProvider(payload: SAMLProviderPayload & { id?: string }, idToken: string): Promise<{ success: boolean; acs_url: string; metadata_url: string }> {
+    const response = await fetch("/admin/saml-providers/test", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to validate SAML connection");
+    return data;
+}
+
+export async function deleteSamlProvider(providerId: string, idToken: string): Promise<void> {
+    const response = await fetch(`/admin/saml-providers/${encodeURIComponent(providerId)}`, {
+        method: "DELETE",
+        headers: await getHeaders(idToken)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to delete SAML connection");
+}
+
+export async function getIdentityManagement(idToken: string): Promise<IdentityManagementResponse> {
+    const response = await fetch("/admin/auth-identities", { headers: await getHeaders(idToken) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to load identity links");
+    return data;
+}
+
+export async function approveIdentityLink(requestId: string, userId: string, idToken: string): Promise<void> {
+    const response = await fetch(`/admin/auth-identities/requests/${encodeURIComponent(requestId)}/approve`, {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ user_id: userId })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to approve identity link");
+}
+
+export async function rejectIdentityLink(requestId: string, idToken: string): Promise<void> {
+    const response = await fetch(`/admin/auth-identities/requests/${encodeURIComponent(requestId)}/reject`, {
+        method: "POST",
+        headers: await getHeaders(idToken)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to reject identity link");
+}
+
+export async function unlinkOidcIdentity(identityId: string, idToken: string): Promise<void> {
+    const response = await fetch(`/admin/auth-identities/${encodeURIComponent(identityId)}`, {
+        method: "DELETE",
+        headers: await getHeaders(idToken)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || "Unable to unlink identity");
 }
 
 export async function getGuardrailSettings(
@@ -1634,30 +1776,31 @@ export async function check_waiting_approve(idToken: string): Promise<any> {
     return dataResponse;
 }
 
-export async function create_agent(team_id: string, agent_name: string, config: AgentConfig, prompt: Prompt, idToken: string): Promise<any> {
+export async function create_agent(team_id: string, agent_name: string, config: AgentConfig, prompt: Prompt, idToken: string, draft = false): Promise<any> {
     const headers = await getHeaders(idToken);
 
     const response = await fetch("/create_agent", {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ team_id, agent_name, config, prompt })
+        body: JSON.stringify({ team_id, agent_name, config, prompt, draft })
     });
 
     if (!response.ok) {
-        throw new Error(`create agent failed: ${response.statusText}`);
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.error || `create agent failed: ${response.statusText}`);
     }
 
     const dataResponse: any = await response.json();
     return await dataResponse;
 }
 
-export async function get_agent_by_team(team_id: string, idToken: string): Promise<any> {
+export async function get_agent_by_team(team_id: string, idToken: string, include_drafts = false): Promise<any> {
     const headers = await getHeaders(idToken);
 
     const response = await fetch("/get_agent_by_team", {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
-        body: JSON.stringify({ team_id })
+        body: JSON.stringify({ team_id, include_drafts })
     });
 
     if (!response.ok) {
@@ -1678,7 +1821,8 @@ export async function edit_agent(team_id: string, agent_id: string, agent_name: 
     });
 
     if (!response.ok) {
-        throw new Error(`create agent failed: ${response.statusText}`);
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.error || `edit agent failed: ${response.statusText}`);
     }
 
     const dataResponse: any = await response.json();
@@ -1700,6 +1844,102 @@ export async function delete_agent(team_id: string, agent_id: string, idToken: s
 
     const dataResponse: any = await response.json();
     return await dataResponse;
+}
+
+export async function activate_agent_draft(team_id: string, agent_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/activate_agent_draft", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id, agent_id })
+    });
+    if (!response.ok) {
+        const detail = await response.json().catch(() => ({}));
+        throw new Error(detail.error || `activate agent failed: ${response.statusText}`);
+    }
+    return await response.json();
+}
+
+export async function list_agent_catalog(idToken: string, team_id?: string): Promise<AgentCatalogItem[]> {
+    const headers = await getHeaders(idToken);
+    const query = team_id ? `?team_id=${encodeURIComponent(team_id)}` : "";
+    const response = await fetch(`/agent-catalog${query}`, { method: "GET", headers });
+    if (!response.ok) throw new Error(`list agent catalog failed: ${response.statusText}`);
+    const dataResponse = await response.json();
+    return dataResponse.result ?? [];
+}
+
+export async function publish_agent_catalog(
+    payload: {
+        team_id: string;
+        agent_id: string;
+        summary: string;
+        usage_instructions: string;
+        tags?: string[];
+        category: string;
+        visibility?: "team" | "selected_teams" | "all_teams";
+        allowed_team_ids?: string[];
+    },
+    idToken: string
+): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/agent-catalog/publish", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error(`publish agent failed: ${response.statusText}`);
+    return response.json();
+}
+
+export async function create_system_agent_catalog(
+    payload: {
+        agent_name: string;
+        config: AgentConfig;
+        prompt: Prompt;
+        summary: string;
+        usage_instructions: string;
+        tags?: string[];
+        category: string;
+        visibility: "selected_teams" | "all_teams";
+        allowed_team_ids?: string[];
+    },
+    idToken: string
+): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch("/admin/agent-catalog", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error(`create system catalog agent failed: ${response.statusText}`);
+    return response.json();
+}
+
+export async function install_agent_catalog(catalog_item_id: string, team_id: string, idToken: string): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/agent-catalog/${encodeURIComponent(catalog_item_id)}/install`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ team_id })
+    });
+    if (!response.ok) throw new Error(`install agent failed: ${response.statusText}`);
+    return response.json();
+}
+
+export async function update_agent_catalog(
+    catalog_item_id: string,
+    payload: Partial<Pick<AgentCatalogItem, "summary" | "usage_instructions" | "tags" | "category" | "visibility" | "status">> & { allowed_team_ids?: string[] },
+    idToken: string
+): Promise<any> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/agent-catalog/${encodeURIComponent(catalog_item_id)}`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    if (!response.ok) throw new Error(`update agent catalog failed: ${response.statusText}`);
+    return response.json();
 }
 
 export async function get_data_group_by_team(team_id: string, idToken: string): Promise<any> {

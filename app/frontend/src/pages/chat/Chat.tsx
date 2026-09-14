@@ -26,6 +26,7 @@ import {
     deleteFeedbackApi,
     getEffectiveAccess,
     get_agent_by_team,
+    list_agent_catalog,
     getFixedPromptsApi,
     getTemporaryCitationFilePath
 } from "../../api";
@@ -84,7 +85,7 @@ import CheckIcon from "@mui/icons-material/Check";
 import Checkbox from "@mui/material/Checkbox";
 import { AuthStorage } from "../../utill/authStorage";
 import { hasPermission } from "../../utill/hasPermission";
-import { Agent, EffectiveDataGroup, LLMProfile, TeamProfile, User } from "../../api/models";
+import { Agent, AgentCatalogItem, EffectiveDataGroup, LLMProfile, TeamProfile, User } from "../../api/models";
 import { Storage } from "../../utill/storage";
 import { ACTIVE_TEAM_CHANGED_EVENT, STORAGE_KEYS } from "../../utill/storageKeys";
 import { useNotification } from "../../utill/NotificationProvider";
@@ -209,6 +210,9 @@ const Chat = () => {
     const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
     const [agentAnchorEl, setAgentAnchorEl] = useState<null | HTMLElement>(null);
     const agentMenuOpen = Boolean(agentAnchorEl);
+    const [catalogOpen, setCatalogOpen] = useState(false);
+    const [catalogItems, setCatalogItems] = useState<AgentCatalogItem[]>([]);
+    const [catalogLoading, setCatalogLoading] = useState(false);
 
     const [selectedScopes, setSelectedScopes] = useState<DataScope[]>(["global"]);
     const [draftScopes, setDraftScopes] = useState<DataScope[]>(["global"]);
@@ -279,13 +283,8 @@ const Chat = () => {
 
     const buildAgentUIPrefsPayload = async (): Promise<AgentUIPrefsResolved> => {
         try {
-            const username = (await getUsername(instance)) ?? "";
-            const teamId = await getTeamId();
-
             const agentId = selectedAgent?._id ?? null;
-
-            // ถ้าไม่มีข้อมูลหลัก -> ส่งค่า default แบบปลอดภัย
-            if (!username || !teamId || !agentId) {
+            if (!agentId) {
                 return {
                     agentId,
                     selectedScopes: [],
@@ -293,16 +292,15 @@ const Chat = () => {
                 };
             }
 
-            const prefsMap = readAgentUIPrefs(username, teamId);
-            const prefs = prefsMap?.[agentId];
-
-            const scopes = prefs?.selectedScopes ?? [];
             const availableGroupIds = new Set(dataGroups.map(group => group._id));
-            const groups = (prefs?.selectedDataGroupIds ?? []).filter(groupId => availableGroupIds.has(groupId));
+            const groups = selectedDataGroupIds.filter(groupId => availableGroupIds.has(groupId));
 
             return {
                 agentId,
-                selectedScopes: scopes,
+                // The request must use the scope currently shown in the UI.
+                // localStorage is only persistence and can lag behind React
+                // state when Apply and Send occur close together.
+                selectedScopes: [...selectedScopes],
                 selectedDataGroupIds: groups
             };
         } catch (e) {
@@ -1484,6 +1482,23 @@ const Chat = () => {
         requiredPermissions: ["View feedback dashboard"]
     });
 
+    const openAgentCatalog = async () => {
+        if (!selectTeamData?._id) return;
+        setAgentAnchorEl(null);
+        setCatalogOpen(true);
+        try {
+            setCatalogLoading(true);
+            const token = await getToken(instance);
+            if (!token) return;
+            setCatalogItems(await list_agent_catalog(token, selectTeamData._id));
+        } catch (error) {
+            console.error("Unable to browse Agent Catalog", error);
+            showNotification("Unable to load Agent Catalog", "error");
+        } finally {
+            setCatalogLoading(false);
+        }
+    };
+
     return (
         <div className={styles.container}>
             <Helmet>
@@ -1986,6 +2001,46 @@ const Chat = () => {
                     onClose={() => setOpenTeamAdminManagement(false)}
                 // onSubmit={handleSubmitFeedback}
                 />
+                <Dialog open={catalogOpen} onClose={() => setCatalogOpen(false)} maxWidth="md" fullWidth>
+                    <DialogTitle>Agent Catalog</DialogTitle>
+                    <DialogContent dividers>
+                        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                            Agents available to {selectTeamData?.name}. Installed Agents appear in the Agent selector; ask a team manager to install other entries.
+                        </Typography>
+                        {catalogLoading ? <Skeleton variant="rectangular" height={160} /> : catalogItems.length === 0 ? (
+                            <Typography color="text.secondary">No catalog Agents are available for this team.</Typography>
+                        ) : (
+                            <Stack spacing={1.5}>
+                                {catalogItems.map(item => (
+                                    <Paper key={item._id} variant="outlined" sx={{ p: 2 }}>
+                                        <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={1}>
+                                            <Box>
+                                                <Typography fontWeight={700}>{item.name}</Typography>
+                                                <Typography variant="body2">{item.summary}</Typography>
+                                                <Typography variant="subtitle2" sx={{ mt: 1 }}>How to use</Typography>
+                                                <Typography variant="body2" color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>
+                                                    {item.usage_instructions || "No usage instructions provided."}
+                                                </Typography>
+                                                {(item.tags?.length ?? 0) > 0 && (
+                                                    <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                                                        Tags: {item.tags.join(", ")}
+                                                    </Typography>
+                                                )}
+                                                <Typography variant="caption" color="text.secondary">
+                                                    {item.category} · Created by {item.created_by.name} · {item.publisher_team.name} · v{item.latest_version}
+                                                </Typography>
+                                            </Box>
+                                            <Typography variant="caption" color={item.installed ? "success.main" : "text.secondary"}>
+                                                {item.installed ? "Installed" : "Installation requires Manage agents permission"}
+                                            </Typography>
+                                        </Stack>
+                                    </Paper>
+                                ))}
+                            </Stack>
+                        )}
+                    </DialogContent>
+                    <DialogActions><Button onClick={() => setCatalogOpen(false)}>Close</Button></DialogActions>
+                </Dialog>
                 <Menu
                     anchorEl={agentAnchorEl}
                     open={agentMenuOpen}
@@ -2005,6 +2060,11 @@ const Chat = () => {
                         <Box sx={{ width: 280, maxHeight: 360, overflowY: "auto" }}>
                             <MenuItem disabled>
                                 <Typography variant="subtitle2">Select Agent</Typography>
+                            </MenuItem>
+
+                            <MenuItem onClick={() => void openAgentCatalog()} disabled={!selectTeamData}>
+                                <ListItemIcon><LibraryAddCheckIcon fontSize="small" /></ListItemIcon>
+                                <ListItemText primary="Browse Agent Catalog" />
                             </MenuItem>
 
                             <Divider />

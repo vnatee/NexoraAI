@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
     Alert,
+    Avatar,
     Box,
     Button,
     Chip,
@@ -10,6 +11,8 @@ import {
     DialogContent,
     DialogTitle,
     IconButton,
+    InputAdornment,
+    Menu,
     MenuItem,
     Paper,
     Snackbar,
@@ -22,7 +25,17 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
+import SearchIcon from "@mui/icons-material/Search";
+import MicrosoftIcon from "@mui/icons-material/Microsoft";
+import HubIcon from "@mui/icons-material/Hub";
+import TravelExploreIcon from "@mui/icons-material/TravelExplore";
+import GroupWorkIcon from "@mui/icons-material/GroupWork";
+import SpeedIcon from "@mui/icons-material/Speed";
+import MemoryIcon from "@mui/icons-material/Memory";
+import SmartToyIcon from "@mui/icons-material/SmartToy";
 import { useMsal } from "@azure/msal-react";
+import { siAnthropic, siGooglegemini, siMistralai, siOllama, siOpenai, siOpenrouter } from "simple-icons";
 
 import {
     createLLMProviderApi,
@@ -58,6 +71,66 @@ const vendorOptions: { id: LLMVendor; label: string; provider: LLMProviderAdapte
     { id: "localai", label: "LocalAI (Local)", provider: "openai_compatible", defaultBaseUrl: "http://localhost:8080/v1" },
     { id: "other_openai_compatible", label: "Other OpenAI-compatible", provider: "openai_compatible" }
 ];
+
+const providerBrandIcons: Partial<Record<LLMVendor, { title: string; path: string; hex: string }>> = {
+    openai: siOpenai,
+    google_gemini: siGooglegemini,
+    anthropic_claude: siAnthropic,
+    ollama: siOllama,
+    openrouter: siOpenrouter,
+    mistral: siMistralai
+};
+
+const providerFallbackIcons: Partial<Record<LLMVendor, typeof SmartToyIcon>> = {
+    azure_openai: MicrosoftIcon,
+    groq: HubIcon,
+    deepseek: TravelExploreIcon,
+    together: GroupWorkIcon,
+    vllm: SpeedIcon,
+    localai: MemoryIcon,
+    other_openai_compatible: SmartToyIcon
+};
+
+function ProviderLogo({ vendor, label }: { vendor: LLMVendor; label: string }) {
+    const brand = providerBrandIcons[vendor];
+    const FallbackIcon = providerFallbackIcons[vendor];
+    const fallbackColors: Partial<Record<LLMVendor, string>> = {
+        azure_openai: "#0078D4",
+        groq: "#F55036",
+        deepseek: "#4D6BFE",
+        together: "#6B57E0",
+        vllm: "#3568D4",
+        localai: "#269B78",
+        other_openai_compatible: "#64748B"
+    };
+
+    return (
+        <Avatar
+            variant="rounded"
+            sx={{
+                width: 72,
+                height: 72,
+                mt: 3,
+                mb: 2,
+                bgcolor: "background.paper",
+                color: fallbackColors[vendor] ?? "text.primary",
+                border: "1px solid",
+                borderColor: "divider",
+                boxShadow: 1
+            }}
+        >
+            {brand ? (
+                <svg width="42" height="42" viewBox="0 0 24 24" role="img" aria-label={brand.title}>
+                    <path d={brand.path} fill={`#${brand.hex}`} />
+                </svg>
+            ) : FallbackIcon ? (
+                <FallbackIcon sx={{ fontSize: 42 }} aria-label={`${label} icon`} />
+            ) : (
+                label.slice(0, 2).toUpperCase()
+            )}
+        </Avatar>
+    );
+}
 
 const selectVendor = (form: LLMProviderPayload, vendorId: LLMVendor): LLMProviderPayload => {
     const vendor = vendorOptions.find(option => option.id === vendorId)!;
@@ -98,6 +171,10 @@ export function LLMProviderManagement() {
     const [editing, setEditing] = useState<ManagedLLMProvider | null>(null);
     const [form, setForm] = useState<LLMProviderPayload>(emptyPayload());
     const [notice, setNotice] = useState<{ severity: "success" | "warning" | "error"; text: string } | null>(null);
+    const [search, setSearch] = useState("");
+    const [statusFilter, setStatusFilter] = useState<"all" | "enabled" | "disabled">("all");
+    const [actionAnchor, setActionAnchor] = useState<HTMLElement | null>(null);
+    const [actionProvider, setActionProvider] = useState<ManagedLLMProvider | null>(null);
     const selectedVendor = vendorOptions.find(vendor => vendor.id === form.vendor);
     const apiKeyRequired = Boolean(selectedVendor?.requiresApiKey && form.enabled && !editing?.has_api_key);
 
@@ -117,6 +194,24 @@ export function LLMProviderManagement() {
     useEffect(() => {
         loadProviders();
     }, [instance]);
+
+    const filteredProviders = useMemo(() => {
+        const query = search.trim().toLowerCase();
+        return providers.filter(provider => {
+            if (statusFilter === "enabled" && !provider.enabled) return false;
+            if (statusFilter === "disabled" && provider.enabled) return false;
+            if (!query) return true;
+            const modelText = provider.models.map(model => `${model.label} ${model.model}`).join(" ");
+            return `${provider.name} ${provider.vendor_label} ${provider.endpoint ?? ""} ${provider.base_url ?? ""} ${modelText}`
+                .toLowerCase()
+                .includes(query);
+        });
+    }, [providers, search, statusFilter]);
+
+    const closeActionMenu = () => {
+        setActionAnchor(null);
+        setActionProvider(null);
+    };
 
     const openCreate = () => {
         setEditing(null);
@@ -243,69 +338,148 @@ export function LLMProviderManagement() {
                 </Button>
             </Box>
 
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+                <TextField
+                    fullWidth
+                    size="small"
+                    placeholder="Search providers or models..."
+                    value={search}
+                    onChange={event => setSearch(event.target.value)}
+                    InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon color="action" /></InputAdornment> }}
+                />
+                <TextField
+                    select
+                    size="small"
+                    label="Status"
+                    value={statusFilter}
+                    onChange={event => setStatusFilter(event.target.value as typeof statusFilter)}
+                    sx={{ minWidth: 170 }}
+                >
+                    <MenuItem value="all">All</MenuItem>
+                    <MenuItem value="enabled">Enabled</MenuItem>
+                    <MenuItem value="disabled">Disabled</MenuItem>
+                </TextField>
+            </Stack>
+
             {loading ? (
                 <Box display="flex" justifyContent="center" py={6}><CircularProgress /></Box>
             ) : providers.length === 0 ? (
                 <Paper variant="outlined" sx={{ p: 4, textAlign: "center" }}>
                     <Typography color="text.secondary">No managed LLM providers yet. System default remains available.</Typography>
                 </Paper>
+            ) : filteredProviders.length === 0 ? (
+                <Alert severity="info">No providers match the current search and status filter.</Alert>
             ) : (
-                <Stack spacing={1}>
-                    {providers.map(provider => (
-                        <Paper key={provider._id} variant="outlined" sx={{ p: 2 }}>
-                            <Box display="flex" justifyContent="space-between" alignItems="center" gap={2}>
-                                <Box minWidth={0}>
-                                    <Stack direction="row" spacing={1} alignItems="center">
-                                        <Typography fontWeight={600}>{provider.name}</Typography>
-                                        <Chip size="small" label={provider.vendor_label} />
-                                        <Chip size="small" color={provider.enabled ? "success" : "default"} label={provider.enabled ? "Enabled" : "Disabled"} />
-                                        {provider.has_api_key && <Chip size="small" variant="outlined" label="API key stored" />}
-                                    </Stack>
-                                    <Typography variant="body2" color="text.secondary" noWrap>
-                                        {provider.endpoint || provider.base_url || "Default provider endpoint"}
-                                    </Typography>
-                                    <Stack spacing={0.5} mt={0.75}>
-                                        {provider.models.map(model => (
-                                            <Stack key={model.id} direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                                                <Typography variant="caption" color="text.secondary">
-                                                    {model.label || model.model}
-                                                </Typography>
-                                                {model.tool_capability_status === "supported" && (
-                                                    <Chip size="small" color="success" variant="outlined" label="Tools" />
-                                                )}
-                                                {model.vision_capability_status === "supported" && (
-                                                    <Chip size="small" color="success" variant="outlined" label="Vision" />
-                                                )}
-                                                {model.tool_capability_status === "unsupported" && (
-                                                    <Chip size="small" variant="outlined" label="No tools" />
-                                                )}
-                                                {model.vision_capability_status === "unsupported" && (
-                                                    <Chip size="small" variant="outlined" label="No vision" />
-                                                )}
-                                                {model.vision_capability_status === "unknown" && model.supports_vision && (
-                                                    <Chip size="small" color="warning" variant="outlined" label="Vision manual" />
-                                                )}
-                                            </Stack>
-                                        ))}
-                                    </Stack>
-                                </Box>
-                                <Stack direction="row" spacing={0.5}>
-                                    <Button
-                                        size="small"
-                                        startIcon={testingId === provider._id ? <CircularProgress size={14} /> : <PlayArrowIcon />}
-                                        disabled={testingId === provider._id}
-                                        onClick={() => testConnection(provider)}
-                                    >
-                                        Test
-                                    </Button>
-                                    <IconButton aria-label="Edit provider" onClick={() => openEdit(provider)}><EditIcon /></IconButton>
-                                    <IconButton aria-label="Remove provider" color="error" onClick={() => remove(provider)}><DeleteIcon /></IconButton>
+                <Box sx={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 240px), 1fr))",
+                    gap: 2
+                }}>
+                    {filteredProviders.map(provider => {
+                        const toolsCount = provider.models.filter(model => model.tool_capability_status === "supported").length;
+                        const visionCount = provider.models.filter(model => model.vision_capability_status === "supported").length;
+                        const endpoint = provider.endpoint || provider.base_url || "Default provider endpoint";
+                        return (
+                            <Paper
+                                key={provider._id}
+                                variant="outlined"
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => openEdit(provider)}
+                                onKeyDown={event => {
+                                    if (event.key === "Enter" || event.key === " ") {
+                                        event.preventDefault();
+                                        openEdit(provider);
+                                    }
+                                }}
+                                sx={{
+                                    p: 2,
+                                    minHeight: 310,
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    alignItems: "center",
+                                    textAlign: "center",
+                                    position: "relative",
+                                    cursor: "pointer",
+                                    transition: "transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease",
+                                    "&:hover": { transform: "translateY(-2px)", boxShadow: 3, borderColor: "primary.light" },
+                                    "&:focus-visible": { outline: "3px solid", outlineColor: "primary.light", outlineOffset: 2 }
+                                }}
+                            >
+                                <Chip
+                                    size="small"
+                                    color={provider.enabled ? "success" : "default"}
+                                    label={provider.enabled ? "Enabled" : "Disabled"}
+                                    sx={{ position: "absolute", top: 12, left: 12 }}
+                                />
+                                <IconButton
+                                    size="small"
+                                    aria-label={`Actions for ${provider.name}`}
+                                    onClick={event => {
+                                        event.stopPropagation();
+                                        setActionProvider(provider);
+                                        setActionAnchor(event.currentTarget);
+                                    }}
+                                    sx={{ position: "absolute", top: 8, right: 8 }}
+                                >
+                                    {testingId === provider._id ? <CircularProgress size={20} /> : <MoreHorizIcon />}
+                                </IconButton>
+                                <ProviderLogo vendor={provider.vendor} label={provider.vendor_label} />
+                                <Typography variant="h6" fontSize="1rem" fontWeight={700} sx={{ lineHeight: 1.3, minHeight: 42, overflowWrap: "anywhere" }}>
+                                    {provider.name}
+                                </Typography>
+                                <Typography variant="body2" color="text.secondary" fontWeight={500}>
+                                    {provider.vendor_label}
+                                </Typography>
+                                <Typography
+                                    variant="caption"
+                                    color="text.secondary"
+                                    title={endpoint}
+                                    sx={{ mt: 1, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", overflowWrap: "anywhere" }}
+                                >
+                                    {endpoint}
+                                </Typography>
+                                <Box sx={{ flex: 1 }} />
+                                <Typography variant="caption" color="text.secondary" sx={{ mt: 2 }}>
+                                    {provider.models.length} {provider.models.length === 1 ? "model" : "models"}
+                                    {provider.has_api_key ? " · Credential stored" : ""}
+                                </Typography>
+                                <Stack direction="row" spacing={0.5} sx={{ mt: 1 }} flexWrap="wrap" useFlexGap justifyContent="center">
+                                    {toolsCount > 0 && <Chip size="small" color="success" variant="outlined" label={`Tools ${toolsCount}`} />}
+                                    {visionCount > 0 && <Chip size="small" color="success" variant="outlined" label={`Vision ${visionCount}`} />}
+                                    {provider.models.slice(0, 1).map(model => <Chip key={model.id} size="small" label={model.label || model.model} />)}
+                                    {provider.models.length > 1 && <Chip size="small" variant="outlined" label={`+${provider.models.length - 1}`} />}
                                 </Stack>
-                            </Box>
-                        </Paper>
-                    ))}
-                </Stack>
+                            </Paper>
+                        );
+                    })}
+                </Box>
             )}
+
+            <Menu anchorEl={actionAnchor} open={Boolean(actionAnchor)} onClose={closeActionMenu}>
+                <MenuItem
+                    disabled={!actionProvider || testingId === actionProvider._id}
+                    onClick={() => {
+                        if (actionProvider) void testConnection(actionProvider);
+                        closeActionMenu();
+                    }}
+                >
+                    <PlayArrowIcon fontSize="small" sx={{ mr: 1.5 }} /> Test all models
+                </MenuItem>
+                <MenuItem onClick={() => { if (actionProvider) openEdit(actionProvider); closeActionMenu(); }}>
+                    <EditIcon fontSize="small" sx={{ mr: 1.5 }} /> Edit
+                </MenuItem>
+                <MenuItem
+                    onClick={() => {
+                        const provider = actionProvider;
+                        closeActionMenu();
+                        if (provider) void remove(provider);
+                    }}
+                    sx={{ color: "error.main" }}
+                >
+                    <DeleteIcon fontSize="small" sx={{ mr: 1.5 }} /> Delete
+                </MenuItem>
+            </Menu>
 
             <Dialog open={dialogOpen} onClose={() => !saving && setDialogOpen(false)} fullWidth maxWidth="md">
                 <DialogTitle>{editing ? "Edit LLM Provider" : "Add LLM Provider"}</DialogTitle>

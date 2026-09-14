@@ -4,6 +4,11 @@
     "enableUnauthenticatedAccess": true,
     "localAuthenticationEnabled": false,
     "entraAuthenticationEnabled": true,
+    "oidcAuthenticationEnabled": false,
+    "oidcDisplayName": "Enterprise SSO",
+    "oidcProviders": [],
+    "samlAuthenticationEnabled": false,
+    "samlProviders": [],
     "localBootstrapRequired": false,
     "msalConfig": {
         "auth": {

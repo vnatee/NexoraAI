@@ -247,6 +247,38 @@ async def test_always_mode_searches_knowledge_before_first_model_call():
 
 
 @pytest.mark.asyncio
+async def test_always_mode_uses_backend_supplied_knowledge_query():
+    registry = ToolRegistry(ToolRuntimeContext(agent_id="agent-1", auth_claims={}))
+    search = AsyncMock(return_value={"results": [], "citations": []})
+    registry.register(
+        ToolSpec(
+            name="search_knowledge",
+            description="Search knowledge",
+            input_schema={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+            handler=search,
+            source="rag",
+        )
+    )
+    model = AsyncMock(return_value=completion(content="Answer"))
+
+    await AgentRuntime(
+        model,
+        registry,
+        AgentRuntimeConfig(
+            knowledge_search_mode="always",
+            knowledge_search_query="extracted requirement text",
+        ),
+    ).run([{"role": "user", "content": "Please assess the attachment"}])
+
+    search.assert_awaited_once()
+    assert search.await_args.args[0] == {"query": "extracted requirement text"}
+
+
+@pytest.mark.asyncio
 async def test_rag_is_an_on_demand_permission_aware_tool():
     approach = MagicMock()
     approach.build_filter.return_value = "oids/any(o: o eq 'user-1')"

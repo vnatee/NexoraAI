@@ -36,6 +36,7 @@ Never invent tool parameters, pagination, truncation, result limits, or token-li
 If a returned count conflicts with a count stated by the user, retry with a broader valid query or a more appropriate enabled tool before concluding that records are missing."""
     max_iterations: int = 8
     knowledge_search_mode: Literal["auto", "always", "disabled"] = "auto"
+    knowledge_search_query: str | None = None
     mcp_execution_mode: Literal["auto", "required"] = "auto"
 
 
@@ -218,7 +219,8 @@ class AgentRuntime:
                 ),
                 "",
             ).strip()
-            if latest_query:
+            automatic_query = str(self.config.knowledge_search_query or "").strip() or latest_query
+            if automatic_query:
                 tool_call_id = "automatic_knowledge_search"
                 graph_messages[0] = SystemMessage(
                     content=f"{self.config.system_prompt}\nKnowledge Search is executed automatically for each question. Use its results; call it again only to refine the query."
@@ -229,7 +231,7 @@ class AgentRuntime:
                         tool_calls=[
                             {
                                 "name": "search_knowledge",
-                                "args": {"query": latest_query},
+                                "args": {"query": automatic_query},
                                 "id": tool_call_id,
                                 "type": "tool_call",
                             }
@@ -239,7 +241,7 @@ class AgentRuntime:
                 graph_messages.append(
                     ToolMessage(
                         content=await self.tools.execute(
-                            "search_knowledge", {"query": latest_query}
+                            "search_knowledge", {"query": automatic_query}
                         ),
                         tool_call_id=tool_call_id,
                         name="search_knowledge",
