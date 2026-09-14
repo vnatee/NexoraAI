@@ -8,7 +8,18 @@ import {
     localAuthenticationEnabled,
     localBootstrapRequired,
     localLogin,
-    loginRequest
+    loginRequest,
+    oidcAuthenticationEnabled,
+    oidcProviders,
+    oidcLogin,
+    oidcLogout,
+    isUsingOidcLogin,
+    routeOidcProvider,
+    samlAuthenticationEnabled,
+    samlProviders,
+    samlLogin,
+    samlLogout,
+    isUsingSamlLogin
 } from "../../authConfig";
 import styles from "./LoginPage.module.css";
 import appLogo from "../../../public/insight_sphere_new.png";
@@ -34,6 +45,9 @@ const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
 
     // ── AD Login ──
     const [adLoading, setAdLoading] = useState(false);
+    const [oidcLoading, setOidcLoading] = useState(false);
+    const [samlLoading, setSamlLoading] = useState(false);
+    const [workEmail, setWorkEmail] = useState("");
     const [errorMsg, setErrorMsg] = useState("");
     const [successMsg, setSuccessMsg] = useState("");
 
@@ -178,6 +192,81 @@ const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
         }
     };
 
+    const handleOidcLogin = async (providerId: string) => {
+        setOidcLoading(true);
+        setErrorMsg("");
+        setSuccessMsg("");
+        try {
+            await oidcLogin(providerId);
+            const token = await getToken(instance);
+            if (!token) throw new Error("OIDC session was not created.");
+            const authProfile = await check_user_login(token);
+            const hasNoTeam = !authProfile.teams || authProfile.teams.length === 0;
+            if (hasNoTeam && !authProfile.user?.is_sys_admin) {
+                const waitingResp = await check_waiting_approve(token);
+                if (waitingResp?.is_waiting) {
+                    setErrorMsg("Your registration is pending approval. Please wait for an administrator to approve your account.");
+                    await oidcLogout();
+                } else {
+                    setPendingUser(authProfile.user);
+                    setOpenRegisterDialog(true);
+                }
+            } else {
+                AuthStorage.set(authProfile);
+                onLoginSuccess();
+            }
+        } catch (error: any) {
+            setErrorMsg(error?.message || "Enterprise SSO sign-in failed.");
+            await oidcLogout();
+        } finally {
+            setOidcLoading(false);
+        }
+    };
+
+    const handleRoutedOidcLogin = async () => {
+        setOidcLoading(true);
+        setErrorMsg("");
+        try {
+            const providerId = await routeOidcProvider(workEmail);
+            setOidcLoading(false);
+            await handleOidcLogin(providerId);
+        } catch (error: any) {
+            setErrorMsg(error?.message || "No SSO provider matches this email.");
+            setOidcLoading(false);
+        }
+    };
+
+    const handleSamlLogin = async (providerId: string) => {
+        setSamlLoading(true);
+        setErrorMsg("");
+        setSuccessMsg("");
+        try {
+            await samlLogin(providerId);
+            const token = await getToken(instance);
+            if (!token) throw new Error("SAML session was not created.");
+            const authProfile = await check_user_login(token);
+            const hasNoTeam = !authProfile.teams || authProfile.teams.length === 0;
+            if (hasNoTeam && !authProfile.user?.is_sys_admin) {
+                const waitingResp = await check_waiting_approve(token);
+                if (waitingResp?.is_waiting) {
+                    setErrorMsg("Your registration is pending approval. Please wait for an administrator to approve your account.");
+                    await samlLogout();
+                } else {
+                    setPendingUser(authProfile.user);
+                    setOpenRegisterDialog(true);
+                }
+            } else {
+                AuthStorage.set(authProfile);
+                onLoginSuccess();
+            }
+        } catch (error: any) {
+            setErrorMsg(error?.message || "SAML SSO sign-in failed.");
+            await samlLogout();
+        } finally {
+            setSamlLoading(false);
+        }
+    };
+
     return (
         <div className={styles.loginPageWrapper}>
             <div className={styles.loginCard}>
@@ -252,7 +341,7 @@ const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
                 </form>}
 
                 {/* ── Divider ── */}
-                {localAuthenticationEnabled && entraAuthenticationEnabled && <div className={styles.divider}>
+                {localAuthenticationEnabled && (entraAuthenticationEnabled || oidcAuthenticationEnabled || samlAuthenticationEnabled) && <div className={styles.divider}>
                     <span className={styles.dividerLine} />
                     <span className={styles.dividerText}>or</span>
                     <span className={styles.dividerLine} />
@@ -284,6 +373,42 @@ const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
                     )}
                 </button>}
 
+                {oidcProviders.length > 1 && <div className={styles.form}>
+                    <div className={styles.inputGroup}>
+                        <label className={styles.inputLabel} htmlFor="sso-email">Work email</label>
+                        <input id="sso-email" className={styles.input} type="email" value={workEmail} onChange={event => setWorkEmail(event.target.value)} autoComplete="email" placeholder="name@company.com" />
+                    </div>
+                    <button className={styles.adLoginBtn} onClick={() => void handleRoutedOidcLogin()} disabled={oidcLoading || !workEmail} type="button">Continue with company SSO</button>
+                </div>}
+
+                {oidcAuthenticationEnabled && oidcProviders.map(provider => <button
+                    key={provider.id}
+                    className={`${styles.adLoginBtn} ${oidcLoading ? styles.adLoginBtnLoading : ""}`}
+                    onClick={() => void handleOidcLogin(provider.id)}
+                    disabled={oidcLoading}
+                    type="button"
+                >
+                    {oidcLoading ? (
+                        <><span className={styles.spinner} aria-hidden="true" />Signing in...</>
+                    ) : (
+                        <>{`Sign in with ${provider.display_name}`}</>
+                    )}
+                </button>)}
+
+                {samlAuthenticationEnabled && samlProviders.map(provider => <button
+                    key={provider.id}
+                    className={`${styles.adLoginBtn} ${samlLoading ? styles.adLoginBtnLoading : ""}`}
+                    onClick={() => void handleSamlLogin(provider.id)}
+                    disabled={samlLoading}
+                    type="button"
+                >
+                    {samlLoading ? (
+                        <><span className={styles.spinner} aria-hidden="true" />Signing in...</>
+                    ) : (
+                        <>{`Sign in with ${provider.display_name}`}</>
+                    )}
+                </button>)}
+
                 {/* ── Footer ── */}
                 <p className={styles.footer}>
                     © {new Date().getFullYear()} InsightSphere. All rights reserved.
@@ -295,6 +420,8 @@ const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
                 user={pendingUser}
                 onCancel={() => {
                     setOpenRegisterDialog(false);
+                    if (isUsingOidcLogin()) void oidcLogout();
+                    if (isUsingSamlLogin()) void samlLogout();
                     clearMsalCacheAndActive();
                 }}
                 onSubmit={async ({ team_id, user }) => {
@@ -311,6 +438,8 @@ const LoginPage = ({ onLoginSuccess }: LoginPageProps) => {
                         setErrorMsg("Registration failed. Please try again.");
                         setSuccessMsg("");
                     } finally {
+                        if (isUsingOidcLogin()) await oidcLogout();
+                        if (isUsingSamlLogin()) await samlLogout();
                         clearMsalCacheAndActive();
                     }
                 }}

@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect } from "react";
 import {
+    Avatar,
     Box,
     Typography,
     Divider,
@@ -227,11 +228,11 @@ export function TeamUserManagementPage({ team }: TeamUserManagementPageProps) {
                     ) : filteredUsers.length === 0 ? (
                         <Typography color="text.secondary">No users found</Typography>
                     ) : (
-                        <Stack spacing={1}>
+                        <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 220px), 1fr))", gap: 1.5 }}>
                             {filteredUsers.map(user => (
                                 <UserRow key={user._id} user={user} onView={() => setSelectedUser(user)} onRemove={() => setConfirmRemove(user)} />
                             ))}
-                        </Stack>
+                        </Box>
                     )}
                 </Box>
             </Paper>
@@ -339,7 +340,9 @@ export function TeamUserManagementPage({ team }: TeamUserManagementPageProps) {
                             <Stack spacing={0.5} sx={{ maxHeight: 360, overflowY: "auto" }}>
                                 {filteredAvailableUsers.map(user => {
                                     const checked = selectedAddIds.includes(user._id);
-                                    const provider = user.auth_providers?.includes("local") ? `Local · ${user.local_username || user.ad_email}` : "Microsoft Entra";
+                                    const provider = user.auth_providers?.includes("local")
+                                        ? `Local · ${user.local_username || user.ad_email}`
+                                        : user.auth_providers?.includes("oidc") ? "Enterprise OIDC" : "Microsoft Entra";
                                     return (
                                         <Paper
                                             key={user._id}
@@ -485,18 +488,36 @@ function UserListSkeleton({ rows = 5 }: { rows?: number }) {
    ROW COMPONENTS
 ========================= */
 function UserRow({ user, onView, onRemove }: { user: User; onView: () => void; onRemove: () => void }) {
+    const name = `${user.first_name || ""} ${user.last_name || ""}`.trim() || user.email || user.ad_email;
+    const initials = `${user.first_name?.[0] ?? ""}${user.last_name?.[0] ?? ""}`.toUpperCase() || "US";
     return (
-        <RowContainer>
-            <UserInfo user={user} />
-            <Box>
-                <IconButton onClick={onView}>
+        <Paper
+            variant="outlined"
+            role="button"
+            tabIndex={0}
+            onClick={onView}
+            onKeyDown={event => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onView();
+                }
+            }}
+            sx={{ p: 2, minHeight: 220, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", position: "relative", cursor: "pointer", "&:hover": { boxShadow: 2, borderColor: "primary.light" } }}
+        >
+            <Chip size="small" color={user.active ? "success" : "default"} label={user.active ? "Active" : "Inactive"} sx={{ position: "absolute", top: 10, left: 10 }} />
+            <Avatar sx={{ width: 64, height: 64, mt: 3, mb: 1.5, bgcolor: user.is_sys_admin ? "primary.main" : "secondary.main" }}>{initials}</Avatar>
+            <Typography fontWeight={700} sx={{ overflowWrap: "anywhere" }}>{name}</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{user.local_username || user.email || user.ad_email || user.employee_id}</Typography>
+            <Box sx={{ flex: 1 }} />
+            <Box sx={{ mt: 1 }}>
+                <IconButton aria-label={`View ${name}`} onClick={event => { event.stopPropagation(); onView(); }}>
                     <VisibilityIcon />
                 </IconButton>
-                <IconButton onClick={onRemove} color="error">
+                <IconButton aria-label={`Remove ${name}`} onClick={event => { event.stopPropagation(); onRemove(); }} color="error">
                     <DeleteIcon />
                 </IconButton>
             </Box>
-        </RowContainer>
+        </Paper>
     );
 }
 

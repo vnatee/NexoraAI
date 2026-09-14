@@ -1,6 +1,6 @@
 # Codex handoff — NexoraAI
 
-Last updated: 2026-09-06 UTC
+Last updated: 2026-09-14 UTC
 
 This document replaces a raw chat transcript as the engineering handoff. It
 captures the decisions and evidence needed to continue without storing copied
@@ -70,9 +70,90 @@ Decisions already made with the product owner:
 
 ## Implemented work
 
+### Agent Catalog — Phase 1
+
+- The internal Agent Catalog stores versioned Agent template snapshots rather
+  than sharing a mutable Agent instance between Teams.
+- Team administrators with `Manage agents` may publish only to their Team.
+  System administrators can also create a System-owned template without a
+  source Team Agent, and govern publisher-Team, selected-Team, or all-Team
+  visibility and publication status.
+- Catalog metadata includes authenticated creator name, purpose, usage
+  instructions, category, tags, version, publisher, and safe dependency
+  requirements. These are visible to authorized browsers; prompts and full
+  configuration remain server-only.
+- The catalog browse UI uses a responsive card grid with compact summaries and
+  opens long usage/dependency text plus management actions in a detail dialog.
+- Team **Agent Management** uses the same responsive card language: runtime,
+  initials avatar, purpose, readable model label, and compact capability badges.
+  View, Edit, Publish, and Delete remain the existing workflows but are grouped
+  under each card's overflow menu to avoid crowded controls on smaller screens.
+- Team members can browse safe catalog metadata in Chat and the Team workspace;
+  Team administrators can install the latest version as a new Team-local Agent.
+- Snapshot creation strips MCP connection IDs/allowlists and sub-agent IDs.
+  Data Groups and integration binding collections are never copied. Browse
+  responses never expose prompts or full configuration.
+- Existing installations are pinned. A newer publication is reported as an
+  available update but Phase 1 does not automatically mutate the installed
+  Agent.
+- Lifecycle audit records contain actor/item/Team/version metadata only. See
+  `docs/agent-catalog.md` and the Phase 2 list in `docs/product-backlog.md`.
+- Focused Agent Catalog and Agent authorization validation passes (`27 passed`).
+  The service-free suite excluding `tests/test_app_config.py` passes (`911
+  passed, 1 deselected`); that startup-config module attempted to reach the
+  non-published host MongoDB port in this dev-container run. Frontend
+  TypeScript, the memory-safe production build, rebuilt Compose application,
+  health check, compiled catalog UI marker, and unauthenticated API rejection
+  all pass.
+- New Team Agents can now enter **Integrations** before their final save. The
+  Portal creates a Team-scoped private draft with a stable Agent ID, allowing
+  native and MCP bindings to be configured in the same wizard. Drafts appear
+  only to authorized Agent managers, cannot run in Chat/Ask, cannot be selected
+  as sub-agents, and cannot be published. **Finish setup** saves and activates;
+  **Cancel setup** cascade-deletes all binding types. Abandoned drafts expire
+  after 24 hours by default and a bounded cleanup worker removes the Agent,
+  Team reference, sub-agent references, and bindings while retaining only
+  metadata lifecycle audit. The retention and worker interval are configurable
+  through `AGENT_DRAFT_RETENTION_HOURS` and
+  `AGENT_DRAFT_CLEANUP_INTERVAL_SECONDS`.
+  Focused Agent lifecycle/catalog/runtime/manual validation passes (`68
+  passed`), frontend TypeScript and the memory-safe production build pass, and
+  the rebuilt local Compose application is healthy. The complete service-free
+  suite excluding the environment-dependent `tests/test_app_config.py` module
+  passes (`924 passed, 1 deselected`).
+- New Teams now create their default Agent with a complete empty prompt object
+  instead of `null`. The Agent list API also normalizes legacy `null` prompt and
+  configuration values, and the Portal keeps defensive null handling so an old
+  record cannot crash Agent Management. Focused regressions pass (`6 passed`),
+  the complete service-free suite passes (`926 passed, 1 deselected`), the
+  frontend production build passes, and the rebuilt local Compose application
+  is healthy.
+- Publishing a Team Agent now exposes visibility controls to System Admins:
+  publisher Team only, selected Teams, or all Teams. Team managers remain
+  server-limited to their own Team. This fixes the misleading flow where a
+  System Admin publish action always sent `visibility=team`; existing entries
+  retain their prior visibility until explicitly changed or republished.
+  Agent Catalog tests pass (`15 passed`), the complete service-free suite passes
+  (`928 passed, 1 deselected`), the frontend production build passes, and the
+  rebuilt local Compose application is healthy.
+
 ### Runtime and LLM providers
 
 - Admin-managed LLM Provider CRUD and encrypted API keys.
+- **LLM Providers** now uses the shared responsive catalog-style card layout
+  with provider status, vendor avatar, endpoint summary, model/capability counts,
+  search and status filtering. Clicking a card opens the existing editor; Test,
+  Edit, and Delete remain available from the card overflow menu.
+- Provider cards render bundled brand icons from the CC0-licensed
+  `simple-icons` package for supported vendors and local Material-symbol
+  fallbacks for vendors without an available brand asset. No runtime request to
+  an external icon CDN is required.
+- The shared catalog-style responsive cards are also used for Teams, the
+  system User browser, Team members, Data Groups, Embedding Profiles, and
+  Document Processing providers/profiles. Bulk approval queues, configured
+  connection operations, routing rules, permission matrices, policy forms,
+  audit data, and health comparisons intentionally remain list/table/form
+  layouts because their tasks require selection or side-by-side comparison.
 - Provider/model selection per Agent and a small model label in Chat Agent
   selection.
 - Known vendor choices include Azure OpenAI, OpenAI, Gemini, Anthropic/Claude,
@@ -198,6 +279,11 @@ See `docs/ai-guardrails.md`.
 ### MCP
 
 - Managed MCP Server catalog grouped by category.
+- The unified **Integrations → Browse catalog** landing page now follows the
+  Agent Catalog visual language: responsive cards, status, icon, concise
+  description, category/badges, search, category filter, and an overflow
+  action. Configured connections intentionally remain a compact operational
+  list rather than cards.
 - The current MCP management navigation separates **Configured Servers** from
   **Browse Catalog**, replacing the expanding horizontal category tabs with a
   searchable catalog and responsive Category, Status, and Agent Usage filters.
@@ -833,7 +919,7 @@ A production malware scanner remains pending.
   response stream with `KeyError: team_id`; Team-scoped requests retain the
   validated Team ID and name.
 
-### Local and Microsoft Entra authentication
+### Local, Microsoft Entra, OIDC, and SAML authentication
 
 - `LOCAL_AUTH_ENABLED=true` enables a provider-neutral local login alongside
   the existing Entra adapter. Both providers resolve to the existing
@@ -870,6 +956,53 @@ A production malware scanner remains pending.
   Fernet helper and is never returned to the browser. Managed settings override
   environment Entra settings and can be removed to restore the environment
   configuration. Browser reload is required after changing MSAL settings.
+- Generic OIDC supports multiple managed confidential OIDC providers per local/
+  container installation. The backend uses authorization code with PKCE,
+  one-time Mongo-backed state, nonce, exact issuer/audience/expiry checks, and
+  asymmetric JWKS signature validation before issuing the same style of opaque
+  12-hour Nexora session used by Local auth. Issuer, discovery, token, and JWKS
+  URLs must use HTTPS. The provider secret uses the existing Fernet helper and
+  is never returned to the browser.
+- Optional OIDC JIT requires an allowed email-domain list, creates only a
+  non-admin internal user, and retains the existing Team approval workflow.
+  External identity ownership is keyed by issuer plus immutable `sub`; a new
+  subject is never linked to an existing user based only on email. Existing
+  OIDC identities continue to work after JIT is disabled. The Portal exposes a
+  safe discovery test and the exact callback URI; `NEXORA_PUBLIC_URL` supplies
+  the external HTTPS origin behind a reverse proxy.
+- Each connection has independent issuer/client credentials, JIT policy, and
+  allowed email domains. Enabled connections cannot share a routing domain.
+  With multiple providers, Login can route a work email to the unique provider
+  without exposing the configured domain list; explicit provider buttons remain
+  available. Disabling/deleting a provider revokes its active sessions. The
+  original single-provider settings remain as a legacy migration adapter.
+- Administrator-reviewed identity linking is implemented. A verified OIDC
+  subject that collides with an existing login email creates a seven-day
+  pending request rather than being linked automatically. System Admins review
+  it under **Organization → Identity links**, select the explicit target user,
+  and approve or reject it. Unlink revokes that identity's active sessions and
+  is blocked if it would remove the user's only login method. Link lifecycle
+  audit is metadata-only and expires after 365 days.
+- Managed SAML 2.0 service-provider connections are implemented for local/
+  container deployments. Each provider has a stable generated ACS URL and SP
+  Entity ID, IdP Entity ID, HTTPS SSO endpoint, validated X.509 signing
+  certificate, attribute mapping, allowed domains, and JIT policy. Strict mode
+  requires signed assertions and validates issuer, audience, destination, time
+  conditions, one-time RelayState, and `InResponseTo`; unsolicited IdP-initiated
+  responses are rejected. SAML identities use the same reviewed linking,
+  metadata-only audit, opaque 12-hour session, and revoke-on-disable/delete
+  contracts as OIDC. The first slice intentionally defers metadata import,
+  certificate rollover, SP-signed requests/metadata, encrypted assertions, and
+  IdP single logout.
+- Authentication and identity-management focused tests pass (`59 passed`). The
+  complete service-free regression after this slice passes (`964 passed, 1
+  deselected`), and the frontend production build passes. The rebuilt local
+  Compose application is healthy; the production image imports `python3-saml`
+  and `xmlsec`, and `/auth_setup` exposes disabled SAML with an empty provider
+  list while it is unconfigured.
+- Follow-up work remains SCIM, SAML lifecycle enhancements, Local TOTP/WebAuthn, and optional
+  LDAPS. See the
+  prioritized list in `docs/product-backlog.md`.
 - Azure-only startup behavior is unchanged: managed authentication storage is
   read only when Local Auth is enabled, preventing an unnecessary MongoDB call
   in existing Azure startup/test paths.

@@ -191,6 +191,68 @@ async def test_local_auth_rejects_missing_session_even_without_document_acl():
     assert exc_info.value.status_code == 401
 
 
+@pytest.mark.asyncio
+async def test_oidc_session_is_resolved_without_entra_or_local():
+    helper = AuthenticationHelper(
+        search_index=MockSearchIndex,
+        use_authentication=False,
+        server_app_id=None,
+        server_app_secret=None,
+        client_app_id=None,
+        tenant_id=None,
+        oidc_authentication_enabled=True,
+        oidc_providers=[{"id": "workforce", "display_name": "Workforce SSO"}],
+        oidc_session_resolver=lambda token: {
+            "auth_provider": "oidc",
+            "oid": "user-1",
+            "application_user_id": "user-1",
+            "preferred_username": "person@example.com",
+            "groups": [],
+        },
+    )
+
+    claims = await helper.get_auth_claims_if_enabled(
+        headers={"Authorization": "Bearer nx_oidc_session"}
+    )
+
+    assert claims["auth_provider"] == "oidc"
+    assert helper.get_auth_setup_for_client()["oidcAuthenticationEnabled"] is True
+    assert helper.get_auth_setup_for_client()["oidcProviders"] == [
+        {"id": "workforce", "display_name": "Workforce SSO"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_saml_session_is_resolved_without_entra_or_local():
+    helper = AuthenticationHelper(
+        search_index=MockSearchIndex,
+        use_authentication=False,
+        server_app_id=None,
+        server_app_secret=None,
+        client_app_id=None,
+        tenant_id=None,
+        saml_authentication_enabled=True,
+        saml_providers=[{"id": "workforce", "display_name": "Workforce SAML"}],
+        saml_session_resolver=lambda token: {
+            "auth_provider": "saml",
+            "oid": "user-1",
+            "application_user_id": "user-1",
+            "preferred_username": "person@example.com",
+            "groups": [],
+        },
+    )
+
+    claims = await helper.get_auth_claims_if_enabled(
+        headers={"Authorization": "Bearer nx_saml_session"}
+    )
+
+    assert claims["auth_provider"] == "saml"
+    assert helper.get_auth_setup_for_client()["samlAuthenticationEnabled"] is True
+    assert helper.get_auth_setup_for_client()["samlProviders"] == [
+        {"id": "workforce", "display_name": "Workforce SAML"}
+    ]
+
+
 def test_get_auth_token(mock_confidential_client_success, mock_validate_token_success):
     with pytest.raises(AuthError) as exc_info:
         AuthenticationHelper.get_token_auth_header({})
@@ -334,6 +396,24 @@ def test_build_security_filters_for_custom_scopes(mock_confidential_client_succe
             auth_claims={"oid": "OID_X", "selected_scopes": [], "data_groups_id": []},
         )
         == "(oids/any() and not oids/any())"
+    )
+
+
+def test_explicit_personal_scope_enforces_oid_without_legacy_toggle(
+    mock_confidential_client_success, mock_validate_token_success
+):
+    auth_helper = create_authentication_helper(require_access_control=False)
+
+    assert (
+        auth_helper.build_security_filters(
+            overrides={"use_oid_security_filter": False},
+            auth_claims={
+                "oid": "OID_X",
+                "selected_scopes": ["personal"],
+                "data_groups_id": [],
+            },
+        )
+        == "oids/any(g:search.in(g, 'OID_X'))"
     )
 
 

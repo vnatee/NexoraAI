@@ -49,12 +49,31 @@ class AuthenticationHelper:
         local_authentication_enabled: bool = False,
         local_session_resolver: Callable[[str], dict[str, Any]] | None = None,
         local_bootstrap_required: Callable[[], bool] | None = None,
+        oidc_authentication_enabled: bool = False,
+        oidc_display_name: str = "Enterprise SSO",
+        oidc_providers: list[dict[str, str]] | None = None,
+        oidc_session_resolver: Callable[[str], dict[str, Any]] | None = None,
+        saml_authentication_enabled: bool = False,
+        saml_providers: list[dict[str, str]] | None = None,
+        saml_session_resolver: Callable[[str], dict[str, Any]] | None = None,
         search_has_auth_fields: bool | None = None,
     ):
         self.entra_authentication_enabled = use_authentication
         self.local_authentication_enabled = local_authentication_enabled
-        self.use_authentication = use_authentication or local_authentication_enabled
+        self.oidc_authentication_enabled = oidc_authentication_enabled
+        self.oidc_display_name = str(oidc_display_name or "Enterprise SSO")
+        self.oidc_providers = list(oidc_providers or [])
+        self.saml_authentication_enabled = saml_authentication_enabled
+        self.saml_providers = list(saml_providers or [])
+        self.use_authentication = (
+            use_authentication
+            or local_authentication_enabled
+            or oidc_authentication_enabled
+            or saml_authentication_enabled
+        )
         self.local_session_resolver = local_session_resolver
+        self.oidc_session_resolver = oidc_session_resolver
+        self.saml_session_resolver = saml_session_resolver
         self.local_bootstrap_required = local_bootstrap_required
         self.server_app_id = server_app_id
         self.server_app_secret = server_app_secret
@@ -107,6 +126,11 @@ class AuthenticationHelper:
             "enableUnauthenticatedAccess": self.enable_unauthenticated_access,  # Whether or not the user can access the app without login
             "localAuthenticationEnabled": self.local_authentication_enabled,
             "entraAuthenticationEnabled": self.entra_authentication_enabled,
+            "oidcAuthenticationEnabled": self.oidc_authentication_enabled,
+            "oidcDisplayName": self.oidc_display_name,
+            "oidcProviders": self.oidc_providers,
+            "samlAuthenticationEnabled": self.saml_authentication_enabled,
+            "samlProviders": self.saml_providers,
             "localBootstrapRequired": bool(
                 self.local_authentication_enabled
                 and self.local_bootstrap_required
@@ -152,7 +176,12 @@ class AuthenticationHelper:
         client_app_id: str | None,
     ) -> None:
         self.entra_authentication_enabled = enabled
-        self.use_authentication = enabled or self.local_authentication_enabled
+        self.use_authentication = (
+            enabled
+            or self.local_authentication_enabled
+            or self.oidc_authentication_enabled
+            or self.saml_authentication_enabled
+        )
         self.tenant_id = tenant_id
         self.server_app_id = server_app_id
         self.server_app_secret = server_app_secret
@@ -173,6 +202,38 @@ class AuthenticationHelper:
             )
             if enabled
             else None
+        )
+
+    def configure_oidc(
+        self,
+        *,
+        enabled: bool,
+        display_name: str = "Enterprise SSO",
+        providers: list[dict[str, str]] | None = None,
+    ) -> None:
+        self.oidc_authentication_enabled = enabled
+        self.oidc_display_name = str(display_name or "Enterprise SSO")
+        self.oidc_providers = list(providers or [])
+        self.use_authentication = (
+            self.entra_authentication_enabled
+            or self.local_authentication_enabled
+            or enabled
+            or self.saml_authentication_enabled
+        )
+
+    def configure_saml(
+        self,
+        *,
+        enabled: bool,
+        providers: list[dict[str, str]] | None = None,
+    ) -> None:
+        self.saml_authentication_enabled = enabled
+        self.saml_providers = list(providers or [])
+        self.use_authentication = (
+            self.entra_authentication_enabled
+            or self.local_authentication_enabled
+            or self.oidc_authentication_enabled
+            or enabled
         )
 
     @staticmethod
@@ -207,20 +268,32 @@ class AuthenticationHelper:
         use_oid_security_filter = self.require_access_control or overrides.get("use_oid_security_filter")
         use_groups_security_filter = self.require_access_control or overrides.get("use_groups_security_filter")
 
-        if (use_oid_security_filter or use_groups_security_filter) and not self.has_auth_fields:
+        # Explicit UI scope selection is itself an access-control request. It
+        # must not depend on the legacy optional filter toggles: otherwise a
+        # selected Personal scope silently becomes a match-none query when
+        # platform-wide ACL enforcement is disabled (for example local mode).
+        has_scope_selection = "selected_scopes" in auth_claims or "data_groups_id" in auth_claims
+        selected_scopes = auth_claims.get("selected_scopes") or []
+        data_group_ids = auth_claims.get("data_groups_id") or []
+        scope_requires_oid_filter = has_scope_selection and "personal" in selected_scopes
+        scope_requires_groups_filter = has_scope_selection and bool(data_group_ids)
+
+        if (
+            use_oid_security_filter
+            or use_groups_security_filter
+            or scope_requires_oid_filter
+            or scope_requires_groups_filter
+        ) and not self.has_auth_fields:
             raise AuthError(
                 error="oids and groups must be defined in the search index to use authentication", status_code=400
             )
         # The custom UI explicitly sends selected_scopes/data_groups_id. Keep that
         # flow separate from the original Entra oid/group ACL behavior so callers
         # that do not send UI scope selection still receive the standard filter.
-        has_scope_selection = "selected_scopes" in auth_claims or "data_groups_id" in auth_claims
         if has_scope_selection:
-            selected_scopes = auth_claims.get("selected_scopes") or []
-            data_group_ids = auth_claims.get("data_groups_id") or []
             filters: list[str] = []
 
-            if "personal" in selected_scopes and use_oid_security_filter:
+            if "personal" in selected_scopes:
                 filters.append("oids/any(g:search.in(g, '{}'))".format(auth_claims.get("oid", "")))
             if "global" in selected_scopes:
                 filters.append("(not oids/any() and not groups/any())")
@@ -301,6 +374,20 @@ class AuthenticationHelper:
                     return self.local_session_resolver(auth_token)
                 except Exception as error:
                     raise AuthError(error=str(error), status_code=getattr(error, "status_code", 401)) from error
+            if auth_token.startswith("nx_oidc_"):
+                if not self.oidc_authentication_enabled or not self.oidc_session_resolver:
+                    raise AuthError(error="OIDC authentication is not enabled", status_code=401)
+                try:
+                    return self.oidc_session_resolver(auth_token)
+                except Exception as error:
+                    raise AuthError(error=str(error), status_code=getattr(error, "status_code", 401)) from error
+            if auth_token.startswith("nx_saml_"):
+                if not self.saml_authentication_enabled or not self.saml_session_resolver:
+                    raise AuthError(error="SAML authentication is not enabled", status_code=401)
+                try:
+                    return self.saml_session_resolver(auth_token)
+                except Exception as error:
+                    raise AuthError(error=str(error), status_code=getattr(error, "status_code", 401)) from error
             if not self.entra_authentication_enabled or self.confidential_client is None:
                 raise AuthError(error="Microsoft Entra authentication is not enabled", status_code=401)
             # Validate the token before use
@@ -334,14 +421,14 @@ class AuthenticationHelper:
             return auth_claims
         except AuthError as e:
             logging.exception("Exception getting authorization information - " + json.dumps(e.error))
-            if self.local_authentication_enabled or (
+            if self.local_authentication_enabled or self.oidc_authentication_enabled or self.saml_authentication_enabled or (
                 self.require_access_control and not self.enable_unauthenticated_access
             ):
                 raise
             return {}
         except Exception:
             logging.exception("Exception getting authorization information")
-            if self.local_authentication_enabled or (
+            if self.local_authentication_enabled or self.oidc_authentication_enabled or self.saml_authentication_enabled or (
                 self.require_access_control and not self.enable_unauthenticated_access
             ):
                 raise

@@ -98,6 +98,7 @@ def test_request_claims_are_rebuilt_from_server_side_access(monkeypatch):
     monkeypatch.setattr(app_module, "get_team_by_id", lambda _team_id: _team())
     groups = {item["_id"]: item for item in _groups()}
     monkeypatch.setattr(app_module, "get_data_group_by_id", lambda group_id: groups.get(group_id))
+    monkeypatch.setattr(app_module, "get_agent_by_id", lambda _agent_id: {"lifecycle_status": "active"})
 
     original_claims = {"preferred_username": "user@example.com", "data_groups_id": ["untrusted"]}
     claims = app_module._authorized_request_claims(
@@ -122,6 +123,7 @@ def test_request_claims_reject_group_from_another_access_boundary(monkeypatch):
     monkeypatch.setattr(app_module, "get_team_by_id", lambda _team_id: _team())
     groups = {item["_id"]: item for item in _groups()}
     monkeypatch.setattr(app_module, "get_data_group_by_id", lambda group_id: groups.get(group_id))
+    monkeypatch.setattr(app_module, "get_agent_by_id", lambda _agent_id: {"lifecycle_status": "active"})
 
     with pytest.raises(AccessControlError, match="data groups are not available"):
         app_module._authorized_request_claims(
@@ -203,7 +205,13 @@ async def test_create_team_returns_new_team_and_adds_creator(client, monkeypatch
         "_require_system_permission",
         lambda _claims, _permission: _user("creator", is_sys_admin=True),
     )
-    monkeypatch.setattr(app_module, "insert_agent", lambda *_args: (object(), "agent-new"))
+    created_agent = {}
+
+    def insert_agent(name, prompt, config):
+        created_agent.update({"name": name, "prompt": prompt, "config": config})
+        return object(), "agent-new"
+
+    monkeypatch.setattr(app_module, "insert_agent", insert_agent)
     monkeypatch.setattr(app_module, "insert_data_group", lambda *_args: (object(), "group-new"))
 
     captured = {}
@@ -235,6 +243,14 @@ async def test_create_team_returns_new_team_and_adds_creator(client, monkeypatch
         "agent_ids": ["agent-new"],
         "user_ids": ["creator"],
         "waiting": [],
+    }
+    assert created_agent["name"] == "default"
+    assert created_agent["prompt"] == {
+        "role": "",
+        "task": "",
+        "detail_context": "",
+        "output_format": "",
+        "constraints": "",
     }
 
 

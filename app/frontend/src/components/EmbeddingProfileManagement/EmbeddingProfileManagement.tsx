@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
     Alert,
+    Avatar,
     Box,
     Button,
     Chip,
@@ -10,6 +11,8 @@ import {
     DialogContent,
     DialogTitle,
     IconButton,
+    InputAdornment,
+    Menu,
     MenuItem,
     Paper,
     Snackbar,
@@ -23,6 +26,9 @@ import DeleteIcon from "@mui/icons-material/Delete";
 import EditIcon from "@mui/icons-material/Edit";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import PowerSettingsNewIcon from "@mui/icons-material/PowerSettingsNew";
+import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
+import SearchIcon from "@mui/icons-material/Search";
+import GrainIcon from "@mui/icons-material/Grain";
 import { useMsal } from "@azure/msal-react";
 
 import {
@@ -67,6 +73,19 @@ export function EmbeddingProfileManagement() {
     const [editing, setEditing] = useState<ManagedEmbeddingProfile | null>(null);
     const [form, setForm] = useState<EmbeddingProfilePayload>(emptyPayload());
     const [notice, setNotice] = useState<{ severity: "success" | "warning" | "error"; text: string } | null>(null);
+    const [search, setSearch] = useState("");
+    const [actionAnchor, setActionAnchor] = useState<HTMLElement | null>(null);
+    const [actionProfile, setActionProfile] = useState<ManagedEmbeddingProfile | null>(null);
+
+    const filteredProfiles = useMemo(() => {
+        const query = search.trim().toLowerCase();
+        return profiles.filter(profile => !query || `${profile.name} ${profile.provider} ${profile.model} ${profile.collection_name}`.toLowerCase().includes(query));
+    }, [profiles, search]);
+
+    const closeActionMenu = () => {
+        setActionAnchor(null);
+        setActionProfile(null);
+    };
 
     const load = async () => {
         setLoading(true);
@@ -222,43 +241,92 @@ export function EmbeddingProfileManagement() {
                 </Alert>
             )}
 
+            <TextField
+                fullWidth
+                size="small"
+                placeholder="Search embedding profiles..."
+                value={search}
+                onChange={event => setSearch(event.target.value)}
+                InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon color="action" /></InputAdornment> }}
+            />
+
             {loading ? <Box display="flex" justifyContent="center" py={6}><CircularProgress /></Box> : (
-                <Stack spacing={1}>
-                    {profiles.map(profile => {
+                <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 240px), 1fr))", gap: 2 }}>
+                    {filteredProfiles.map(profile => {
                         const selected = settings?.active_profile_id === profile._id;
                         const running = settings?.runtime_profile_id === profile._id;
                         const locked = selected || running;
                         return (
-                            <Paper key={profile._id} variant="outlined" sx={{ p: 2 }}>
-                                <Box display="flex" justifyContent="space-between" alignItems="center" gap={2} flexWrap="wrap">
-                                    <Box minWidth={0}>
-                                        <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-                                            <Typography fontWeight={600}>{profile.name}</Typography>
-                                            {profile.environment && <Chip size="small" label="Environment" />}
-                                            {selected && <Chip size="small" color="primary" label="Selected" />}
-                                            {running && <Chip size="small" color="success" label="Running" />}
-                                            {!profile.enabled && <Chip size="small" label="Disabled" />}
-                                            {profile.has_api_key && <Chip size="small" variant="outlined" label="API key stored" />}
-                                        </Stack>
-                                        <Typography variant="body2" color="text.secondary">
-                                            {profile.provider} · {profile.model} · {profile.dimensions} dimensions
-                                        </Typography>
-                                        <Typography variant="caption" color="text.secondary">
-                                            Qdrant collection: {profile.collection_name}
-                                        </Typography>
-                                    </Box>
-                                    <Stack direction="row" spacing={0.5}>
-                                        <Button size="small" startIcon={<PlayArrowIcon />} disabled={busyId === profile._id} onClick={() => void test(profile)}>Test</Button>
-                                        {!selected && <Button size="small" startIcon={<PowerSettingsNewIcon />} disabled={!profile.enabled || busyId === profile._id} onClick={() => void activate(profile)}>Activate</Button>}
-                                        {!profile.environment && <IconButton aria-label="Edit embedding profile" disabled={locked} onClick={() => openEdit(profile)}><EditIcon /></IconButton>}
-                                        {!profile.environment && <IconButton aria-label="Remove embedding profile" color="error" disabled={locked} onClick={() => void remove(profile)}><DeleteIcon /></IconButton>}
-                                    </Stack>
-                                </Box>
+                            <Paper
+                                key={profile._id}
+                                variant="outlined"
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => !profile.environment && !locked && openEdit(profile)}
+                                onKeyDown={event => {
+                                    if ((event.key === "Enter" || event.key === " ") && !profile.environment && !locked) {
+                                        event.preventDefault();
+                                        openEdit(profile);
+                                    }
+                                }}
+                                sx={{
+                                    p: 2,
+                                    minHeight: 300,
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    alignItems: "center",
+                                    textAlign: "center",
+                                    position: "relative",
+                                    cursor: !profile.environment && !locked ? "pointer" : "default",
+                                    transition: "transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease",
+                                    "&:hover": { transform: "translateY(-2px)", boxShadow: 3, borderColor: "primary.light" },
+                                    "&:focus-visible": { outline: "3px solid", outlineColor: "primary.light", outlineOffset: 2 }
+                                }}
+                            >
+                                <Chip size="small" color={running ? "success" : selected ? "primary" : profile.enabled ? "default" : "default"} label={running ? "Running" : selected ? "Selected" : profile.enabled ? "Available" : "Disabled"} sx={{ position: "absolute", top: 12, left: 12 }} />
+                                <IconButton size="small" aria-label={`Actions for ${profile.name}`} onClick={event => { event.stopPropagation(); setActionProfile(profile); setActionAnchor(event.currentTarget); }} sx={{ position: "absolute", top: 8, right: 8 }}>
+                                    {busyId === profile._id ? <CircularProgress size={20} /> : <MoreHorizIcon />}
+                                </IconButton>
+                                <Avatar variant="rounded" sx={{ width: 72, height: 72, mt: 3, mb: 2, bgcolor: "secondary.main", boxShadow: 1 }}>
+                                    <GrainIcon sx={{ fontSize: 42 }} />
+                                </Avatar>
+                                <Typography variant="h6" fontSize="1rem" fontWeight={700} sx={{ minHeight: 42, overflowWrap: "anywhere" }}>{profile.name}</Typography>
+                                <Typography variant="body2" color="text.secondary" fontWeight={500}>{profile.model}</Typography>
+                                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, overflowWrap: "anywhere" }}>{profile.provider}</Typography>
+                                <Box sx={{ flex: 1 }} />
+                                <Typography variant="caption" color="text.secondary" title={profile.collection_name} sx={{ mt: 2, maxWidth: "100%", overflowWrap: "anywhere" }}>
+                                    {profile.dimensions} dimensions · {profile.collection_name}
+                                </Typography>
+                                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap justifyContent="center" sx={{ mt: 1 }}>
+                                    {profile.environment && <Chip size="small" variant="outlined" label="Environment" />}
+                                    {profile.has_api_key && <Chip size="small" variant="outlined" label="Credential stored" />}
+                                </Stack>
                             </Paper>
                         );
                     })}
-                </Stack>
+                </Box>
             )}
+
+            <Menu anchorEl={actionAnchor} open={Boolean(actionAnchor)} onClose={closeActionMenu}>
+                <MenuItem disabled={!actionProfile || busyId === actionProfile._id} onClick={() => { if (actionProfile) void test(actionProfile); closeActionMenu(); }}>
+                    <PlayArrowIcon fontSize="small" sx={{ mr: 1.5 }} /> Test
+                </MenuItem>
+                {actionProfile && settings?.active_profile_id !== actionProfile._id && (
+                    <MenuItem disabled={!actionProfile.enabled || busyId === actionProfile._id} onClick={() => { const profile = actionProfile; closeActionMenu(); void activate(profile); }}>
+                        <PowerSettingsNewIcon fontSize="small" sx={{ mr: 1.5 }} /> Activate
+                    </MenuItem>
+                )}
+                {actionProfile && !actionProfile.environment && (
+                    <MenuItem disabled={settings?.active_profile_id === actionProfile._id || settings?.runtime_profile_id === actionProfile._id} onClick={() => { openEdit(actionProfile); closeActionMenu(); }}>
+                        <EditIcon fontSize="small" sx={{ mr: 1.5 }} /> Edit
+                    </MenuItem>
+                )}
+                {actionProfile && !actionProfile.environment && (
+                    <MenuItem disabled={settings?.active_profile_id === actionProfile._id || settings?.runtime_profile_id === actionProfile._id} onClick={() => { const profile = actionProfile; closeActionMenu(); void remove(profile); }} sx={{ color: "error.main" }}>
+                        <DeleteIcon fontSize="small" sx={{ mr: 1.5 }} /> Delete
+                    </MenuItem>
+                )}
+            </Menu>
 
             <Dialog open={dialogOpen} onClose={() => busyId === null && setDialogOpen(false)} fullWidth maxWidth="sm">
                 <DialogTitle>{editing ? "Edit Embedding Profile" : "Add Embedding Profile"}</DialogTitle>

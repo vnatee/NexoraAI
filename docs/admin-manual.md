@@ -57,6 +57,7 @@ collapsed menu groups. Select a group to expand it.
 | --- | --- | --- |
 | **Organization** | Teams | Create Teams and open their Team workspace |
 |  | Users | Review and manage registered users |
+|  | Identity links | Approve, reject, and unlink federated OIDC/SAML identities |
 |  | User permissions | Assign System Admin and direct System/Team permissions |
 | **Governance** | Agent audit | Review metadata-only Agent/tool activity |
 |  | Guardrail policy | Set the System guardrail baseline |
@@ -227,6 +228,16 @@ Agent policy cannot weaken an enforced parent System or Team policy.
 
 Assignments are grouped into REST APIs, Databases, Mail, Documents, Messaging,
 MCP, and Visualization. Only assign capabilities required by the Agent.
+
+For a new Agent, enter **Agent Name** and select **Integrations**. NexoraAI
+automatically creates a private draft so integration bindings have a stable
+Agent ID. The draft appears only in **Agent Management** with a **Draft** badge;
+it cannot be selected in Chat, delegated to, or published to Agent Catalog.
+Select **Finish setup** to save the latest Agent fields and activate it, or
+**Cancel setup** to immediately remove the draft and all of its bindings.
+Abandoned drafts expire after 24 hours by default and are removed by the
+background cleanup worker. Operators may set `AGENT_DRAFT_RETENTION_HOURS`
+(1–168) and `AGENT_DRAFT_CLEANUP_INTERVAL_SECONDS` (minimum 60).
 
 For MCP Agents configure:
 
@@ -452,7 +463,8 @@ not yet block features. Key generation and activation are documented in
 ## 12. Sign-in & authentication
 
 Local authentication is controlled by deployment setting `LOCAL_AUTH_ENABLED`.
-The Portal manages the Microsoft Entra configuration:
+The Portal manages Microsoft Entra and multiple standards-based OpenID Connect
+(OIDC) and SAML 2.0 connections. Configure Entra with:
 
 | Field | Source | Example |
 | --- | --- | --- |
@@ -466,6 +478,29 @@ Saved managed values override environment defaults and secrets are encrypted.
 Use **Use environment settings** to remove the managed override. Reload the page
 before testing a changed Entra configuration. Configure the SPA redirect URI to
 the actual HTTPS origin used by users.
+
+For OIDC, select **Add OIDC connection** and provide a connection name, exact
+HTTPS issuer URL, client ID, client secret, token-endpoint authentication
+method, allowed email domains, and optional JIT provisioning. Copy the displayed
+callback URI into the provider application. Select **Test discovery** before
+enabling the connection. Each enabled connection must own a distinct set of
+email domains. Disabling or deleting one revokes its active OIDC sessions.
+
+For SAML, select **Add SAML connection**. Enter the IdP Entity ID, HTTPS SSO URL,
+X.509 signing certificate, attribute names, allowed domains, and JIT policy.
+Copy the generated **ACS / Reply URL** and **SP Entity ID / Audience** into the
+IdP application. Create the connection disabled, select **Validate
+configuration**, complete the IdP setup, then enable it. A public deployment
+must set `NEXORA_PUBLIC_URL` before these URLs are copied. NexoraAI requires a
+signed assertion and SP-initiated request correlation; private IdP or SP keys
+must never be pasted into the certificate field.
+
+Use **Organization → Identity links** to review verified OIDC or SAML users whose email
+already belongs to an internal account. Confirm the identity outside NexoraAI,
+select the intended user, then choose **Approve link** or **Reject**. The linked
+identity list supports **Unlink**, but the system blocks removal of a user's
+only sign-in method. Approval, rejection, and unlink operations are audited
+without retaining tokens or raw provider claims.
 
 See [Local and Microsoft Entra authentication](local-authentication.md).
 

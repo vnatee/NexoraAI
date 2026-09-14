@@ -6,8 +6,8 @@ from typing import Any
 from agent_runtime.adapters import (
     MCPServerConfig,
     SubagentSpec,
-    register_chart_tool,
     register_business_document_tools,
+    register_chart_tool,
     register_database_tools,
     register_external_api_tools,
     register_mail_tools,
@@ -28,7 +28,7 @@ from core.attachment_retrieval import (
 )
 from core.mcp_auth import EntraClientCredentials
 from mongo_table_connecters.agent_bindings import get_all_agent_bindings_by_agent_id
-from mongo_table_connecters.agents import get_agent_by_id
+from mongo_table_connecters.agents import get_agent_by_id, is_active_agent
 from mongo_table_connecters.chart_binding import get_enabled_chart_bindings_by_agent_id
 from mongo_table_connecters.guardrail_settings import effective_guardrail_policy
 from mongo_table_connecters.mcp_servers import (
@@ -68,6 +68,8 @@ async def create_agent_runtime(
     runtime_metadata: dict[str, Any] | None = None,
 ) -> AgentRuntime:
     agent = get_agent_by_id(agent_id) or {}
+    if not is_active_agent(agent):
+        raise ValueError("Agent is unavailable until setup is finished")
     tool_settings = (agent.get("config") or {}).get("tool_settings") or {}
     knowledge_search_mode = str(tool_settings.get("knowledge_search") or "auto").lower()
     runtime_metadata = dict(runtime_metadata or {})
@@ -207,7 +209,7 @@ async def create_agent_runtime(
             if not team or child_id not in team_agent_ids:
                 continue
             child = get_agent_by_id(str(child_id))
-            if not child:
+            if not is_active_agent(child):
                 continue
             if (
                 str((child.get("config") or {}).get("runtime") or "legacy")
@@ -226,7 +228,7 @@ async def create_agent_runtime(
             child_agent_id: str, task: str, child_metadata: dict[str, Any]
         ) -> dict[str, Any]:
             child = get_agent_by_id(child_agent_id)
-            if not child:
+            if not is_active_agent(child):
                 raise ValueError("Selected sub-agent is unavailable")
             child_run_id = str(uuid.uuid4())
             child_overrides = dict(overrides)
@@ -355,6 +357,11 @@ When the user asks for an Azure diagram, first collect the requested Azure inven
         AgentRuntimeConfig(
             system_prompt=effective_system_prompt,
             knowledge_search_mode=knowledge_search_mode,
+            knowledge_search_query=(
+                str(overrides.get("_knowledge_search_context") or "").strip()
+                if overrides.get("_requirements_evidence_matrix") is True
+                else None
+            ),
             mcp_execution_mode=str(
                 tool_settings.get("mcp_execution") or "auto"
             ).lower(),

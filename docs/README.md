@@ -26,7 +26,7 @@ These are advanced topics that are not necessary for a basic deployment.
     - [Agentic retrieval](agentic_retrieval.md)
   - [Sharing deployment environments](sharing_environments.md)
 - [Local development](localdev.md)
-- [Local and Microsoft Entra authentication](local-authentication.md)
+- [Local, Microsoft Entra, OIDC, and SAML authentication](local-authentication.md)
 - [Local MongoDB](local-mongodb.md)
 - [Local backup and restore](local-backup-restore.md)
 - [Local Knowledge object storage](local-knowledge-storage.md)

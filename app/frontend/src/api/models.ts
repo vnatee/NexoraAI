@@ -608,7 +608,86 @@ export interface AuthenticationSettings {
     server_app_id: string;
     client_app_id: string;
     has_client_secret: boolean;
+    oidc_enabled: boolean;
+    oidc_display_name: string;
+    oidc_issuer: string;
+    oidc_client_id: string;
+    oidc_client_secret?: string;
+    oidc_token_auth_method: "client_secret_basic" | "client_secret_post";
+    oidc_has_client_secret: boolean;
+    oidc_jit_enabled: boolean;
+    oidc_allowed_domains: string[];
+    oidc_callback_url?: string;
     source?: "environment" | "managed";
+}
+
+export interface OIDCProvider {
+    id: string;
+    enabled: boolean;
+    display_name: string;
+    issuer: string;
+    client_id: string;
+    client_secret?: string;
+    token_auth_method: "client_secret_basic" | "client_secret_post";
+    jit_enabled: boolean;
+    allowed_domains: string[];
+    has_client_secret: boolean;
+    legacy?: boolean;
+}
+
+export type OIDCProviderPayload = Omit<OIDCProvider, "id" | "has_client_secret" | "legacy"> & {
+    client_secret?: string;
+    clear_client_secret?: boolean;
+};
+
+export interface SAMLProvider {
+    id: string;
+    enabled: boolean;
+    display_name: string;
+    entity_id: string;
+    sso_url: string;
+    x509_cert: string;
+    email_attribute: string;
+    first_name_attribute: string;
+    last_name_attribute: string;
+    jit_enabled: boolean;
+    allowed_domains: string[];
+    acs_url?: string;
+    metadata_url?: string;
+}
+
+export type SAMLProviderPayload = Omit<SAMLProvider, "acs_url" | "metadata_url">;
+
+export interface OIDCIdentityLinkRequest {
+    id: string;
+    provider_name: string;
+    email: string;
+    suggested_user_id: string;
+    suggested_user_name: string;
+    expires_at?: string;
+}
+
+export interface OIDCIdentityLink {
+    id: string;
+    provider_name: string;
+    username: string;
+    user_id: string;
+    user_name: string;
+    active: boolean;
+    created_at?: string;
+}
+
+export interface IdentityManagementResponse {
+    pending: OIDCIdentityLinkRequest[];
+    links: OIDCIdentityLink[];
+    audit_events: Array<{
+        id: string;
+        action: string;
+        actor_id: string;
+        target_user_id: string;
+        provider: string;
+        created_at?: string;
+    }>;
 }
 
 export interface TeamProfile {
@@ -802,8 +881,38 @@ export interface Agent {
     create_at?: string;
     update_at?: string;
     delete_at?: string;
+    lifecycle_status?: "active" | "draft";
+    draft_expires_at?: string | null;
     config: AgentConf;
     prompt: Prompt;
+}
+
+export interface AgentCatalogItem {
+    _id: string;
+    name: string;
+    summary: string;
+    usage_instructions: string;
+    tags: string[];
+    category: string;
+    publisher_team: { _id: string; name: string };
+    publisher_type: "team" | "system";
+    created_by: { _id: string; name: string };
+    visibility: "team" | "selected_teams" | "all_teams";
+    status: "published" | "unpublished";
+    latest_version: number;
+    requirements: {
+        llm_profile_id?: string;
+        runtime?: string;
+        uses_knowledge?: boolean;
+        declared_tools?: string[];
+    };
+    installed: boolean;
+    installed_version?: number | null;
+    update_available?: boolean;
+    installed_agent_id?: string | null;
+    source_agent_id?: string;
+    allowed_team_ids?: string[];
+    updated_at?: string;
 }
 
 export interface UserPermission {

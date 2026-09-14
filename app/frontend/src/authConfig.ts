@@ -22,6 +22,11 @@ interface AuthSetup {
     enableUnauthenticatedAccess: boolean;
     localAuthenticationEnabled: boolean;
     entraAuthenticationEnabled: boolean;
+    oidcAuthenticationEnabled: boolean;
+    oidcDisplayName: string;
+    oidcProviders: Array<{ id: string; display_name: string }>;
+    samlAuthenticationEnabled: boolean;
+    samlProviders: Array<{ id: string; display_name: string }>;
     localBootstrapRequired: boolean;
     /**
      * Configuration object to be passed to MSAL instance on creation.
@@ -62,6 +67,11 @@ const defaultAuthSetup: AuthSetup = {
     enableUnauthenticatedAccess: true,
     localAuthenticationEnabled: false,
     entraAuthenticationEnabled: true,
+    oidcAuthenticationEnabled: false,
+    oidcDisplayName: "Enterprise SSO",
+    oidcProviders: [],
+    samlAuthenticationEnabled: false,
+    samlProviders: [],
     localBootstrapRequired: false,
     msalConfig: {
         auth: {
@@ -106,16 +116,134 @@ export const requireAccessControl = authSetup.requireAccessControl;
 export const enableUnauthenticatedAccess = authSetup.enableUnauthenticatedAccess;
 export const localAuthenticationEnabled = authSetup.localAuthenticationEnabled;
 export const entraAuthenticationEnabled = authSetup.entraAuthenticationEnabled;
+export const oidcAuthenticationEnabled = authSetup.oidcAuthenticationEnabled;
+export const oidcDisplayName = authSetup.oidcDisplayName || "Enterprise SSO";
+export const oidcProviders = authSetup.oidcProviders?.length
+    ? authSetup.oidcProviders
+    : authSetup.oidcAuthenticationEnabled
+      ? [{ id: "legacy", display_name: authSetup.oidcDisplayName || "Enterprise SSO" }]
+      : [];
+export const samlAuthenticationEnabled = authSetup.samlAuthenticationEnabled;
+export const samlProviders = authSetup.samlProviders || [];
 export const localBootstrapRequired = authSetup.localBootstrapRequired;
 
 export const requireLogin = true; // Always require login
 
 const LOCAL_TOKEN_KEY = "nexora.localAccessToken";
 const LOCAL_USERNAME_KEY = "nexora.localUsername";
+const OIDC_TOKEN_KEY = "nexora.oidcAccessToken";
+const OIDC_USERNAME_KEY = "nexora.oidcUsername";
+const SAML_TOKEN_KEY = "nexora.samlAccessToken";
+const SAML_USERNAME_KEY = "nexora.samlUsername";
 
 export const getLocalToken = (): string | undefined => sessionStorage.getItem(LOCAL_TOKEN_KEY) || undefined;
 
 export const isUsingLocalLogin = (): boolean => Boolean(getLocalToken());
+export const getOidcToken = (): string | undefined => sessionStorage.getItem(OIDC_TOKEN_KEY) || undefined;
+export const isUsingOidcLogin = (): boolean => Boolean(getOidcToken());
+export const getSamlToken = (): string | undefined => sessionStorage.getItem(SAML_TOKEN_KEY) || undefined;
+export const isUsingSamlLogin = (): boolean => Boolean(getSamlToken());
+
+export const oidcLogin = async (providerId: string): Promise<void> => {
+    const popup = window.open("about:blank", "nexora-oidc-login", "popup=yes,width=560,height=720");
+    if (!popup) throw new Error("Allow pop-ups to sign in with Enterprise SSO.");
+    const response = await fetch("/auth/oidc/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider_id: providerId })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.authorization_url) {
+        popup.close();
+        throw new Error(data.error || "Unable to start OIDC sign-in");
+    }
+    await new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => finish(new Error("OIDC sign-in timed out.")), 120000);
+        const finish = (error?: Error) => {
+            window.clearTimeout(timeout);
+            window.removeEventListener("message", receive);
+            if (!popup.closed) popup.close();
+            if (error) reject(error); else resolve();
+        };
+        const receive = (event: MessageEvent) => {
+            if (event.origin !== window.location.origin || event.source !== popup || event.data?.type !== "nexora:oidc") return;
+            if (event.data.error) return finish(new Error(String(event.data.error)));
+            if (!event.data.access_token) return finish(new Error("OIDC sign-in did not return a session."));
+            sessionStorage.removeItem(LOCAL_TOKEN_KEY);
+            sessionStorage.removeItem(LOCAL_USERNAME_KEY);
+            sessionStorage.removeItem(SAML_TOKEN_KEY);
+            sessionStorage.removeItem(SAML_USERNAME_KEY);
+            sessionStorage.setItem(OIDC_TOKEN_KEY, String(event.data.access_token));
+            sessionStorage.setItem(OIDC_USERNAME_KEY, String(event.data.username || ""));
+            finish();
+        };
+        window.addEventListener("message", receive);
+        popup.location.href = String(data.authorization_url);
+    });
+};
+
+export const routeOidcProvider = async (email: string): Promise<string> => {
+    const response = await fetch("/auth/oidc/route", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.provider_id) throw new Error(data.error || "No SSO provider matches this email.");
+    return String(data.provider_id);
+};
+
+export const oidcLogout = async (): Promise<void> => {
+    const token = getOidcToken();
+    if (token) {
+        await fetch("/auth/oidc/logout", { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => undefined);
+    }
+    sessionStorage.removeItem(OIDC_TOKEN_KEY);
+    sessionStorage.removeItem(OIDC_USERNAME_KEY);
+};
+
+export const samlLogin = async (providerId: string): Promise<void> => {
+    const popup = window.open("about:blank", "nexora-saml-login", "popup=yes,width=720,height=760");
+    if (!popup) throw new Error("Allow pop-ups to sign in with SAML SSO.");
+    const response = await fetch(`/auth/saml/${encodeURIComponent(providerId)}/start`, { method: "POST" });
+    const data = await response.json();
+    if (!response.ok || !data.authorization_url) {
+        popup.close();
+        throw new Error(data.error || "Unable to start SAML sign-in");
+    }
+    await new Promise<void>((resolve, reject) => {
+        const timeout = window.setTimeout(() => finish(new Error("SAML sign-in timed out.")), 120000);
+        const finish = (error?: Error) => {
+            window.clearTimeout(timeout);
+            window.removeEventListener("message", receive);
+            if (!popup.closed) popup.close();
+            if (error) reject(error); else resolve();
+        };
+        const receive = (event: MessageEvent) => {
+            if (event.origin !== window.location.origin || event.source !== popup || event.data?.type !== "nexora:saml") return;
+            if (event.data.error) return finish(new Error(String(event.data.error)));
+            if (!event.data.access_token) return finish(new Error("SAML sign-in did not return a session."));
+            sessionStorage.removeItem(LOCAL_TOKEN_KEY);
+            sessionStorage.removeItem(LOCAL_USERNAME_KEY);
+            sessionStorage.removeItem(OIDC_TOKEN_KEY);
+            sessionStorage.removeItem(OIDC_USERNAME_KEY);
+            sessionStorage.setItem(SAML_TOKEN_KEY, String(event.data.access_token));
+            sessionStorage.setItem(SAML_USERNAME_KEY, String(event.data.username || ""));
+            finish();
+        };
+        window.addEventListener("message", receive);
+        popup.location.href = String(data.authorization_url);
+    });
+};
+
+export const samlLogout = async (): Promise<void> => {
+    const token = getSamlToken();
+    if (token) {
+        await fetch("/auth/saml/logout", { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => undefined);
+    }
+    sessionStorage.removeItem(SAML_TOKEN_KEY);
+    sessionStorage.removeItem(SAML_USERNAME_KEY);
+};
 
 export const localLogin = async (username: string, password: string): Promise<void> => {
     const response = await fetch("/auth/local/login", {
@@ -125,6 +253,10 @@ export const localLogin = async (username: string, password: string): Promise<vo
     });
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Local sign-in failed");
+    sessionStorage.removeItem(OIDC_TOKEN_KEY);
+    sessionStorage.removeItem(OIDC_USERNAME_KEY);
+    sessionStorage.removeItem(SAML_TOKEN_KEY);
+    sessionStorage.removeItem(SAML_USERNAME_KEY);
     sessionStorage.setItem(LOCAL_TOKEN_KEY, data.access_token);
     sessionStorage.setItem(LOCAL_USERNAME_KEY, data.username || username);
 };
@@ -264,7 +396,7 @@ export const appServicesLogout = () => {
  * @returns {Promise<boolean>} A promise that resolves to true if the user is logged in, false otherwise.
  */
 export const checkLoggedIn = async (client: IPublicClientApplication | undefined): Promise<boolean> => {
-    if (getLocalToken()) return true;
+    if (getLocalToken() || getOidcToken() || getSamlToken()) return true;
     if (client) {
         const activeAccount = client.getActiveAccount();
         if (activeAccount) {
@@ -346,6 +478,10 @@ export const getToken = async (client: IPublicClientApplication): Promise<string
     try {
         const localToken = getLocalToken();
         if (localToken) return localToken;
+        const oidcToken = getOidcToken();
+        if (oidcToken) return oidcToken;
+        const samlToken = getSamlToken();
+        if (samlToken) return samlToken;
         const appServicesToken = await getAppServicesToken();
         if (appServicesToken) {
             return appServicesToken.access_token;
@@ -379,6 +515,10 @@ export const getToken = async (client: IPublicClientApplication): Promise<string
 export const getUsername = async (client: IPublicClientApplication): Promise<string | null> => {
     const localUsername = sessionStorage.getItem(LOCAL_USERNAME_KEY);
     if (localUsername) return localUsername;
+    const oidcUsername = sessionStorage.getItem(OIDC_USERNAME_KEY);
+    if (oidcUsername) return oidcUsername;
+    const samlUsername = sessionStorage.getItem(SAML_USERNAME_KEY);
+    if (samlUsername) return samlUsername;
     const activeAccount = client.getActiveAccount();
     if (activeAccount) {
         return activeAccount.username;

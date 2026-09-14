@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+    Avatar,
     Box,
     Button,
     CircularProgress,
@@ -12,11 +13,12 @@ import {
     ListItemText,
     Menu,
     MenuItem,
+    Paper,
+    Chip,
     Stack,
     TextField,
     Typography
 } from "@mui/material";
-import { DataGrid, GridColDef } from "@mui/x-data-grid";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
@@ -77,59 +79,6 @@ export function TeamManagement({ onTeamCreated, onTeamManage }: TeamManagementPr
     }, [search, teams]);
 
     const manageTeam = (team: Team) => onTeamManage?.(teamProfile(team));
-
-    const columns: GridColDef<Team>[] = [
-        { field: "name", headerName: "Team name", flex: 1, minWidth: 220 },
-        {
-            field: "data_group_id",
-            headerName: "Data groups",
-            width: 130,
-            valueGetter: (_, row) => row.data_group_id.length
-        },
-        {
-            field: "agent_id",
-            headerName: "Agents",
-            width: 100,
-            valueGetter: (_, row) => row.agent_id.length
-        },
-        {
-            field: "user_id",
-            headerName: "Members",
-            width: 105,
-            valueGetter: (_, row) => row.user_id.length
-        },
-        {
-            field: "waiting_approve",
-            headerName: "Pending",
-            width: 105,
-            valueGetter: (_, row) => row.waiting_approve.length
-        },
-        {
-            field: "actions",
-            headerName: "",
-            sortable: false,
-            filterable: false,
-            width: 170,
-            renderCell: params => (
-                <Stack direction="row" spacing={0.5} alignItems="center" sx={{ height: "100%" }}>
-                    <Button size="small" startIcon={<SettingsOutlinedIcon />} onClick={() => manageTeam(params.row)}>
-                        Manage
-                    </Button>
-                    <IconButton
-                        size="small"
-                        aria-label={`More actions for ${params.row.name}`}
-                        onClick={event => {
-                            event.stopPropagation();
-                            setActionAnchor(event.currentTarget);
-                            setActionTeam(params.row);
-                        }}
-                    >
-                        <MoreVertIcon fontSize="small" />
-                    </IconButton>
-                </Stack>
-            )
-        }
-    ];
 
     const createTeam = async () => {
         const normalizedName = teamName.trim();
@@ -210,15 +159,55 @@ export function TeamManagement({ onTeamCreated, onTeamManage }: TeamManagementPr
                     <Box sx={{ display: "flex", justifyContent: "center", mt: 4 }}>
                         <CircularProgress />
                     </Box>
+                ) : filteredTeams.length === 0 ? (
+                    <Typography color="text.secondary">No teams found</Typography>
                 ) : (
-                    <DataGrid
-                        rows={filteredTeams}
-                        columns={columns}
-                        getRowId={row => row._id}
-                        pageSizeOptions={[5, 10]}
-                        disableRowSelectionOnClick
-                        onRowDoubleClick={params => manageTeam(params.row)}
-                    />
+                    <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 240px), 1fr))", gap: 2 }}>
+                        {filteredTeams.map(team => (
+                            <Paper
+                                key={team._id}
+                                variant="outlined"
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => manageTeam(team)}
+                                onKeyDown={event => {
+                                    if (event.key === "Enter" || event.key === " ") {
+                                        event.preventDefault();
+                                        manageTeam(team);
+                                    }
+                                }}
+                                sx={{
+                                    p: 2,
+                                    minHeight: 270,
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    alignItems: "center",
+                                    textAlign: "center",
+                                    position: "relative",
+                                    cursor: "pointer",
+                                    transition: "transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease",
+                                    "&:hover": { transform: "translateY(-2px)", boxShadow: 3, borderColor: "primary.light" },
+                                    "&:focus-visible": { outline: "3px solid", outlineColor: "primary.light", outlineOffset: 2 }
+                                }}
+                            >
+                                <Chip size="small" color={team.waiting_approve.length ? "warning" : "success"} label={team.waiting_approve.length ? `${team.waiting_approve.length} pending` : "Ready"} sx={{ position: "absolute", top: 12, left: 12 }} />
+                                <IconButton size="small" aria-label={`Actions for ${team.name}`} onClick={event => { event.stopPropagation(); setActionAnchor(event.currentTarget); setActionTeam(team); }} sx={{ position: "absolute", top: 8, right: 8 }}>
+                                    <MoreVertIcon fontSize="small" />
+                                </IconButton>
+                                <Avatar variant="rounded" sx={{ width: 72, height: 72, mt: 3, mb: 2, bgcolor: "primary.main", fontSize: 26, boxShadow: 1 }}>
+                                    {team.name.trim().slice(0, 2).toUpperCase() || "TM"}
+                                </Avatar>
+                                <Typography variant="h6" fontSize="1rem" fontWeight={700} sx={{ minHeight: 42, overflowWrap: "anywhere" }}>{team.name}</Typography>
+                                <Typography variant="body2" color="text.secondary">Team workspace</Typography>
+                                <Box sx={{ flex: 1 }} />
+                                <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap justifyContent="center" sx={{ mt: 2 }}>
+                                    <Chip size="small" variant="outlined" label={`${team.user_id.length} members`} />
+                                    <Chip size="small" variant="outlined" label={`${team.agent_id.length} agents`} />
+                                    <Chip size="small" variant="outlined" label={`${team.data_group_id.length} data groups`} />
+                                </Stack>
+                            </Paper>
+                        ))}
+                    </Box>
                 )}
             </Box>
 
@@ -230,6 +219,10 @@ export function TeamManagement({ onTeamCreated, onTeamManage }: TeamManagementPr
                     setActionTeam(null);
                 }}
             >
+                <MenuItem onClick={() => { if (actionTeam) manageTeam(actionTeam); setActionAnchor(null); setActionTeam(null); }}>
+                    <ListItemIcon><SettingsOutlinedIcon fontSize="small" /></ListItemIcon>
+                    <ListItemText primary="Manage team" />
+                </MenuItem>
                 <MenuItem
                     onClick={() => {
                         setDeleteTeam(actionTeam);

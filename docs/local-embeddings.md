@@ -65,8 +65,14 @@ EMBEDDING_PROVIDER=openai_compatible
 EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
 EMBEDDING_MODEL=bge-m3
 EMBEDDING_DIMENSIONS=1024
+AZURE_SEARCH_FIELD_NAME_EMBEDDING=embedding
 QDRANT_COLLECTION=nexora-knowledge-bge-m3
 ```
+
+`AZURE_SEARCH_FIELD_NAME_EMBEDDING` must match the named vector already stored
+in the selected Qdrant collection. New NexoraAI collections use `embedding`.
+For a legacy collection created with `embedding3`, set this value to
+`embedding3` instead of creating or mixing a second vector schema.
 
 When the backend itself runs in the same Compose network, override the base URL
 with `http://ollama:11434/v1` instead of the host loopback address.

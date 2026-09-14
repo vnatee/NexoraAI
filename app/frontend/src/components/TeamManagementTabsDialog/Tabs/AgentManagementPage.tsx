@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
     Alert,
+    Avatar,
     Box,
     Typography,
     Divider,
@@ -12,13 +13,17 @@ import {
     DialogTitle,
     DialogContent,
     DialogActions,
+    FormControl,
+    InputLabel,
     TextField,
     Chip,
     Skeleton,
     Switch,
     FormControlLabel,
     CircularProgress,
+    Menu,
     MenuItem,
+    Select,
     Tab,
     Tabs
 } from "@mui/material";
@@ -26,10 +31,13 @@ import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import EditIcon from "@mui/icons-material/Edit";
+import PublishIcon from "@mui/icons-material/Publish";
+import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import { useMsal } from "@azure/msal-react";
 import {
     Agent,
     AgentConfig,
+    activate_agent_draft,
     BindingInput,
     configApi,
     create_agent,
@@ -39,6 +47,7 @@ import {
     get_agent_by_team,
     Integration,
     Prompt,
+    Team,
     TeamProfile,
     DatabaseBindingData,
     MailBindingData,
@@ -85,10 +94,12 @@ import {
     toggle_chart_binding_by_id,
     update_chart_binding,
     listAvailableMCPServersApi,
+    publish_agent_catalog,
     test_db_connection
     ,get_messaging_connections, get_messaging_bindings, save_messaging_binding, delete_messaging_binding,
     get_business_document_connections, get_business_document_bindings,
-    save_business_document_binding, delete_business_document_binding
+    save_business_document_binding, delete_business_document_binding,
+    get_teams
 } from "../../../api/api";
 
 const DEFAULT_TOOL_POLICY = {
@@ -157,7 +168,7 @@ type Binding = BindingInput & {
 /* =========================================================
    PAGE
 ========================================================= */
-export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfile | null; onAgentsChanged?: () => void }) {
+export function AgentManagementPage({ team, isSystemAdmin = false, onAgentsChanged }: { team: TeamProfile | null; isSystemAdmin?: boolean; onAgentsChanged?: () => void }) {
     const { instance } = useMsal();
     const [agents, setAgents] = useState<Agent[]>([]);
     const [llmProfiles, setLlmProfiles] = useState<LLMProfile[]>([]);
@@ -175,6 +186,17 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
     // confirm delete
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [agentToDelete, setAgentToDelete] = useState<Agent | null>(null);
+    const [publishAgent, setPublishAgent] = useState<Agent | null>(null);
+    const [publishSummary, setPublishSummary] = useState("");
+    const [publishInstructions, setPublishInstructions] = useState("");
+    const [publishTags, setPublishTags] = useState("");
+    const [publishCategory, setPublishCategory] = useState("General");
+    const [publishVisibility, setPublishVisibility] = useState<"team" | "selected_teams" | "all_teams">("team");
+    const [publishAllowedTeamIds, setPublishAllowedTeamIds] = useState<string[]>([]);
+    const [catalogTeams, setCatalogTeams] = useState<Team[]>([]);
+    const [publishing, setPublishing] = useState(false);
+    const [actionAnchor, setActionAnchor] = useState<HTMLElement | null>(null);
+    const [actionAgent, setActionAgent] = useState<Agent | null>(null);
 
     /* =========================
        LOAD AGENTS
@@ -188,7 +210,7 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
                 const token = await getToken(instance);
                 if (!token) return;
 
-                const result = await get_agent_by_team(team._id, token);
+                const result = await get_agent_by_team(team._id, token, true);
                 setAgents(result ?? []);
             } catch (err) {
                 console.error("load agents failed:", err);
@@ -205,6 +227,17 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
             .then(appConfig => setLlmProfiles(appConfig.llmProfiles ?? []))
             .catch(error => console.error("load LLM profiles failed", error));
     }, []);
+
+    useEffect(() => {
+        if (!isSystemAdmin) {
+            setCatalogTeams([]);
+            return;
+        }
+        getToken(instance)
+            .then(token => token ? get_teams(token) : null)
+            .then(response => setCatalogTeams((response as { result?: Team[] } | null)?.result ?? []))
+            .catch(error => console.error("load teams for Agent Catalog visibility failed", error));
+    }, [instance, isSystemAdmin]);
 
     /* =========================
        ACTIONS
@@ -245,7 +278,7 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
                 showNotification("Agent updated successfully", "success");
             }
 
-            const refreshed = await get_agent_by_team(team._id, token);
+            const refreshed = await get_agent_by_team(team._id, token, true);
             setAgents(refreshed ?? []);
             onAgentsChanged?.();
             setOpenDialog(false);
@@ -254,6 +287,74 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
             showNotification("Failed to save agent", "error");
         } finally {
             setSaving(false); // ✅ ADD
+        }
+    };
+
+    const handleCreateDraft = async (agent: Agent): Promise<Agent> => {
+        if (!team?._id) throw new Error("A team is required");
+        setSaving(true);
+        try {
+            const token = await getToken(instance);
+            if (!token) throw new Error("Authentication is required");
+            const response = await create_agent(
+                team._id,
+                agent.agent_name,
+                agent.config,
+                agent.prompt,
+                token,
+                true
+            );
+            const created = response.agent as Agent;
+            setSelectedAgent(created);
+            setMode("edit");
+            setAgents(previous => [created, ...previous.filter(item => item._id !== created._id)]);
+            return created;
+        } catch (error) {
+            console.error("create agent draft failed:", error);
+            showNotification(error instanceof Error ? error.message : "Failed to create Agent draft", "error");
+            throw error;
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const handleFinishDraft = async (agent: Agent) => {
+        if (!team?._id) return;
+        setSaving(true);
+        try {
+            const token = await getToken(instance);
+            if (!token) throw new Error("Authentication is required");
+            await edit_agent(team._id, agent._id, agent.agent_name, agent.config, agent.prompt, token);
+            await activate_agent_draft(team._id, agent._id, token);
+            const refreshed = await get_agent_by_team(team._id, token, true);
+            setAgents(refreshed ?? []);
+            onAgentsChanged?.();
+            setOpenDialog(false);
+            showNotification("Agent setup finished", "success");
+        } catch (error) {
+            console.error("finish agent draft failed:", error);
+            showNotification(error instanceof Error ? error.message : "Failed to finish Agent setup", "error");
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const handleDiscardDraft = async (agent: Agent) => {
+        if (!team?._id) return;
+        setSaving(true);
+        try {
+            const token = await getToken(instance);
+            if (!token) throw new Error("Authentication is required");
+            await delete_agent(team._id, agent._id, token);
+            setAgents(previous => previous.filter(item => item._id !== agent._id));
+            setOpenDialog(false);
+            setSelectedAgent(null);
+            showNotification("Agent draft discarded", "success");
+        } catch (error) {
+            console.error("discard agent draft failed:", error);
+            showNotification(error instanceof Error ? error.message : "Failed to discard Agent draft", "error");
+        } finally {
+            setSaving(false);
         }
     };
 
@@ -277,17 +378,50 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
         }
     };
 
+    const handlePublish = async () => {
+        if (!team?._id || !publishAgent || !publishSummary.trim()) return;
+        try {
+            setPublishing(true);
+            const token = await getToken(instance);
+            if (!token) return;
+            const response = await publish_agent_catalog({
+                team_id: team._id,
+                agent_id: publishAgent._id,
+                summary: publishSummary.trim(),
+                usage_instructions: publishInstructions.trim(),
+                tags: publishTags.split(",").map(value => value.trim()).filter(Boolean),
+                category: publishCategory.trim() || "General",
+                visibility: isSystemAdmin ? publishVisibility : "team",
+                allowed_team_ids: isSystemAdmin && publishVisibility === "selected_teams" ? publishAllowedTeamIds : []
+            }, token);
+            showNotification(`Published ${publishAgent.agent_name} as catalog version ${response.version}`, "success");
+            setPublishAgent(null);
+            setPublishSummary("");
+            setPublishInstructions("");
+            setPublishTags("");
+            setPublishCategory("General");
+            setPublishVisibility("team");
+            setPublishAllowedTeamIds([]);
+        } catch (err) {
+            console.error("publish agent failed:", err);
+            showNotification("Failed to publish Agent", "error");
+        } finally {
+            setPublishing(false);
+        }
+    };
+
     /* =========================
        FILTER
     ========================= */
     const filteredAgents = useMemo(() => {
-        return agents.filter(agent => agent.agent_name.toLowerCase().includes(search.toLowerCase()));
+        const query = search.trim().toLowerCase();
+        return agents.filter(agent => !query || `${agent.agent_name} ${agent.prompt?.task ?? ""} ${agent.prompt?.role ?? ""}`.toLowerCase().includes(query));
     }, [agents, search]);
 
     const llmProfilesById = useMemo(() => new Map(llmProfiles.map(profile => [profile.id, profile])), [llmProfiles]);
 
     const getAgentModelDisplay = (agent: Agent) => {
-        const profileId = agent.config.llm_profile_id ?? "system";
+        const profileId = agent.config?.llm_profile_id ?? "system";
         const profile = llmProfilesById.get(profileId);
         if (!profile) {
             return {
@@ -299,6 +433,34 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
             label: profile.label || profile.model,
             title: `${profile.model} (${profile.provider})`
         };
+    };
+
+    const getInitials = (name: string) => name
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map(value => value[0]?.toUpperCase())
+        .join("") || "AI";
+
+    const getAvatarColor = (name: string) => {
+        const colors = ["#6C7FD8", "#B86FB0", "#7666A6", "#EF8F2F", "#668F83", "#477CC2"];
+        const index = Array.from(name).reduce((sum, character) => sum + character.charCodeAt(0), 0) % colors.length;
+        return colors[index];
+    };
+
+    const closeActionMenu = () => {
+        setActionAnchor(null);
+        setActionAgent(null);
+    };
+
+    const openPublishDialog = (agent: Agent) => {
+        setPublishAgent(agent);
+        setPublishSummary("");
+        setPublishInstructions("");
+        setPublishTags("");
+        setPublishCategory("General");
+        setPublishVisibility(isSystemAdmin ? "all_teams" : "team");
+        setPublishAllowedTeamIds([]);
     };
 
     /* =========================
@@ -324,62 +486,131 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
 
             <TextField size="small" placeholder="Search agent..." value={search} onChange={e => setSearch(e.target.value)} sx={{ maxWidth: 300 }} />
 
-            {/* AGENT LIST */}
-            <Box sx={{ maxHeight: 420, overflowY: "auto" }}>
+            {/* AGENT CARDS */}
+            <Box sx={{ maxHeight: 560, overflowY: "auto", pr: 0.5 }}>
                 {loading ? (
                     <AgentListSkeleton count={6} />
                 ) : filteredAgents.length === 0 ? (
                     <Typography color="text.secondary">No agents found</Typography>
                 ) : (
-                    <Stack spacing={1}>
+                    <Box sx={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 240px), 1fr))",
+                        gap: 2,
+                        p: 0.25
+                    }}>
                         {filteredAgents.map(agent => {
                             const modelDisplay = getAgentModelDisplay(agent);
+                            const description = agent.prompt?.task?.trim() || agent.prompt?.role?.trim() || "No description provided.";
+                            const runtime = agent.config?.runtime === "langgraph" ? "LangGraph" : "Legacy";
                             return (
                                 <Paper
                                     key={agent._id}
                                     variant="outlined"
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={() => agent.lifecycle_status === "draft" ? openEdit(agent) : openView(agent)}
+                                    onKeyDown={event => {
+                                        if (event.key === "Enter" || event.key === " ") {
+                                            event.preventDefault();
+                                            agent.lifecycle_status === "draft" ? openEdit(agent) : openView(agent);
+                                        }
+                                    }}
                                     sx={{
                                         p: 2,
+                                        minHeight: 300,
                                         display: "flex",
-                                        justifyContent: "space-between",
-                                        alignItems: "center"
+                                        flexDirection: "column",
+                                        alignItems: "center",
+                                        textAlign: "center",
+                                        position: "relative",
+                                        cursor: "pointer",
+                                        transition: "transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease",
+                                        "&:hover": { transform: "translateY(-2px)", boxShadow: 3, borderColor: "primary.light" },
+                                        "&:focus-visible": { outline: "3px solid", outlineColor: "primary.light", outlineOffset: 2 }
                                     }}
                                 >
-                                    <Box>
-                                        <Typography fontWeight={600}>{agent.agent_name}</Typography>
-                                        <Box mt={0.5}>
-                                            <Chip size="small" label={`Temp: ${agent.config.temperature}`} sx={{ mr: 1 }} />
-                                            <Chip size="small" label={`Max tokens: ${agent.config.max_tokens}`} sx={{ mr: 1 }} />
-                                            <Chip size="small" label={`Min Search Score: ${agent.config.min_search_score}`} sx={{ mr: 1 }} />
-                                            <Chip size="small" label={`Max Search Results: ${agent.config.max_search_results}`} />
-                                            <Chip size="small" label={`Model: ${modelDisplay.label}`} title={modelDisplay.title} sx={{ ml: 1 }} />
-                                        </Box>
-                                    </Box>
-
-                                    <Box>
-                                        <IconButton onClick={() => openView(agent)}>
-                                            <VisibilityIcon />
-                                        </IconButton>
-                                        <IconButton onClick={() => openEdit(agent)}>
-                                            <EditIcon />
-                                        </IconButton>
-                                        <IconButton
-                                            color="error"
-                                            onClick={() => {
-                                                setAgentToDelete(agent);
-                                                setConfirmOpen(true);
-                                            }}
-                                            disabled={deletingId === agent._id}
-                                        >
-                                            <DeleteIcon />
-                                        </IconButton>
-                                    </Box>
+                                    <Chip
+                                        size="small"
+                                        color={agent.lifecycle_status === "draft" ? "warning" : agent.config?.runtime === "langgraph" ? "primary" : "default"}
+                                        label={agent.lifecycle_status === "draft" ? "Draft" : runtime}
+                                        sx={{ position: "absolute", top: 12, left: 12 }}
+                                    />
+                                    <IconButton
+                                        size="small"
+                                        aria-label={`Actions for ${agent.agent_name}`}
+                                        onClick={event => {
+                                            event.stopPropagation();
+                                            setActionAgent(agent);
+                                            setActionAnchor(event.currentTarget);
+                                        }}
+                                        sx={{ position: "absolute", top: 8, right: 8 }}
+                                    >
+                                        <MoreHorizIcon />
+                                    </IconButton>
+                                    <Avatar
+                                        variant="rounded"
+                                        sx={{ width: 72, height: 72, mt: 3, mb: 2, bgcolor: getAvatarColor(agent.agent_name), fontSize: 28, boxShadow: 1 }}
+                                    >
+                                        {getInitials(agent.agent_name)}
+                                    </Avatar>
+                                    <Typography variant="h6" fontSize="1rem" fontWeight={700} sx={{ lineHeight: 1.3, minHeight: 42, overflowWrap: "anywhere" }}>
+                                        {agent.agent_name}
+                                    </Typography>
+                                    <Typography
+                                        variant="body2"
+                                        color="text.secondary"
+                                        sx={{
+                                            mt: 1,
+                                            display: "-webkit-box",
+                                            WebkitLineClamp: 3,
+                                            WebkitBoxOrient: "vertical",
+                                            overflow: "hidden",
+                                            overflowWrap: "anywhere"
+                                        }}
+                                    >
+                                        {description}
+                                    </Typography>
+                                    <Box sx={{ flex: 1 }} />
+                                    <Typography variant="caption" color="text.secondary" title={modelDisplay.title} sx={{ mt: 2, maxWidth: "100%", overflowWrap: "anywhere" }}>
+                                        Model: {modelDisplay.label}
+                                    </Typography>
+                                    <Stack direction="row" spacing={0.5} sx={{ mt: 1 }}>
+                                        {agent.config?.image_input_enabled && <Chip size="small" variant="outlined" label="Vision" />}
+                                        {agent.config?.document_attachments_enabled && <Chip size="small" variant="outlined" label="Documents" />}
+                                        {agent.config?.tool_settings?.mcp && <Chip size="small" variant="outlined" label="MCP" />}
+                                    </Stack>
                                 </Paper>
                             );
                         })}
-                    </Stack>
+                    </Box>
                 )}
             </Box>
+
+            <Menu anchorEl={actionAnchor} open={Boolean(actionAnchor)} onClose={closeActionMenu}>
+                <MenuItem onClick={() => { if (actionAgent) actionAgent.lifecycle_status === "draft" ? openEdit(actionAgent) : openView(actionAgent); closeActionMenu(); }}>
+                    <VisibilityIcon fontSize="small" sx={{ mr: 1.5 }} /> {actionAgent?.lifecycle_status === "draft" ? "Resume setup" : "View details"}
+                </MenuItem>
+                <MenuItem onClick={() => { if (actionAgent) openEdit(actionAgent); closeActionMenu(); }}>
+                    <EditIcon fontSize="small" sx={{ mr: 1.5 }} /> Edit
+                </MenuItem>
+                <MenuItem disabled={actionAgent?.lifecycle_status === "draft"} onClick={() => { if (actionAgent) openPublishDialog(actionAgent); closeActionMenu(); }}>
+                    <PublishIcon fontSize="small" sx={{ mr: 1.5 }} /> Publish to catalog
+                </MenuItem>
+                <MenuItem
+                    disabled={!actionAgent || deletingId === actionAgent._id}
+                    onClick={() => {
+                        if (actionAgent) {
+                            setAgentToDelete(actionAgent);
+                            setConfirmOpen(true);
+                        }
+                        closeActionMenu();
+                    }}
+                    sx={{ color: "error.main" }}
+                >
+                    <DeleteIcon fontSize="small" sx={{ mr: 1.5 }} /> Delete
+                </MenuItem>
+            </Menu>
 
             {/* DIALOG */}
             <AgentDialog
@@ -390,6 +621,9 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
                 teamId={team?._id}
                 onClose={() => setOpenDialog(false)}
                 onSave={handleSave}
+                onCreateDraft={handleCreateDraft}
+                onFinishDraft={handleFinishDraft}
+                onDiscardDraft={handleDiscardDraft}
                 availableAgents={agents}
             />
             <Dialog open={confirmOpen} onClose={() => setConfirmOpen(false)}>
@@ -418,6 +652,87 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
                     </Button>
                 </DialogActions>
             </Dialog>
+            <Dialog open={Boolean(publishAgent)} onClose={() => !publishing && setPublishAgent(null)} maxWidth="sm" fullWidth>
+                <DialogTitle>Publish to Agent Catalog</DialogTitle>
+                <DialogContent>
+                    <Alert severity="info" sx={{ mb: 2 }}>
+                        This creates a versioned template from {team?.name}. Credentials, MCP connections, tool allowlists and sub-agent bindings are not copied.
+                    </Alert>
+                    <Stack spacing={2}>
+                        <TextField label="Agent" value={publishAgent?.agent_name ?? ""} disabled fullWidth />
+                        <TextField
+                            label="Summary"
+                            value={publishSummary}
+                            onChange={event => setPublishSummary(event.target.value)}
+                            inputProps={{ maxLength: 500 }}
+                            required
+                            multiline
+                            minRows={3}
+                            helperText="Explain the business purpose without including credentials or private data."
+                        />
+                        <TextField
+                            label="Category"
+                            value={publishCategory}
+                            onChange={event => setPublishCategory(event.target.value)}
+                            inputProps={{ maxLength: 80 }}
+                            required
+                        />
+                        <TextField
+                            label="How to use"
+                            value={publishInstructions}
+                            onChange={event => setPublishInstructions(event.target.value)}
+                            inputProps={{ maxLength: 4000 }}
+                            required
+                            multiline
+                            minRows={4}
+                            helperText="Describe suitable inputs, expected output and any setup required after installation."
+                        />
+                        <TextField
+                            label="Tags"
+                            value={publishTags}
+                            onChange={event => setPublishTags(event.target.value)}
+                            helperText="Comma-separated, for example: sales, proposal, document"
+                        />
+                        {isSystemAdmin && <>
+                            <FormControl fullWidth>
+                                <InputLabel>Visibility</InputLabel>
+                                <Select
+                                    label="Visibility"
+                                    value={publishVisibility}
+                                    onChange={event => {
+                                        const next = event.target.value as typeof publishVisibility;
+                                        setPublishVisibility(next);
+                                        if (next !== "selected_teams") setPublishAllowedTeamIds([]);
+                                    }}
+                                >
+                                    <MenuItem value="team">Publisher team only ({team?.name})</MenuItem>
+                                    <MenuItem value="selected_teams" disabled={catalogTeams.length === 0}>Selected teams</MenuItem>
+                                    <MenuItem value="all_teams">All teams</MenuItem>
+                                </Select>
+                            </FormControl>
+                            {publishVisibility === "selected_teams" && (
+                                <FormControl fullWidth>
+                                    <InputLabel>Allowed teams</InputLabel>
+                                    <Select
+                                        multiple
+                                        label="Allowed teams"
+                                        value={publishAllowedTeamIds}
+                                        onChange={event => setPublishAllowedTeamIds(event.target.value as string[])}
+                                    >
+                                        {catalogTeams.map(value => <MenuItem key={value._id} value={value._id}>{value.name}</MenuItem>)}
+                                    </Select>
+                                </FormControl>
+                            )}
+                        </>}
+                    </Stack>
+                </DialogContent>
+                <DialogActions>
+                    <Button disabled={publishing} onClick={() => setPublishAgent(null)}>Cancel</Button>
+                    <Button variant="contained" disabled={publishing || !publishSummary.trim() || !publishInstructions.trim() || (publishVisibility === "selected_teams" && publishAllowedTeamIds.length === 0)} onClick={() => void handlePublish()}>
+                        {publishing ? "Publishing…" : "Publish version"}
+                    </Button>
+                </DialogActions>
+            </Dialog>
         </Stack>
     );
 }
@@ -425,7 +740,7 @@ export function AgentManagementPage({ team, onAgentsChanged }: { team: TeamProfi
 /* =========================================================
    AGENT DIALOG — tabbed layout
 ========================================================= */
-function AgentDialog({
+export function AgentDialog({
     open,
     mode,
     agent,
@@ -433,7 +748,11 @@ function AgentDialog({
     loading,
     onClose,
     onSave,
-    availableAgents
+    onCreateDraft,
+    onFinishDraft,
+    onDiscardDraft,
+    availableAgents,
+    templateOnly = false
 }: {
     open: boolean;
     mode: AgentDialogMode;
@@ -441,17 +760,23 @@ function AgentDialog({
     teamId?: string;
     loading: boolean;
     onClose: () => void;
-    onSave: (agent: Agent) => void;
+    onSave: (agent: Agent) => void | Promise<void>;
+    onCreateDraft?: (agent: Agent) => Promise<Agent>;
+    onFinishDraft?: (agent: Agent) => void | Promise<void>;
+    onDiscardDraft?: (agent: Agent) => void | Promise<void>;
     availableAgents: Agent[];
+    templateOnly?: boolean;
 }) {
     const { instance } = useMsal();
     const isViewMode = mode === "view";
     const isSaving = loading;
     const isFieldDisabled = isViewMode || isSaving;
     const isCreate = mode === "new";
+    const isDraft = agent?.lifecycle_status === "draft";
 
     // Tab state — always reset to "info" when dialog opens
     const [activeTab, setActiveTab] = useState<"info" | "integrations">("info");
+    const [creatingDraft, setCreatingDraft] = useState(false);
     const [integrationSection, setIntegrationSection] = useState<"rest" | "database" | "mail" | "documents" | "messaging" | "mcp" | "visualization">("rest");
 
     useEffect(() => {
@@ -689,22 +1014,23 @@ function AgentDialog({
 
     useEffect(() => {
         if (agent) {
+            const agentConfig = agent.config ?? {};
             setAgentName(agent.agent_name);
             setConfig({
-                ...agent.config,
-                llm_profile_id: agent.config.llm_profile_id ?? "system",
-                runtime: agent.config.runtime ?? "legacy",
-                image_input_enabled: agent.config.image_input_enabled ?? false,
-                document_attachments_enabled: agent.config.document_attachments_enabled ?? true,
+                ...agentConfig,
+                llm_profile_id: agentConfig.llm_profile_id ?? "system",
+                runtime: agentConfig.runtime ?? "legacy",
+                image_input_enabled: agentConfig.image_input_enabled ?? false,
+                document_attachments_enabled: agentConfig.document_attachments_enabled ?? true,
                 tool_settings: {
                     ...DEFAULT_AGENT_TOOL_SETTINGS,
-                    ...(agent.config.tool_settings ?? {}),
+                    ...(agentConfig.tool_settings ?? {}),
                     tool_policy: {
                         ...DEFAULT_TOOL_POLICY,
-                        ...(agent.config.tool_settings?.tool_policy ?? {})
+                        ...(agentConfig.tool_settings?.tool_policy ?? {})
                     }
                 },
-                guardrails: { ...DEFAULT_GUARDRAILS, ...(agent.config.guardrails ?? {}) }
+                guardrails: { ...DEFAULT_GUARDRAILS, ...(agentConfig.guardrails ?? {}) }
             });
             setPrompt(agent.prompt ?? EMPTY_PROMPT); // ✅ FIX
         } else {
@@ -738,30 +1064,69 @@ function AgentDialog({
     const apiBindings = bindings;
 
     /* ── Tab panel helpers ───────────────────────────────────── */
-    const integrationsTabDisabled = isCreate;
+    const currentAgent = (): Agent => ({
+        _id: agent?._id ?? "",
+        agent_name: agentName.trim(),
+        config,
+        prompt,
+        lifecycle_status: agent?.lifecycle_status
+    });
+
+    const handleTabChange = async (_event: React.SyntheticEvent, value: "info" | "integrations") => {
+        if (value !== "integrations" || !isCreate) {
+            setActiveTab(value);
+            return;
+        }
+        if (!agentName.trim()) {
+            showNotification("Enter an Agent name before configuring integrations", "warning");
+            return;
+        }
+        if (!onCreateDraft) return;
+        try {
+            setCreatingDraft(true);
+            await onCreateDraft(currentAgent());
+            setActiveTab("integrations");
+            showNotification("Draft saved. Finish setup to make this Agent available.", "info");
+        } catch {
+            setActiveTab("info");
+        } finally {
+            setCreatingDraft(false);
+        }
+    };
 
     return (
-        <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
+        <Dialog
+            open={open}
+            onClose={(_event, reason) => { if (reason !== "backdropClick") onClose(); }}
+            disableEscapeKeyDown
+            maxWidth="md"
+            fullWidth
+        >
             <DialogTitle>
-                {mode === "new" && "Create New Agent"}
+                {mode === "new" && (templateOnly ? "Create System Catalog Agent" : "Create New Agent")}
                 {mode === "view" && "View Agent"}
-                {mode === "edit" && "Edit Agent"}
+                {mode === "edit" && (isDraft ? "Finish Agent Setup" : "Edit Agent")}
             </DialogTitle>
 
             {/* ── Tab bar ── */}
-            <Box sx={{ borderBottom: 1, borderColor: "divider", px: 3 }}>
-                <Tabs value={activeTab} onChange={(_, v) => setActiveTab(v)} aria-label="agent dialog tabs">
+            {!templateOnly && <Box sx={{ borderBottom: 1, borderColor: "divider", px: 3 }}>
+                <Tabs value={activeTab} onChange={handleTabChange} aria-label="agent dialog tabs">
                     <Tab label="Agent Info" value="info" />
                     <Tab
                         label="Integrations"
                         value="integrations"
-                        disabled={integrationsTabDisabled}
-                        title={integrationsTabDisabled ? "Save the agent first to manage integrations" : undefined}
+                        disabled={creatingDraft || isSaving}
+                        title={isCreate ? "Creates a private draft before integrations are configured" : undefined}
                     />
                 </Tabs>
-            </Box>
+            </Box>}
 
             <DialogContent dividers>
+                {isDraft && (
+                    <Alert severity="info" sx={{ mb: 2 }}>
+                        This private draft is visible only in Agent Management. It cannot be used in Chat or published until you select Finish setup. Cancel setup removes the draft and its integration bindings.
+                    </Alert>
+                )}
                 {/* ══════════════════════════════════
                     TAB 1 — Agent Info
                 ══════════════════════════════════ */}
@@ -1162,7 +1527,7 @@ function AgentDialog({
                                                         helperText="Delegation is limited to selected agents in the same team"
                                                     >
                                                         {availableAgents
-                                                            .filter(item => item._id !== agent?._id && item.config.runtime === "langgraph")
+                                                            .filter(item => item._id !== agent?._id && item.lifecycle_status !== "draft" && item.config.runtime === "langgraph")
                                                             .map(item => (
                                                                 <MenuItem key={item._id} value={item._id}>
                                                                     {item.agent_name}
@@ -2257,22 +2622,35 @@ function AgentDialog({
             </DialogContent>
 
             <DialogActions>
-                <Button onClick={onClose} disabled={isSaving}>
-                    Close
-                </Button>
+                {isDraft && !isViewMode ? (
+                    <Button
+                        color="error"
+                        onClick={() => {
+                            if (window.confirm("Discard this Agent draft and all integration bindings?")) {
+                                void onDiscardDraft?.(currentAgent());
+                            }
+                        }}
+                        disabled={isSaving || creatingDraft}
+                    >
+                        Cancel setup
+                    </Button>
+                ) : (
+                    <Button onClick={onClose} disabled={isSaving || creatingDraft}>Close</Button>
+                )}
                 {/* Native bindings persist directly; Agent Info and MCP policy remain part of the Agent config. */}
-                {!isViewMode && (activeTab !== "integrations" || integrationSection === "mcp") && (
+                {isDraft && !isViewMode ? (
                     <Button
                         variant="contained"
-                        disabled={!agentName || isSaving}
-                        onClick={() =>
-                            onSave({
-                                _id: agent?._id ?? "",
-                                agent_name: agentName,
-                                config,
-                                prompt
-                            })
-                        }
+                        disabled={!agentName.trim() || isSaving || creatingDraft}
+                        onClick={() => onFinishDraft?.(currentAgent())}
+                    >
+                        {loading ? "Finishing..." : "Finish setup"}
+                    </Button>
+                ) : !isViewMode && (activeTab !== "integrations" || integrationSection === "mcp") && (
+                    <Button
+                        variant="contained"
+                        disabled={!agentName.trim() || isSaving || creatingDraft}
+                        onClick={() => onSave(currentAgent())}
                     >
                         {loading ? "Saving..." : "Save"}
                     </Button>
@@ -2777,40 +3155,37 @@ function BindingCard({
 
 function AgentListSkeleton({ count = 6 }: { count?: number }) {
     return (
-        <Stack spacing={1}>
+        <Box sx={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 240px), 1fr))",
+            gap: 2,
+            p: 0.25
+        }}>
             {Array.from({ length: count }).map((_, idx) => (
                 <Paper
                     key={idx}
                     variant="outlined"
                     sx={{
                         p: 2,
+                        minHeight: 300,
                         display: "flex",
-                        justifyContent: "space-between",
+                        flexDirection: "column",
                         alignItems: "center"
                     }}
                 >
-                    <Box sx={{ width: "70%" }}>
-                        {/* title */}
-                        <Skeleton variant="text" width="35%" height={26} />
-
-                        {/* chips */}
-                        <Box mt={1} display="flex" gap={1} flexWrap="wrap">
-                            <Skeleton variant="rounded" width={90} height={24} />
-                            <Skeleton variant="rounded" width={130} height={24} />
-                            <Skeleton variant="rounded" width={150} height={24} />
-                            <Skeleton variant="rounded" width={160} height={24} />
-                        </Box>
-                    </Box>
-
-                    {/* action buttons */}
-                    <Box sx={{ display: "flex", gap: 1 }}>
-                        <Skeleton variant="circular" width={32} height={32} />
-                        <Skeleton variant="circular" width={32} height={32} />
-                        <Skeleton variant="circular" width={32} height={32} />
-                    </Box>
+                    <Skeleton variant="rounded" width={72} height={72} sx={{ mt: 3, mb: 2 }} />
+                    <Skeleton variant="text" width="65%" height={28} />
+                    <Skeleton variant="text" width="90%" />
+                    <Skeleton variant="text" width="82%" />
+                    <Box sx={{ flex: 1 }} />
+                    <Skeleton variant="text" width="70%" />
+                    <Stack direction="row" spacing={0.5} sx={{ mt: 1 }}>
+                        <Skeleton variant="rounded" width={72} height={24} />
+                        <Skeleton variant="rounded" width={54} height={24} />
+                    </Stack>
                 </Paper>
             ))}
-        </Stack>
+        </Box>
     );
 }
 

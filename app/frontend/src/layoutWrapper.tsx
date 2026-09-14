@@ -1,5 +1,5 @@
 import { AccountInfo, EventType, PublicClientApplication } from "@azure/msal-browser";
-import { msalConfig, useLogin, requireLogin, getToken } from "./authConfig";
+import { msalConfig, useLogin, requireLogin, getToken, isUsingLocalLogin, isUsingOidcLogin, isUsingSamlLogin, localLogout, oidcLogout, samlLogout } from "./authConfig";
 import { useEffect, useRef, useState } from "react";
 import { MsalProvider } from "@azure/msal-react";
 import { LoginContext } from "./loginContext";
@@ -63,6 +63,9 @@ const LayoutWrapper = () => {
                     }
                 } catch (err: any) {
                     console.error("fetchLoggedIn auth check failed:", err);
+                    if (isUsingLocalLogin()) await localLogout();
+                    if (isUsingOidcLogin()) await oidcLogout();
+                    if (isUsingSamlLogin()) await samlLogout();
                 }
                 setLoggedIn(isLogged);
                 setAuthInitialized(true);

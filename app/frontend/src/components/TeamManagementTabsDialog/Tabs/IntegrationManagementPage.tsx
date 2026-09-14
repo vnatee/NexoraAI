@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Alert, Box, Typography, Card, CardContent, Stack, Chip, CircularProgress, InputAdornment, MenuItem, Tab, Tabs, TextField } from "@mui/material";
+import { Alert, Box, Typography, Card, CardContent, Stack, Chip, CircularProgress, IconButton, InputAdornment, Menu, MenuItem, Tab, Tabs, TextField } from "@mui/material";
 import ApiIcon from "@mui/icons-material/Api";
 import ChatIcon from "@mui/icons-material/Chat";
 import EmailIcon from "@mui/icons-material/Email";
@@ -9,6 +9,7 @@ import DocumentScannerIcon from "@mui/icons-material/DocumentScanner";
 import HubOutlinedIcon from "@mui/icons-material/HubOutlined";
 import FolderSharedOutlinedIcon from "@mui/icons-material/FolderSharedOutlined";
 import SearchIcon from "@mui/icons-material/Search";
+import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import { useMsal } from "@azure/msal-react";
 
 import { ExternalApiListPage } from "./ExternalApiListPage";
@@ -40,6 +41,10 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
     const [connectionSearch, setConnectionSearch] = useState("");
     const [connectionType, setConnectionType] = useState<"all" | "mcp" | "native">("all");
     const [landingTab, setLandingTab] = useState<"configured" | "catalog">("configured");
+    const [catalogSearch, setCatalogSearch] = useState("");
+    const [catalogCategory, setCatalogCategory] = useState("All");
+    const [catalogMenuAnchor, setCatalogMenuAnchor] = useState<HTMLElement | null>(null);
+    const [catalogMenuView, setCatalogMenuView] = useState<ViewMode | null>(null);
 
     // ✅ reset view ถ้า team เปลี่ยน
     useEffect(() => {
@@ -47,6 +52,8 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
         setConnectionSearch("");
         setConnectionType("all");
         setLandingTab("configured");
+        setCatalogSearch("");
+        setCatalogCategory("All");
     }, [team?._id]);
 
     useEffect(() => {
@@ -96,6 +103,7 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
     const integrationTypes = [
         {
             key: "external_api",
+            category: "Developer Tools",
             title: "REST APIs",
             description: "Manage REST connections, authentication and endpoints",
             icon: <ApiIcon fontSize="large" />,
@@ -108,6 +116,7 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
         },
         {
             key: "database",
+            category: "Data",
             title: "Databases",
             description: "Manage read-only database connections used by Agent query tools",
             icon: <StorageIcon fontSize="large" />,
@@ -120,6 +129,7 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
         },
         {
             key: "business_documents",
+            category: "Productivity",
             title: "Business Documents",
             description: "Connect Microsoft 365 and Google Workspace documents for Agent search, reading and controlled creation",
             icon: <FolderSharedOutlinedIcon fontSize="large" />,
@@ -133,6 +143,7 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
         },
         {
             key: "mail",
+            category: "Productivity",
             title: "Mail",
             description: "Manage Microsoft 365, Gmail and IMAP/POP3 + SMTP connections",
             icon: <EmailIcon fontSize="large" />,
@@ -145,6 +156,7 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
         },
         {
             key: "mcp",
+            category: "Tool Providers",
             title: "Remote Tool Providers",
             description: "Connect Datadog, Azure, Draw.io, Atlassian, ServiceNow and other MCP providers",
             icon: <HubOutlinedIcon fontSize="large" />,
@@ -156,6 +168,7 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
         },
         {
             key: "document_processing",
+            category: "AI & Documents",
             title: "Document Processing & OCR",
             description: "Manage Azure and local extraction providers used by RAG ingestion",
             icon: <DocumentScannerIcon fontSize="large" />,
@@ -170,6 +183,7 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
         },
         {
             key: "visualization",
+            category: "Visualization",
             title: "Visualization",
             description: "Chart output capabilities are configured per Agent",
             icon: <TableChartIcon fontSize="large" />,
@@ -179,6 +193,7 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
         },
         {
             key: "messaging",
+            category: "Communication",
             title: "Messaging & Chat",
             description: "Manage LINE, Slack and Discord messaging channels",
             icon: <ChatIcon fontSize="large" />,
@@ -202,6 +217,13 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
             connection.detail.toLocaleLowerCase().includes(normalizedSearch)
         );
     });
+    const availableIntegrationTypes = integrationTypes.filter(type => !type.systemAdminOnly || isSystemAdmin);
+    const catalogCategories = ["All", ...Array.from(new Set(availableIntegrationTypes.map(type => type.category)))];
+    const normalizedCatalogSearch = catalogSearch.trim().toLocaleLowerCase();
+    const visibleIntegrationTypes = availableIntegrationTypes.filter(type =>
+        (catalogCategory === "All" || type.category === catalogCategory) &&
+        (!normalizedCatalogSearch || `${type.title} ${type.description} ${type.category}`.toLocaleLowerCase().includes(normalizedCatalogSearch))
+    );
 
     return (
         <Box
@@ -283,20 +305,60 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
                     )}
                 </>
             ) : (
-                <Stack spacing={2}>
-                    {integrationTypes.filter(type => !("systemAdminOnly" in type) || !type.systemAdminOnly || isSystemAdmin).map(type => (
+                <>
+                    <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} mb={2}>
+                        <TextField
+                            fullWidth
+                            size="small"
+                            placeholder="Search integrations..."
+                            value={catalogSearch}
+                            onChange={event => setCatalogSearch(event.target.value)}
+                            InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon color="action" /></InputAdornment> }}
+                        />
+                        <TextField
+                            select
+                            size="small"
+                            label="Category"
+                            value={catalogCategory}
+                            onChange={event => setCatalogCategory(event.target.value)}
+                            sx={{ minWidth: 210 }}
+                        >
+                            {catalogCategories.map(value => <MenuItem key={value} value={value}>{value}</MenuItem>)}
+                        </TextField>
+                    </Stack>
+                    <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 240px), 1fr))", gap: 2 }}>
+                    {visibleIntegrationTypes.map(type => (
                         <IntegrationCard
                             key={type.key}
                             icon={type.icon}
                             title={type.title}
                             description={type.description}
+                            category={type.category}
                             disabled={!type.enabled}
                             statusLabel={type.statusLabel}
                             badges={type.badges}
                             onClick={type.enabled ? () => setView(type.key as ViewMode) : undefined}
+                            onMenuClick={event => {
+                                event.stopPropagation();
+                                setCatalogMenuAnchor(event.currentTarget);
+                                setCatalogMenuView(type.key as ViewMode);
+                            }}
                         />
                     ))}
-                </Stack>
+                    </Box>
+                    {!visibleIntegrationTypes.length && <Alert severity="info">No integrations match these filters.</Alert>}
+                    <Menu anchorEl={catalogMenuAnchor} open={Boolean(catalogMenuAnchor)} onClose={() => setCatalogMenuAnchor(null)}>
+                        <MenuItem
+                            disabled={!catalogMenuView || integrationTypes.find(type => type.key === catalogMenuView)?.enabled === false}
+                            onClick={() => {
+                                if (catalogMenuView) setView(catalogMenuView);
+                                setCatalogMenuAnchor(null);
+                            }}
+                        >
+                            Open integration
+                        </MenuItem>
+                    </Menu>
+                </>
             )}
         </Box>
     );
@@ -326,7 +388,9 @@ function IntegrationCard({
     icon,
     title,
     description,
+    category,
     onClick,
+    onMenuClick,
     disabled,
     statusLabel,
     badges
@@ -334,7 +398,9 @@ function IntegrationCard({
     icon: React.ReactNode;
     title: string;
     description: string;
+    category: string;
     onClick?: () => void;
+    onMenuClick: (event: React.MouseEvent<HTMLElement>) => void;
     disabled?: boolean;
     statusLabel?: string;
     badges?: Array<{ label: string; color: "default" | "primary" | "secondary" | "error" | "info" | "success" | "warning" }>;
@@ -342,42 +408,49 @@ function IntegrationCard({
     return (
         <Card
             onClick={disabled ? undefined : onClick}
+            role={disabled ? undefined : "button"}
+            tabIndex={disabled ? -1 : 0}
+            onKeyDown={event => {
+                if (!disabled && (event.key === "Enter" || event.key === " ")) onClick?.();
+            }}
             sx={{
                 cursor: disabled ? "not-allowed" : "pointer",
                 opacity: disabled ? 0.5 : 1,
-                transition: "0.2s",
+                minHeight: 300,
+                position: "relative",
+                transition: "transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease",
                 borderRadius: 2,
                 "&:hover": {
                     transform: disabled ? "none" : "translateY(-2px)",
-                    boxShadow: disabled ? undefined : 4
-                }
+                    boxShadow: disabled ? undefined : 3,
+                    borderColor: disabled ? undefined : "primary.light"
+                },
+                "&:focus-visible": { outline: "3px solid", outlineColor: "primary.light", outlineOffset: 2 }
             }}
+            variant="outlined"
         >
-            <CardContent>
-                <Stack direction="row" spacing={3} alignItems="center">
-                    <Box>{icon}</Box>
-
-                    <Box flex={1}>
-                        <Typography fontWeight={600}>{title}</Typography>
-                        <Typography variant="body2" color="text.secondary">
-                            {description}
-                        </Typography>
-                        {badges && badges.length > 0 && (
-                            <Stack direction="row" spacing={0.75} mt={1} flexWrap="wrap" useFlexGap>
-                                {badges.map(badge => (
-                                    <Chip key={badge.label} size="small" variant="outlined" label={badge.label} color={badge.color} />
-                                ))}
-                            </Stack>
-                        )}
-                    </Box>
-
-                    <Chip
-                        size="small"
-                        label={disabled ? statusLabel || "Coming soon" : "Manage"}
-                        color={disabled ? "default" : "primary"}
-                        variant={disabled ? "outlined" : "filled"}
-                    />
-                </Stack>
+            <CardContent sx={{ height: "100%", minHeight: 300, display: "flex", flexDirection: "column", alignItems: "center", textAlign: "center", p: 2 }}>
+                <Chip size="small" label={disabled ? statusLabel || "Coming soon" : "Available"} color={disabled ? "default" : "success"} sx={{ position: "absolute", top: 12, left: 12 }} />
+                <IconButton size="small" aria-label={`Actions for ${title}`} onClick={onMenuClick} sx={{ position: "absolute", top: 8, right: 8 }}>
+                    <MoreHorizIcon />
+                </IconButton>
+                <Box sx={{ width: 72, height: 72, mt: 3, mb: 2, borderRadius: 2, bgcolor: "primary.50", color: "primary.main", display: "grid", placeItems: "center", boxShadow: 1 }}>
+                    {icon}
+                </Box>
+                <Typography fontWeight={700} sx={{ lineHeight: 1.3, minHeight: 42 }}>{title}</Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                    {description}
+                </Typography>
+                <Box sx={{ flex: 1 }} />
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 2 }}>{category}</Typography>
+                {badges && badges.length > 0 && (
+                    <Stack direction="row" spacing={0.5} mt={1} justifyContent="center" flexWrap="wrap" useFlexGap>
+                        {badges.slice(0, 2).map(badge => (
+                            <Chip key={badge.label} size="small" variant="outlined" label={badge.label} color={badge.color} />
+                        ))}
+                        {badges.length > 2 && <Chip size="small" variant="outlined" label={`+${badges.length - 2}`} />}
+                    </Stack>
+                )}
             </CardContent>
         </Card>
     );

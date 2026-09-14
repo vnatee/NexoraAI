@@ -21,6 +21,7 @@ opentelemetry-instrumentation-openai
 msal
 cryptography
 PyJWT
+python3-saml>=1.16,<2
 Pillow
 types-Pillow
 pypdf

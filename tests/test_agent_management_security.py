@@ -113,6 +113,176 @@ async def test_agent_list_requires_team_membership(client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_agent_list_normalizes_legacy_null_prompt_and_config(client, monkeypatch):
+    monkeypatch.setattr(
+        backend_app,
+        "_require_team_access",
+        lambda *_args, **_kwargs: (
+            {"_id": "manager-1"},
+            {"_id": "team-1", "agent_id": ["legacy-default"]},
+        ),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "get_agent_by_id",
+        lambda _agent_id: {
+            "_id": "legacy-default",
+            "agent_name": "default",
+            "prompt": None,
+            "config": None,
+            "lifecycle_status": "active",
+        },
+    )
+    monkeypatch.setattr(backend_app, "is_expired_agent_draft", lambda _agent: False)
+
+    response = await client.post(
+        "/get_agent_by_team",
+        json={"team_id": "team-1", "include_drafts": True},
+    )
+
+    assert response.status_code == 200
+    agent = (await response.get_json())["result"][0]
+    assert agent["prompt"] == {
+        "role": "",
+        "task": "",
+        "detail_context": "",
+        "output_format": "",
+        "constraints": "",
+    }
+    assert agent["config"] == {}
+
+
+@pytest.mark.asyncio
+async def test_create_agent_draft_is_private_and_has_expiry(client, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        backend_app,
+        "_require_team_access",
+        lambda *args, **kwargs: (
+            {"_id": "manager-1"},
+            {"_id": "team-1", "agent_id": []},
+        ),
+    )
+    monkeypatch.setattr(backend_app, "_validate_agent_model_config", lambda value: value)
+    monkeypatch.setattr(backend_app, "_validate_agent_mcp_connections", lambda *args, **kwargs: None)
+
+    def insert(*args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(inserted_id="draft-1"), "draft-1"
+
+    monkeypatch.setattr(backend_app, "insert_agent", insert)
+    monkeypatch.setattr(backend_app, "update_team", lambda **kwargs: True)
+
+    response = await client.post(
+        "/create_agent",
+        json={
+            "team_id": "team-1",
+            "agent_name": "Draft Agent",
+            "config": {},
+            "prompt": {},
+            "draft": True,
+        },
+    )
+
+    payload = await response.get_json()
+    assert response.status_code == 201
+    assert payload["agent"]["lifecycle_status"] == "draft"
+    assert payload["agent"]["draft_expires_at"]
+    assert captured["lifecycle_status"] == "draft"
+    assert captured["created_by"] == "manager-1"
+
+
+@pytest.mark.asyncio
+async def test_agent_list_hides_drafts_unless_manager_requests_them(client, monkeypatch):
+    calls = []
+
+    def require_access(claims, team_id, *, permission=None):
+        calls.append(permission)
+        return {"_id": "manager-1"}, {"_id": team_id, "agent_id": ["active-1", "draft-1"]}
+
+    monkeypatch.setattr(backend_app, "_require_team_access", require_access)
+    monkeypatch.setattr(
+        backend_app,
+        "get_agent_by_id",
+        lambda agent_id: {
+            "_id": agent_id,
+            "lifecycle_status": "draft" if agent_id == "draft-1" else "active",
+        },
+    )
+    monkeypatch.setattr(backend_app, "is_expired_agent_draft", lambda _agent: False)
+
+    response = await client.post("/get_agent_by_team", json={"team_id": "team-1"})
+    assert [item["_id"] for item in (await response.get_json())["result"]] == ["active-1"]
+
+    response = await client.post(
+        "/get_agent_by_team",
+        json={"team_id": "team-1", "include_drafts": True},
+    )
+    assert [item["_id"] for item in (await response.get_json())["result"]] == ["active-1", "draft-1"]
+    assert calls == [None, "Manage agents"]
+
+
+@pytest.mark.asyncio
+async def test_finish_agent_setup_activates_team_draft(client, monkeypatch):
+    activated = []
+    monkeypatch.setattr(
+        backend_app,
+        "_require_team_access",
+        lambda *args, **kwargs: (
+            {"_id": "manager-1"},
+            {"_id": "team-1", "agent_id": ["draft-1"]},
+        ),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "get_agent_by_id",
+        lambda _agent_id: {
+            "_id": "draft-1",
+            "agent_name": "Draft Agent",
+            "config": {},
+            "lifecycle_status": "draft",
+        },
+    )
+    monkeypatch.setattr(backend_app, "_validate_agent_model_config", lambda value: value)
+    monkeypatch.setattr(backend_app, "_validate_agent_mcp_connections", lambda *args, **kwargs: None)
+    monkeypatch.setattr(backend_app, "is_expired_agent_draft", lambda _agent: False)
+    monkeypatch.setattr(backend_app, "activate_agent_by_id", lambda agent_id: activated.append(agent_id) or True)
+
+    class AuditCollection:
+        def insert_one(self, _document):
+            return None
+
+    class Database:
+        def __getitem__(self, _name):
+            return AuditCollection()
+
+    monkeypatch.setattr(backend_app, "get_database", lambda: Database())
+
+    response = await client.post(
+        "/activate_agent_draft",
+        json={"team_id": "team-1", "agent_id": "draft-1"},
+    )
+
+    assert response.status_code == 200
+    assert activated == ["draft-1"]
+
+
+def test_draft_agent_is_rejected_before_chat_authorization(monkeypatch):
+    monkeypatch.setattr(
+        backend_app,
+        "get_agent_by_id",
+        lambda _agent_id: {"_id": "draft-1", "lifecycle_status": "draft"},
+    )
+
+    with pytest.raises(backend_app.AccessControlError, match="still a draft"):
+        backend_app._authorized_request_claims(
+            {"team_id": "team-1"},
+            {"oid": "user-1"},
+            agent_id="draft-1",
+        )
+
+
+@pytest.mark.asyncio
 async def test_team_guardrail_settings_require_manage_agents(client, monkeypatch):
     calls = []
 
