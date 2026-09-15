@@ -4,7 +4,7 @@ langgraph>=1.2,<2
 langchain-core>=1.2,<2
 mcp>=2,<3
 sqlalchemy==2.0.52
-psycopg[binary]==3.3.4
+psycopg[binary]==3.3.5
 pymysql==1.2.0
 pymssql==2.3.13
 sqlglot==30.17.0
