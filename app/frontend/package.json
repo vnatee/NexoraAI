@@ -17,7 +17,7 @@
     "@azure/msal-react": "^2.2.0",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.0",
-    "@fluentui/react": "^8.112.5",
+    "@fluentui/react": "^8.125.7",
     "@fluentui/react-components": "^9.56.2",
     "@fluentui/react-icons": "^2.0.265",
     "@mui/icons-material": "^7.1.2",
