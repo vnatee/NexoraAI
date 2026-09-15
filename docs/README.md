@@ -29,6 +29,7 @@ These are advanced topics that are not necessary for a basic deployment.
 - [Local, Microsoft Entra, OIDC, and SAML authentication](local-authentication.md)
 - [Local MongoDB](local-mongodb.md)
 - [Local backup and restore](local-backup-restore.md)
+- [Release readiness — 2.3.0](release-readiness-2.3.md)
 - [Local Knowledge object storage](local-knowledge-storage.md)
 - [Local Knowledge vector search](local-vector-search.md)
 - [Local text embeddings](local-embeddings.md)

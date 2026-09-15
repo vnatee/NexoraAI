@@ -1,9 +1,13 @@
-# Microsoft Open Source Code of Conduct
+# NexoraAI community standards
 
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
+Participants must communicate professionally, review ideas on their technical
+merits, respect privacy and confidentiality, and avoid harassment,
+discrimination, personal attacks, or unauthorized access to systems and data.
 
-Resources:
+Maintainers may edit or remove inappropriate contributions and restrict
+participation when behavior threatens people, customer information, system
+security, or constructive collaboration.
 
-- [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/)
-- [Microsoft Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/)
-- Contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with questions or concerns
+Report security vulnerabilities through the private process in
+[`SECURITY.md`](../SECURITY.md), not through a public issue. Raise other conduct
+concerns privately with the repository maintainers whenever possible.

@@ -1,6 +1,6 @@
 # Codex handoff — NexoraAI
 
-Last updated: 2026-09-14 UTC
+Last updated: 2026-09-15 UTC
 
 This document replaces a raw chat transcript as the engineering handoff. It
 captures the decisions and evidence needed to continue without storing copied
@@ -16,6 +16,8 @@ logs, credentials, attachments, or repetitive conversational text.
   routing, plus graceful restart recovery for persistent Knowledge ingestion
   jobs.
 - Azure baseline: `8ee1e8a` / `origin/Release-2.2.0`
+- Latest pushed candidate checkpoint: `698de34 feat: expand agent catalog and
+  enterprise authentication` on `feature/mcp-catalog-navigation`.
 - This checkpoint includes private Chat/Ask document upload, native extraction,
   temporary retrieval, prompt-intent evidence scope, ACL-checked citations,
   per-Agent image/document policy, request-local Vision routing, local/Azure
@@ -1515,8 +1517,10 @@ explicit audit-mode comparison slice. See `docs/licensing.md`.
 
 ### Platform roadmap
 
-- **Immediate next slice:** complete a disposable backup/restore drill for the
-  portable Compose runtime, then add production ingress/TLS. Design verified-channel
+- **Immediate next slice:** finish the `2.3.0` production acceptance gate. The
+  isolated MongoDB/MinIO/Qdrant backup and destructive restore drill passed on
+  2026-09-15; live deployment upgrade, public TLS, and real-IdP SAML acceptance
+  remain. See `docs/release-readiness-2.3.md`. Then design verified-channel
   forgotten-password recovery and decide
   whether production deployments should move the local bearer from
   `sessionStorage` to an HttpOnly cookie/BFF flow before production hardening.
