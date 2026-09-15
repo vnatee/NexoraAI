@@ -355,7 +355,7 @@ pydantic==2.13.4
     # via
     #   openai
     #   prompty
-pydantic-core==2.46.4
+pydantic-core==2.49.0
     # via pydantic
 pygments==2.18.0
     # via rich
