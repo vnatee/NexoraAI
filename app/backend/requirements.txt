@@ -443,7 +443,7 @@ werkzeug==3.0.6
     # via
     #   flask
     #   quart
-wrapt==1.16.0
+wrapt==2.4.1
     # via
     #   deprecated
     #   opentelemetry-instrumentation
