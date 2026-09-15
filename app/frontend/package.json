@@ -50,7 +50,7 @@
     "simple-icons": "^15.22.0"
   },
   "devDependencies": {
-    "@types/dom-speech-recognition": "^0.0.4",
+    "@types/dom-speech-recognition": "^0.0.12",
     "@types/dompurify": "^3.0.5",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
