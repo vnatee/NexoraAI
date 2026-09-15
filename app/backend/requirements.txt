@@ -357,7 +357,7 @@ pydantic==2.13.4
     #   prompty
 pydantic-core==2.46.4
     # via pydantic
-pygments==2.18.0
+pygments==2.21.0
     # via rich
 pyjwt==2.10.1
     # via
