@@ -2,6 +2,15 @@
 
 Items in this document are proposals only. Their architecture, scope, priority, and acceptance criteria must be discussed before implementation.
 
+## In progress — 2.3.0 production readiness gate
+
+The current priority is to qualify the enterprise-authentication and Agent
+Catalog checkpoint for deployment before starting another large feature slice.
+A real isolated MongoDB/MinIO/Qdrant backup and destructive restore drill passed
+on 2026-09-15. Live HTTPS/upgrade validation and SAML acceptance with a real IdP
+remain required. The product version stays at `2.2.0` until all gates in
+`docs/release-readiness-2.3.md` pass.
+
 ## Approved — Chat multimodal, attachments, and evidence workflows
 
 Build a ChatGPT-style composer shared by Chat and Ask. The product owner

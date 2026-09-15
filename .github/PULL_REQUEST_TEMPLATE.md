@@ -1,46 +1,33 @@
 ## Purpose
 
-<!-- Describe the intention of the changes being proposed. What problem does it solve or functionality does it add? -->
+Describe the problem, intended outcome, and why the change belongs in NexoraAI.
 
+## Scope and risk
 
-## Does this introduce a breaking change?
+- Affected deployment modes:
+- Authorization, data, or secret impact:
+- Migration or compatibility impact:
+- Rollback approach:
 
-When developers merge from main and run the server, azd up, or azd deploy, will this produce an error?
-If you're not sure, try it out on an old environment.
+## Change type
 
-```
-[ ] Yes
-[ ] No
-```
+- [ ] Bug fix
+- [ ] Feature
+- [ ] Security or governance change
+- [ ] Refactoring
+- [ ] Documentation
+- [ ] Release or operations
 
-## Does this require changes to learn.microsoft.com docs?
+## Validation
 
-This repository is referenced by [this tutorial](https://learn.microsoft.com/azure/developer/python/get-started-app-chat-template)
-which includes deployment, settings and usage instructions. If text or screenshot need to change in the tutorial,
-check the box below and notify the tutorial author. A Microsoft employee can do this for you if you're an external contributor.
+- [ ] Focused tests cover the change.
+- [ ] Service-free backend regression passes.
+- [ ] TypeScript and the production frontend build pass.
+- [ ] Relevant Azure/local/container behavior was checked.
+- [ ] No credential, customer content, raw prompt, or tool output is committed.
+- [ ] Documentation, handoff, manual, and backlog are updated where required.
 
-```
-[ ] Yes
-[ ] No
-```
+## Acceptance evidence
 
-## Type of change
-
-```
-[ ] Bugfix
-[ ] Feature
-[ ] Code style update (formatting, local variables)
-[ ] Refactoring (no functional changes, no api changes)
-[ ] Documentation content changes
-[ ] Other... Please describe:
-```
-
-## Code quality checklist
-
-See [CONTRIBUTING.md](https://github.com/Azure-Samples/azure-search-openai-demo/blob/main/CONTRIBUTING.md#submit-pr) for more details.
-
-- [ ] The current tests all pass (`python -m pytest`).
-- [ ] I added tests that prove my fix is effective or that my feature works
-- [ ] I ran `python -m pytest --cov` to verify 100% coverage of added lines
-- [ ] I ran `python -m mypy` to check for type errors
-- [ ] I either used the pre-commit hooks or ran `ruff` and `black` manually on my code.
+List commands, results, screenshots, or manual checks without including secrets
+or customer data.
