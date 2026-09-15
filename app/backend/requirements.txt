@@ -39,7 +39,7 @@ argon2-cffi-bindings==26.1.0
     # via argon2-cffi
 azure-ai-documentintelligence==1.0.2
     # via -r requirements.in
-azure-cognitiveservices-speech==1.40.0
+azure-cognitiveservices-speech==1.51.2
     # via -r requirements.in
 azure-common==1.1.28
     # via azure-search-documents
