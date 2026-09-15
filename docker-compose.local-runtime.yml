@@ -1,0 +1,220 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.local
+    image: ${NEXORA_APP_IMAGE:-nexoraai:local}
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      ollama-models:
+        condition: service_completed_successfully
+      integration-controller:
+        condition: service_healthy
+    environment:
+      APP_RUNTIME_MODE: local
+      APP_DATA_ENCRYPTION_KEY: ${APP_DATA_ENCRYPTION_KEY:?Set APP_DATA_ENCRYPTION_KEY}
+      LOCAL_AUTH_ENABLED: "true"
+      LOCAL_AUTH_BOOTSTRAP_TOKEN: ${LOCAL_AUTH_BOOTSTRAP_TOKEN:-}
+      NEXORA_PUBLIC_URL: ${NEXORA_PUBLIC_URL:-}
+      AZURE_USE_AUTHENTICATION: "false"
+      AZURE_ENFORCE_ACCESS_CONTROL: "true"
+      AZURE_ENABLE_GLOBAL_DOCUMENT_ACCESS: "true"
+      AZURE_ENABLE_UNAUTHENTICATED_ACCESS: "false"
+      SYSTEM_ADMIN_EMAIL: ${SYSTEM_ADMIN_EMAIL:-admin@nexora.local}
+      SYSTEM_ADMIN_AZURE_EMAIL: ${SYSTEM_ADMIN_AZURE_EMAIL:-}
+      SYSTEM_ADMIN_FIRST_NAME: ${SYSTEM_ADMIN_FIRST_NAME:-System}
+      SYSTEM_ADMIN_LAST_NAME: ${SYSTEM_ADMIN_LAST_NAME:-Administrator}
+      SYSTEM_ADMIN_EMPLOYEE_ID: ${SYSTEM_ADMIN_EMPLOYEE_ID:-LOCAL-ADMIN}
+      SYSTEM_ADMIN_TEL: ${SYSTEM_ADMIN_TEL:-}
+      MONGO_DB_NAME: ${NEXORA_MONGO_DB_NAME:-nexora}
+      MONGO_URI: mongodb://${NEXORA_MONGO_APP_USERNAME:?Set NEXORA_MONGO_APP_USERNAME}:${NEXORA_MONGO_APP_PASSWORD:?Set NEXORA_MONGO_APP_PASSWORD}@mongodb:27017/${NEXORA_MONGO_DB_NAME:-nexora}?authSource=${NEXORA_MONGO_DB_NAME:-nexora}
+      KNOWLEDGE_STORAGE_PROVIDER: minio
+      MINIO_ENDPOINT: minio:9000
+      MINIO_SECURE: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY}
+      MINIO_KNOWLEDGE_BUCKET: ${MINIO_KNOWLEDGE_BUCKET:-nexora-knowledge}
+      KNOWLEDGE_SEARCH_PROVIDER: qdrant
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION:-nexora-knowledge-bge-m3}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      USE_VECTORS: "true"
+      EMBEDDING_PROVIDER: openai_compatible
+      EMBEDDING_BASE_URL: http://ollama:11434/v1
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-1024}
+      AZURE_SEARCH_FIELD_NAME_EMBEDDING: ${AZURE_SEARCH_FIELD_NAME_EMBEDDING:-embedding}
+      EMBEDDING_API_KEY: ollama
+      LLM_PROVIDER: openai_compatible
+      LLM_BASE_URL: http://ollama:11434/v1
+      LLM_MODEL: ${LLM_MODEL:-qwen3:8b}
+      LLM_API_KEY: ollama
+      USE_USER_UPLOAD: "true"
+      USE_LOCAL_PDF_PARSER: "true"
+      USE_LOCAL_HTML_PARSER: "true"
+      USE_CHAT_HISTORY_COSMOS: "false"
+      USE_CHAT_HISTORY_DATABASE: "true"
+      USE_CHAT_HISTORY_BROWSER: "false"
+      CHAT_HISTORY_RETENTION_DAYS: ${CHAT_HISTORY_RETENTION_DAYS:-90}
+      CHAT_HISTORY_CLEANUP_INTERVAL_SECONDS: ${CHAT_HISTORY_CLEANUP_INTERVAL_SECONDS:-3600}
+      CHAT_ATTACHMENT_STORE: local
+      CHAT_ATTACHMENT_LOCAL_PATH: /data/chat-attachments
+      MAX_UPLOAD_SIZE_BYTES: ${MAX_UPLOAD_SIZE_BYTES:-104857600}
+      INTEGRATION_CONTROLLER_URL: http://integration-controller:8080
+      INTEGRATION_CONTROLLER_TOKEN: ${INTEGRATION_CONTROLLER_TOKEN:-}
+      NEXORA_LICENSE_PUBLIC_KEY_DIR: /etc/nexora/license-public-keys
+    ports:
+      - "${NEXORA_BIND_ADDRESS:-127.0.0.1}:${NEXORA_APP_PORT:-50505}:8000"
+    volumes:
+      - nexora_chat_attachments:/data/chat-attachments
+      - ./deploy/license-public-keys:/etc/nexora/license-public-keys:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/config', timeout=5)
+      interval: 15s
+      timeout: 8s
+      retries: 20
+      start_period: 60s
+
+  integration-controller:
+    build:
+      context: .
+      dockerfile: services/integration-controller/Dockerfile
+    image: ${NEXORA_INTEGRATION_CONTROLLER_IMAGE:-nexoraai-integration-controller:local}
+    restart: unless-stopped
+    environment:
+      INTEGRATION_CONTROLLER_TOKEN: ${INTEGRATION_CONTROLLER_TOKEN:-}
+      AZURE_MCP_IMAGE: ${AZURE_MCP_IMAGE:-}
+      AZURE_MCP_DOCKER_NETWORK: ${NEXORA_RUNTIME_NETWORK:-nexoraai_runtime}
+      AZURE_MCP_CPU_LIMIT: ${AZURE_MCP_CPU_LIMIT:-0.5}
+      AZURE_MCP_MEMORY_LIMIT: ${AZURE_MCP_MEMORY_LIMIT:-512m}
+      AZURE_MCP_STARTUP_TIMEOUT_SECONDS: ${AZURE_MCP_STARTUP_TIMEOUT_SECONDS:-60}
+      AZURE_MCP_COLLECT_TELEMETRY: ${AZURE_MCP_COLLECT_TELEMETRY:-false}
+      ALLOW_UNPINNED_AZURE_MCP_IMAGE: ${ALLOW_UNPINNED_AZURE_MCP_IMAGE:-false}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  mongodb:
+    image: ${NEXORA_MONGO_IMAGE:-mongo:8.0}
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${NEXORA_MONGO_ROOT_USERNAME:?Set NEXORA_MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${NEXORA_MONGO_ROOT_PASSWORD:?Set NEXORA_MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${NEXORA_MONGO_DB_NAME:-nexora}
+      NEXORA_MONGO_DB_NAME: ${NEXORA_MONGO_DB_NAME:-nexora}
+      NEXORA_MONGO_APP_USERNAME: ${NEXORA_MONGO_APP_USERNAME:?Set NEXORA_MONGO_APP_USERNAME}
+      NEXORA_MONGO_APP_PASSWORD: ${NEXORA_MONGO_APP_PASSWORD:?Set NEXORA_MONGO_APP_PASSWORD}
+    volumes:
+      - nexora_mongodb_data:/data/db
+      - ./scripts/mongodb-init.js:/docker-entrypoint-initdb.d/10-create-nexora-user.js:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --host 127.0.0.1 --port 27017
+          --username "$${MONGO_INITDB_ROOT_USERNAME}"
+          --password "$${MONGO_INITDB_ROOT_PASSWORD}"
+          --authenticationDatabase admin
+          --eval "db.adminCommand('ping').ok" >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  minio:
+    image: ${NEXORA_MINIO_IMAGE:-minio/minio:RELEASE.2025-07-23T15-54-02Z}
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY}
+    ports:
+      - "${NEXORA_BIND_ADDRESS:-127.0.0.1}:${NEXORA_MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - nexora_minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  qdrant:
+    image: ${NEXORA_QDRANT_IMAGE:-qdrant/qdrant:v1.15.5}
+    restart: unless-stopped
+    volumes:
+      - nexora_qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  ollama:
+    image: ${NEXORA_OLLAMA_IMAGE:-ollama/ollama:0.11.4}
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-24h}
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-1}
+    volumes:
+      - nexora_ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  ollama-models:
+    image: ${NEXORA_OLLAMA_IMAGE:-ollama/ollama:0.11.4}
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3}
+      LLM_MODEL: ${LLM_MODEL:-qwen3:8b}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["ollama pull \"$${EMBEDDING_MODEL}\" && ollama pull \"$${LLM_MODEL}\""]
+
+  docling:
+    profiles: ["ocr"]
+    image: ${DOCLING_SERVE_IMAGE:-quay.io/docling-project/docling-serve:latest}
+    restart: unless-stopped
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "false"
+      DOCLING_SERVE_MAX_NUM_PAGES: ${DOCLING_SERVE_MAX_NUM_PAGES:-500}
+      DOCLING_SERVE_MAX_FILE_SIZE: ${DOCLING_SERVE_MAX_FILE_SIZE:-104857600}
+      DOCLING_DEVICE: ${DOCLING_DEVICE:-cpu}
+
+volumes:
+  nexora_mongodb_data:
+  nexora_minio_data:
+  nexora_qdrant_data:
+  nexora_ollama_data:
+  nexora_chat_attachments:
+
+networks:
+  default:
+    name: ${NEXORA_RUNTIME_NETWORK:-nexoraai_runtime}

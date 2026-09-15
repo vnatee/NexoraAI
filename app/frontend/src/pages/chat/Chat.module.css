@@ -1,0 +1,633 @@
+.container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background:
+        radial-gradient(circle at 50% 16%, rgba(37, 99, 235, 0.045), transparent 30rem),
+        #f7f8fa;
+}
+
+.chatRoot {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    transition: margin-left 0.2s ease;
+}
+
+.chatContainer {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+    height: calc(100vh - 64px);
+    min-height: 0;
+    overflow: hidden;
+}
+
+.chatContextBar {
+    width: min(100%, 100rem);
+    padding: 1.25rem 1.5rem 0;
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    z-index: 10;
+}
+
+.chatEmptyState {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    width: 100%;
+    min-height: 0;
+    padding: 1rem 1.5rem 2.5rem;
+}
+
+.chatEmptyStateTitle {
+    max-width: 46rem;
+    font-size: clamp(1.9rem, 3.4vw, 2.7rem);
+    line-height: 1.12;
+    letter-spacing: -0.035em;
+    text-align: center;
+    font-weight: 650;
+    margin: 1rem 0 1.5rem;
+    color: #172033;
+}
+
+.chatEmptyStateSubtitle {
+    font-weight: 600;
+    margin-bottom: 0.625rem;
+}
+
+.chatMessageStream {
+    flex: 1;
+    width: min(100%, 100rem);
+    min-height: 0;
+    overflow-y: auto;
+    padding: 1.5rem 1.5rem 2rem;
+    display: flex;
+    flex-direction: column;
+    scrollbar-gutter: stable;
+}
+
+.chatMessageGpt {
+    margin-bottom: 1.25rem;
+    max-width: 100%;
+    display: flex;
+}
+
+.chatMessageGptMinWidth {
+    max-width: 31.25rem;
+    margin-bottom: 1.25rem;
+}
+
+.chatInput {
+    flex: 0 0 auto;
+    padding: 0.75rem 1.5rem 1.25rem;
+    width: 100%;
+    max-width: 100rem;
+    position: relative;
+    z-index: 5;
+    background: linear-gradient(180deg, rgba(247, 248, 250, 0), #f7f8fa 20%);
+}
+
+.chatAnalysisPanel {
+    flex: 1;
+    overflow-y: auto;
+    max-height: 85vh;
+    margin-left: 1.25rem;
+    margin-right: 1.25rem;
+}
+
+.chatSettingsSeparator {
+    display: flex;
+    flex-direction: column;
+    margin-top: 0.9375rem;
+}
+
+.loadingLogo {
+    font-size: 1.75rem;
+}
+
+.commandsSplitContainer {
+    position: fixed;
+    top: 64px;
+    right: 16px;
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    margin-top: 8px; /* 👈 ขยับลงมาอีกหน่อย */
+}
+
+/* tablet */
+@media (min-width: 769px) and (max-width: 991px) {
+    .commandsSplitContainer {
+        right: 20px;
+    }
+}
+
+/* desktop */
+@media (min-width: 992px) {
+    .commandsSplitContainer {
+        right: 24px;
+    }
+}
+
+.commandsContainer {
+    display: flex;
+    align-items: center;
+    /* align-self: flex-end; */
+}
+
+.commandButton {
+    margin-bottom: 1.25rem;
+}
+
+@media (min-width: 992px) {
+    .chatInput {
+        padding-bottom: 1.5rem;
+    }
+
+    .commandsSplitContainer {
+        padding-left: 1rem;
+    }
+
+    .commandsContainer {
+        padding-left: 0rem;
+        padding-right: 0rem;
+    }
+
+    .commandButton {
+        margin-right: 1.25rem;
+        margin-bottom: 1.25rem;
+    }
+
+    .chatMessageGpt {
+        width: 100%;
+        max-width: 100%;
+        min-width: 0;
+    }
+}
+.menuDropdown {
+    position: absolute;
+    top: 2.5rem;
+    /* ปรับตามตำแหน่งที่ต้องการ */
+    right: 0;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 0.5rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    min-width: 160px;
+    padding: 0.5rem 0;
+}
+
+.loginMenuContainer {
+    display: flex;
+    align-items: center;
+    position: relative;
+}
+
+.menuDropdownEnhanced {
+    position: fixed; /* ลอยจาก sidebar */
+    background-color: white;
+    border-radius: 10px;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+    padding: 12px 0;
+    min-width: 200px;
+    z-index: 2000;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+
+    /* 👇 กันยาวเกิน */
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.menuItem {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    font-size: 15px;
+    color: #333;
+    background-color: transparent;
+    border: none;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+
+    &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    svg {
+        width: 18px;
+        height: 18px;
+    }
+}
+
+.menuItem:hover {
+    background-color: rgba(255, 255, 255, 0.1); /* เทาโปร่ง */
+    color: #333 !important; /* ตัวหนังสือขาวชัด */
+}
+
+.sparkleLogo {
+    position: relative;
+    font-size: 64px;
+    font-weight: bold;
+    background: linear-gradient(120deg, #ffcc33, #ff6a00, #ff00a6, #a960ff);
+    background-size: 300% 300%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation:
+        glowPulse 4s ease-in-out infinite,
+        gradientShift 10s linear infinite;
+    filter: drop-shadow(0 0 14px rgba(255, 170, 0, 0.5));
+    display: inline-block;
+    transform-origin: center;
+}
+
+/* เพิ่ม glow soft รอบดาว */
+.sparkleLogo::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 120px;
+    height: 120px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(255, 200, 100, 0.25) 0%, transparent 70%);
+    filter: blur(12px);
+    z-index: 0;
+}
+
+/* 🪐 เพิ่มหมอกหมุนรอบหลัง Glow */
+.sparkleLogo::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 170px;
+    height: 170px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, rgba(255, 220, 180, 0.06), rgba(255, 160, 255, 0.07), rgba(180, 120, 255, 0.08), rgba(255, 220, 180, 0.06));
+    animation: spinHalo 20s linear infinite;
+    z-index: -1; /* อยู่หลัง glow */
+    filter: blur(10px);
+    mix-blend-mode: screen;
+    pointer-events: none;
+    opacity: 0.5; /* เบามาก ไม่แย่ง glow */
+}
+
+@keyframes spinHalo {
+    from {
+        transform: translate(-50%, -50%) rotate(0deg);
+    }
+    to {
+        transform: translate(-50%, -50%) rotate(360deg);
+    }
+}
+
+/* ----- ดาวเล็ก 3 ดวง ----- */
+.sparkleLogo span {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    opacity: 0.8;
+    transform-origin: center;
+    pointer-events: none;
+    z-index: 2;
+}
+
+/* ดวงที่ 1 — วงรีเฉียงซ้ายบน */
+.orb1 {
+    background: radial-gradient(circle, #ffd580 0%, transparent 70%);
+    animation: orbitTopLeft 5s linear infinite;
+}
+
+/* ดวงที่ 2 — วงรีเฉียงขวาบน */
+.orb2 {
+    background: radial-gradient(circle, #ffaaff 0%, transparent 70%);
+    animation: orbitTopRight 6s linear infinite;
+}
+
+/* ดวงที่ 3 — โคจรด้านบนสุดนิด ๆ */
+.orb3 {
+    background: radial-gradient(circle, #aaffff 0%, transparent 70%);
+    animation: orbitTop 7s linear infinite;
+}
+
+/* ----- Keyframes ----- */
+
+/* ทะแยงซ้ายบน */
+@keyframes orbitTopLeft {
+    0% {
+        transform: rotate(0deg) translate(32px, -14px) rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg) translate(32px, -14px) rotate(-360deg);
+    }
+}
+
+/* ทะแยงขวาบน */
+@keyframes orbitTopRight {
+    0% {
+        transform: rotate(0deg) translate(-32px, -14px) rotate(0deg);
+    }
+    100% {
+        transform: rotate(-360deg) translate(-32px, -14px) rotate(360deg);
+    }
+}
+
+/* วงรีเหนือศูนย์กลาง */
+@keyframes orbitTop {
+    0% {
+        transform: rotate(0deg) translateY(-26px) rotate(0deg);
+    }
+    100% {
+        transform: rotate(360deg) translateY(-26px) rotate(-360deg);
+    }
+}
+
+/* เอฟเฟกต์เรืองแสงดาวกลาง ✦ */
+@keyframes glowPulse {
+    0%,
+    100% {
+        transform: scale(1);
+        filter: drop-shadow(0 0 8px rgba(255, 180, 0, 0.6));
+        opacity: 0.9;
+    }
+    50% {
+        transform: scale(1.08);
+        filter: drop-shadow(0 0 20px rgba(255, 90, 180, 0.9));
+        opacity: 1;
+    }
+}
+
+/* Gradient shift */
+@keyframes gradientShift {
+    0% {
+        background-position: 0% 50%;
+    }
+    50% {
+        background-position: 100% 50%;
+    }
+    100% {
+        background-position: 0% 50%;
+    }
+}
+
+/* mobile / tablet */
+.sidebar {
+    position: fixed;
+    top: 64px;
+    left: 0;
+    height: calc(100% - 64px);
+    background: #20242a;
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    /* overflow-y: auto; */
+    transition: width 0.3s ease;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    color: #f0f0f0; /* default text เป็นขาวอ่อน */
+}
+
+.historyButtons {
+    flex-shrink: 0; /* ปุ่มอยู่ด้านบน ไม่ถูก scroll */
+    padding: 10px 8px 8px;
+    border-bottom: 1px solid #444;
+}
+
+/* Sidebar */
+.sidebar .menuItem {
+    color: white !important;
+}
+
+.sidebarFooter {
+    flex-shrink: 0;
+    padding: 8px;
+    display: flex;
+    justify-content: flex-end; /* ปุ่ม Settings ไปมุมขวาล่าง */
+}
+
+/* desktop */
+/* @media (min-width: 992px) {
+    .sidebar {
+        top: 80px;
+        height: calc(100% - 80px);
+    }
+} */
+
+.sidebarExpanded {
+    width: 260px; /* ขยายเต็ม */
+}
+
+.sidebarCollapsed {
+    width: 72px; /* ย่อแบบ chatgpt */
+}
+
+.sidebarToggle {
+    display: flex;
+    align-items: center;
+    padding: 8px;
+    min-height: 48px;
+    background-color: #20242a;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    /* justify-content: center !important; */
+}
+
+/* ตอนย่อ */
+.sidebarCollapsed .sidebarToggle {
+    justify-content: center; /* ตรงกลาง */
+}
+
+/* ตอนขยาย */
+.sidebarExpanded .sidebarToggle {
+    justify-content: flex-end; /* ชิดขวา */
+}
+
+/* สำหรับปุ่ม History และ Settings ที่ต้องการแค่โชว์ */
+.sidebarIconDisabled {
+    pointer-events: none; /* ❌ ปิดการคลิก */
+    cursor: default !important; /* ไม่เปลี่ยนเป็นมือ */
+    opacity: 0.7; /* จางลงเล็กน้อย (เลือกได้) */
+}
+
+/* ปิด hover effect */
+.sidebarIconDisabled:hover {
+    background: none !important;
+    color: inherit !important;
+}
+
+.sidebarHeader {
+    display: flex;
+    align-items: center;
+    padding: 12px;
+    font-weight: bold;
+    border-bottom: 1px solid #eee;
+}
+
+.historyContent {
+    flex: 1;
+    overflow-y: auto;
+    padding-top: 10px;
+    color: #ddd;
+
+    /* Firefox */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+}
+
+/* Chrome / Edge / Safari */
+.historyContent::-webkit-scrollbar {
+    width: 6px;
+}
+
+.historyContent::-webkit-scrollbar-track {
+    background: transparent; /* พื้นหลังโปร่งใส */
+}
+
+.historyContent::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.25); /* เทาโปร่ง */
+    border-radius: 10px;
+    transition: background-color 0.2s ease;
+}
+
+.historyContent::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(255, 255, 255, 0.45); /* hover สว่างขึ้น */
+}
+
+.historySection {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+/* override header ของ HistoryPanel ให้หายไป */
+.sidebarExpanded .ms-Panel-headerText,
+.sidebarExpanded .ms-Panel-closeButton {
+    display: none !important;
+}
+
+.noHistory {
+    text-align: center;
+    color: #aaa;
+    font-size: 14px;
+    font-style: italic;
+    margin-top: auto;
+    margin-bottom: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%; /* ดันให้เต็ม container */
+}
+
+.newChatContainer {
+    padding: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* ปรับสีปุ่ม/ข้อความข้างใน */
+.newChatTextButton {
+    text-transform: none !important;
+    justify-content: flex-start !important;
+    width: 100% !important;
+    margin-bottom: 2px;
+    color: #f0f0f0 !important; /* ขาวอ่อน */
+    font-weight: 500 !important;
+    font-size: 14px !important;
+    border-radius: 8px !important;
+    padding: 9px 12px !important;
+}
+
+.newChatPrimaryButton {
+    margin-bottom: 4px !important;
+    background: rgba(37, 99, 235, 0.22) !important;
+    color: #fff !important;
+}
+
+.newChatPrimaryButton:hover {
+    background: rgba(37, 99, 235, 0.34) !important;
+}
+
+.sidebarMenuSection + .sidebarMenuSection {
+    margin-top: 10px;
+    padding-top: 9px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.sidebarSectionLabel,
+.historySectionLabel {
+    padding: 0 12px 6px;
+    color: rgba(255, 255, 255, 0.52);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1.4;
+    text-transform: uppercase;
+}
+
+.historySectionLabel {
+    padding-bottom: 4px;
+}
+
+.newChatTextButton:hover {
+    background-color: rgba(255, 255, 255, 0.1) !important; /* hover เทาโปร่ง */
+    color: #fff !important; /* ขาวชัด */
+}
+
+.newChatButton {
+    width: 100%;
+    justify-content: flex-start; /* ไอคอน + ข้อความ align ซ้าย */
+    font-weight: 500;
+}
+
+.sidebarSettings {
+    position: relative; /* anchor ของ dropdown */
+    margin-top: auto; /* ดันลงล่างสุด sidebar */
+    padding: 8px;
+}
+
+.sidebarVersion {
+    flex-shrink: 0; /* ไม่ให้โดนบีบ */
+    padding: 10px;
+    text-align: center;
+    font-size: 12px;
+    opacity: 0.6;
+    border-top: 1px solid #444; /* ให้เข้ากับ sidebar สีเข้ม */
+}
+
+@media (max-width: 767px) {
+    .chatContextBar,
+    .chatMessageStream,
+    .chatInput {
+        padding-left: 0.75rem;
+        padding-right: 0.75rem;
+    }
+
+    .chatEmptyState {
+        justify-content: flex-start;
+        padding-top: 12vh;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sparkleLogo,
+    .sparkleLogo::before,
+    .sparkleLogo span {
+        animation: none;
+    }
+}

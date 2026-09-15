@@ -1,0 +1,36 @@
+{
+    "useLogin": true,
+    "requireAccessControl": false,
+    "enableUnauthenticatedAccess": false,
+    "localAuthenticationEnabled": false,
+    "entraAuthenticationEnabled": true,
+    "oidcAuthenticationEnabled": false,
+    "oidcDisplayName": "Enterprise SSO",
+    "oidcProviders": [],
+    "samlAuthenticationEnabled": false,
+    "samlProviders": [],
+    "localBootstrapRequired": false,
+    "msalConfig": {
+        "auth": {
+            "clientId": "CLIENT_APP",
+            "authority": "https://login.microsoftonline.com/TENANT_ID",
+            "redirectUri": "/redirect",
+            "postLogoutRedirectUri": "/",
+            "navigateToLoginRequestUrl": false
+        },
+        "cache": {
+            "cacheLocation": "localStorage",
+            "storeAuthStateInCookie": false
+        }
+    },
+    "loginRequest": {
+        "scopes": [
+            ".default"
+        ]
+    },
+    "tokenRequest": {
+        "scopes": [
+            "api://SERVER_APP/access_as_user"
+        ]
+    }
+}

@@ -1,0 +1,64 @@
+.group {
+    margin-top: 1rem;
+}
+.groupLabel {
+    font-size: 0.9rem;
+    font-weight: bold;
+    margin-top: 0.5rem;
+    margin-bottom: 0.2rem;
+}
+
+.footer {
+    display: flex;
+    justify-content: space-between;
+}
+
+.historyHeader {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 4px;
+    border-bottom: 1px solid #444;
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.historyHeaderText {
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.historySection {
+    display: flex;
+    flex-direction: column;
+}
+
+.historyContent {
+    flex: 1;
+    overflow-y: auto;
+    padding-top: 8px;
+    color: #ddd; /* ตัวหนังสือ History list */
+}
+
+.historyContent :global(*) {
+    color: #ddd !important;
+}
+
+.noHistory {
+    text-align: center;
+    color: #aaa; /* อ่อนลงอีก */
+    font-size: 14px;
+    margin-top: 20px;
+    font-style: italic;
+}
+
+.newChatTextButton {
+    text-transform: none !important;
+    justify-content: flex-start !important;
+    width: 100% !important;
+    margin-bottom: 8px;
+    color: #f0f0f0 !important; /* ขาวอ่อน */
+    font-weight: 500 !important;
+    font-size: 14px !important;
+    /* padding-left: 12px !important; */
+}

@@ -1,0 +1,215 @@
+from collections.abc import Awaitable
+from typing import Any, Callable, Optional
+
+from azure.search.documents.aio import SearchClient
+from azure.storage.blob.aio import ContainerClient
+from openai import AsyncOpenAI
+from openai.types.chat import (
+    ChatCompletionMessageParam,
+)
+
+from approaches.approach import Approach, DataPoints, ExtraInfo, ThoughtStep
+from approaches.promptmanager import PromptManager
+from core.authentication import AuthenticationHelper
+from core.attachment_retrieval import merge_attachment_sources
+from core.chat_attachments import redact_inline_images
+from core.imageshelper import fetch_image
+from prepdocslib.embeddings import OpenAIEmbeddings
+
+
+class RetrieveThenReadVisionApproach(Approach):
+    """
+    Simple retrieve-then-read implementation, using the AI Search and OpenAI APIs directly. It first retrieves
+    top documents including images from search, then constructs a prompt with them, and then uses OpenAI to generate an completion
+    (answer) with that prompt.
+    """
+
+    def __init__(
+        self,
+        *,
+        search_client: SearchClient,
+        blob_container_client: ContainerClient,
+        openai_client: AsyncOpenAI,
+        auth_helper: AuthenticationHelper,
+        gpt4v_deployment: Optional[str],
+        gpt4v_model: str,
+        embedding_deployment: Optional[str],  # Not needed for non-Azure OpenAI or for retrieval_mode="text"
+        embedding_model: str,
+        embedding_dimensions: int,
+        embedding_field: str,
+        sourcepage_field: str,
+        content_field: str,
+        query_language: str,
+        query_speller: str,
+        vision_endpoint: str,
+        vision_token_provider: Callable[[], Awaitable[str]],
+        prompt_manager: PromptManager,
+        embedding_service: Optional[OpenAIEmbeddings] = None,
+    ):
+        self.search_client = search_client
+        self.blob_container_client = blob_container_client
+        self.openai_client = openai_client
+        self.auth_helper = auth_helper
+        self.embedding_model = embedding_model
+        self.embedding_deployment = embedding_deployment
+        self.embedding_dimensions = embedding_dimensions
+        self.embedding_service = embedding_service
+        self.embedding_field = embedding_field
+        self.sourcepage_field = sourcepage_field
+        self.content_field = content_field
+        self.gpt4v_deployment = gpt4v_deployment
+        self.gpt4v_model = gpt4v_model
+        self.query_language = query_language
+        self.query_speller = query_speller
+        self.vision_endpoint = vision_endpoint
+        self.vision_token_provider = vision_token_provider
+        self.prompt_manager = prompt_manager
+        self.answer_prompt = self.prompt_manager.load_prompt("ask_answer_question_vision.prompty")
+        # Currently disabled due to issues with rendering token usage in the UI
+        self.include_token_usage = False
+
+    async def run(
+        self,
+        messages: list[ChatCompletionMessageParam],
+        session_state: Any = None,
+        context: dict[str, Any] = {},
+    ) -> dict[str, Any]:
+        q = messages[-1]["content"]
+        if not isinstance(q, str):
+            raise ValueError("The most recent message content must be a string.")
+
+        overrides = context.get("overrides", {})
+        seed = overrides.get("seed", None)
+        auth_claims = context.get("auth_claims", {})
+        use_text_search = overrides.get("retrieval_mode") in ["text", "hybrid", None]
+        use_vector_search = overrides.get("retrieval_mode") in ["vectors", "hybrid", None]
+        use_semantic_ranker = True if overrides.get("semantic_ranker") else False
+        use_query_rewriting = True if overrides.get("query_rewriting") else False
+        use_semantic_captions = True if overrides.get("semantic_captions") else False
+        top = overrides.get("top", 3)
+        minimum_search_score = overrides.get("minimum_search_score", 0.0)
+        minimum_reranker_score = overrides.get("minimum_reranker_score", 0.0)
+        filter = self.build_filter(overrides, auth_claims)
+
+        vector_fields = overrides.get("vector_fields", "textAndImageEmbeddings")
+        send_text_to_gptvision = overrides.get("gpt4v_input") in ["textAndImages", "texts", None]
+        send_images_to_gptvision = overrides.get("gpt4v_input") in ["textAndImages", "images", None]
+        rag_vision_enabled = overrides.get("_rag_vision_enabled", True)
+        if not rag_vision_enabled:
+            vector_fields = "textEmbeddingOnly"
+            send_images_to_gptvision = False
+
+        # If retrieval mode includes vectors, compute an embedding for the query
+        attachment_only = overrides.get("_temporary_attachments_only") is True
+        vectors = []
+        if use_vector_search and not attachment_only:
+            if vector_fields == "textEmbeddingOnly" or vector_fields == "textAndImageEmbeddings":
+                vectors.append(await self.compute_text_embedding(q))
+            if vector_fields == "imageEmbeddingOnly" or vector_fields == "textAndImageEmbeddings":
+                vectors.append(await self.compute_image_embedding(q))
+
+        results = []
+        if not attachment_only:
+            results = await self.search(
+                top,
+                q,
+                filter,
+                vectors,
+                use_text_search,
+                use_vector_search,
+                use_semantic_ranker,
+                use_semantic_captions,
+                minimum_search_score,
+                minimum_reranker_score,
+                use_query_rewriting,
+            )
+
+        # Process results
+        text_sources = []
+        image_sources = []
+        if send_text_to_gptvision:
+            text_sources = self.get_sources_content(results, use_semantic_captions, use_image_citation=True)
+        text_sources = merge_attachment_sources(text_sources, overrides)
+        if send_images_to_gptvision:
+            for result in results:
+                url = await fetch_image(self.blob_container_client, result)
+                if url:
+                    image_sources.append(url)
+
+        prompt_image_sources = [*image_sources, *overrides.get("_image_attachments", [])]
+
+        messages = self.prompt_manager.render_prompt(
+            self.answer_prompt,
+            self.get_system_prompt_variables(overrides.get("prompt_template"))
+            | {
+                "user_query": q,
+                "text_sources": text_sources,
+                "image_sources": prompt_image_sources,
+                "has_user_attachments": bool(overrides.get("_image_attachments")),
+                "has_temporary_attachments": bool(overrides.get("_temporary_attachment_sources")),
+            },
+        )
+
+        custom_profile = overrides.get("_llm_profile_id") not in (None, "system")
+        llm_client = overrides.get("_llm_client", self.openai_client) if custom_profile else self.openai_client
+        answer_model = (
+            overrides.get("_llm_deployment") or overrides.get("_llm_model")
+            if custom_profile
+            else self.gpt4v_deployment or self.gpt4v_model
+        )
+        completion_params = self.apply_chat_completion_policy(
+            overrides,
+            {
+                "temperature": overrides.get("temperature", 0.3),
+                "max_tokens": 1024,
+                "n": 1,
+                "seed": seed,
+            },
+        )
+        chat_completion = await llm_client.chat.completions.create(
+            model=answer_model,
+            messages=messages,
+            **completion_params,
+        )
+
+        extra_info = ExtraInfo(
+            DataPoints(text=text_sources, images=image_sources),
+            [
+                ThoughtStep(
+                    "Search using user query",
+                    q,
+                    {
+                        "use_semantic_captions": use_semantic_captions,
+                        "use_semantic_ranker": use_semantic_ranker,
+                        "use_query_rewriting": use_query_rewriting,
+                        "top": top,
+                        "filter": filter,
+                        "vector_fields": vector_fields,
+                        "use_vector_search": use_vector_search,
+                        "use_text_search": use_text_search,
+                    },
+                ),
+                ThoughtStep(
+                    "Search results",
+                    [result.serialize_for_results() for result in results],
+                ),
+                ThoughtStep(
+                    "Prompt to generate answer",
+                    redact_inline_images(messages, overrides.get("_image_attachments")),
+                    (
+                        {"model": self.gpt4v_model, "deployment": self.gpt4v_deployment}
+                        if self.gpt4v_deployment
+                        else {"model": self.gpt4v_model}
+                    ),
+                ),
+            ],
+        )
+
+        return {
+            "message": {
+                "content": chat_completion.choices[0].message.content,
+                "role": chat_completion.choices[0].message.role,
+            },
+            "context": extra_info,
+            "session_state": session_state,
+        }
