@@ -259,7 +259,7 @@ opentelemetry-instrumentation==0.52b1
     #   opentelemetry-instrumentation-urllib
     #   opentelemetry-instrumentation-urllib3
     #   opentelemetry-instrumentation-wsgi
-opentelemetry-instrumentation-aiohttp-client==0.52b1
+opentelemetry-instrumentation-aiohttp-client==0.65b0
     # via -r requirements.in
 opentelemetry-instrumentation-asgi==0.52b1
     # via
