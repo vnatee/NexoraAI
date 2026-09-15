@@ -1,0 +1,32 @@
+services:
+  mongodb:
+    image: ${NEXORA_MONGO_IMAGE:-mongo:8.0}
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${NEXORA_MONGO_ROOT_USERNAME:?Set NEXORA_MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${NEXORA_MONGO_ROOT_PASSWORD:?Set NEXORA_MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${NEXORA_MONGO_DB_NAME:-nexora}
+      NEXORA_MONGO_DB_NAME: ${NEXORA_MONGO_DB_NAME:-nexora}
+      NEXORA_MONGO_APP_USERNAME: ${NEXORA_MONGO_APP_USERNAME:?Set NEXORA_MONGO_APP_USERNAME}
+      NEXORA_MONGO_APP_PASSWORD: ${NEXORA_MONGO_APP_PASSWORD:?Set NEXORA_MONGO_APP_PASSWORD}
+    ports:
+      - "127.0.0.1:${NEXORA_MONGO_PORT:-27017}:27017"
+    volumes:
+      - nexora_mongodb_data:/data/db
+      - ./scripts/mongodb-init.js:/docker-entrypoint-initdb.d/10-create-nexora-user.js:ro
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --host 127.0.0.1 --port 27017
+          --username "$${MONGO_INITDB_ROOT_USERNAME}"
+          --password "$${MONGO_INITDB_ROOT_PASSWORD}"
+          --authenticationDatabase admin
+          --eval "db.adminCommand('ping').ok" >/dev/null
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  nexora_mongodb_data:

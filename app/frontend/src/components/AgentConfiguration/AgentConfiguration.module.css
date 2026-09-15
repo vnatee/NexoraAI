@@ -1,0 +1,33 @@
+/* AgentConfiguration.module.css */
+
+.root {
+    display: flex;
+    flex-direction: column;
+    padding: 0.75rem 0.5rem;
+    box-sizing: border-box;
+}
+
+/* แถว search */
+.searchRow {
+    gap: 0.5rem;
+}
+
+/* แถวปุ่ม Add Agent */
+.toolbarRow {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.5rem;
+}
+
+/* เผื่ออนาคตอยากใช้ตกแต่งพิเศษให้ DataGrid */
+.tableWrapper {
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+/* สี text เล็กน้อยให้โทนใกล้ UserManagement ได้ในอนาคต */
+.helperText {
+    font-size: 0.8rem;
+    color: #666666;
+}
