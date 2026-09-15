@@ -351,7 +351,7 @@ pycparser==2.22
     # via cffi
 pycryptodome==3.23.0
     # via minio
-pydantic==2.13.4
+pydantic==2.13.5
     # via
     #   openai
     #   prompty
