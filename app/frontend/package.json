@@ -20,7 +20,7 @@
     "@fluentui/react": "^8.112.5",
     "@fluentui/react-components": "^9.56.2",
     "@fluentui/react-icons": "^2.0.265",
-    "@mui/icons-material": "^7.1.2",
+    "@mui/icons-material": "^9.4.0",
     "@mui/material": "^7.1.2",
     "@mui/x-charts": "^8.12.0",
     "@mui/x-data-grid": "^8.9.1",
