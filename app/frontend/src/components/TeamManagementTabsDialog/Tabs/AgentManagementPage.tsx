@@ -58,7 +58,8 @@ import {
     ManagedMCPServer,
     LLMProfile,
     MessagingConnection,
-    MessagingBindingData
+    MessagingBindingData,
+    IntegrationConnectionSummary
 } from "../../../api";
 import { getToken } from "../../../authConfig";
 import { useNotification } from "../../../utill/NotificationProvider";
@@ -94,6 +95,7 @@ import {
     toggle_chart_binding_by_id,
     update_chart_binding,
     listAvailableMCPServersApi,
+    listIntegrationConnectionsApi,
     publish_agent_catalog,
     test_db_connection
     ,get_messaging_connections, get_messaging_bindings, save_messaging_binding, delete_messaging_binding,
@@ -122,6 +124,11 @@ const DEFAULT_AGENT_TOOL_SETTINGS = {
     mcp: true,
     mcp_execution: "auto" as const,
     subagents: false,
+    web_search: false,
+    web_search_connection_id: "",
+    web_search_allowed_domains: [] as string[],
+    web_search_max_results: 5,
+    web_search_timeout_seconds: 15,
     mcp_server_ids: [] as string[],
     mcp_tool_allowlists: {} as Record<string, string[]>,
     mcp_timeout_seconds: 60,
@@ -577,6 +584,7 @@ export function AgentManagementPage({ team, isSystemAdmin = false, onAgentsChang
                                     </Typography>
                                     <Stack direction="row" spacing={0.5} sx={{ mt: 1 }}>
                                         {agent.config?.image_input_enabled && <Chip size="small" variant="outlined" label="Vision" />}
+                                        {agent.config?.tool_settings?.web_search && <Chip size="small" variant="outlined" label="Web" />}
                                         {agent.config?.document_attachments_enabled && <Chip size="small" variant="outlined" label="Documents" />}
                                         {agent.config?.tool_settings?.mcp && <Chip size="small" variant="outlined" label="MCP" />}
                                     </Stack>
@@ -620,6 +628,7 @@ export function AgentManagementPage({ team, isSystemAdmin = false, onAgentsChang
                 agent={selectedAgent}
                 teamId={team?._id}
                 onClose={() => setOpenDialog(false)}
+                onEdit={() => setMode("edit")}
                 onSave={handleSave}
                 onCreateDraft={handleCreateDraft}
                 onFinishDraft={handleFinishDraft}
@@ -747,6 +756,7 @@ export function AgentDialog({
     teamId,
     loading,
     onClose,
+    onEdit,
     onSave,
     onCreateDraft,
     onFinishDraft,
@@ -760,6 +770,7 @@ export function AgentDialog({
     teamId?: string;
     loading: boolean;
     onClose: () => void;
+    onEdit?: () => void;
     onSave: (agent: Agent) => void | Promise<void>;
     onCreateDraft?: (agent: Agent) => Promise<Agent>;
     onFinishDraft?: (agent: Agent) => void | Promise<void>;
@@ -788,20 +799,40 @@ export function AgentDialog({
 
     const [llmProfiles, setLlmProfiles] = useState<LLMProfile[]>([]);
     const [mcpServers, setMcpServers] = useState<ManagedMCPServer[]>([]);
+    const [webSearchConnections, setWebSearchConnections] = useState<IntegrationConnectionSummary[]>([]);
+    const [webSearchConfigured, setWebSearchConfigured] = useState(false);
+    const [webSearchProvider, setWebSearchProvider] = useState<string | null>(null);
 
     useEffect(() => {
         if (!open) return;
         configApi()
-            .then(appConfig => setLlmProfiles(appConfig.llmProfiles ?? []))
+            .then(appConfig => {
+                setLlmProfiles(appConfig.llmProfiles ?? []);
+                setWebSearchConfigured(appConfig.webSearchConfigured === true);
+                setWebSearchProvider(appConfig.webSearchProvider ?? null);
+            })
             .catch(error => console.error("load LLM profiles failed", error));
     }, [open]);
 
     useEffect(() => {
         if (!open) return;
         getToken(instance)
-            .then(token => (token && teamId ? listAvailableMCPServersApi(teamId, token, agent?._id) : []))
-            .then(setMcpServers)
-            .catch(error => console.error("load MCP servers failed", error));
+            .then(async token => {
+                if (!token || !teamId) return { mcp: [], web: [] };
+                const [mcp, connections] = await Promise.all([
+                    listAvailableMCPServersApi(teamId, token, agent?._id),
+                    listIntegrationConnectionsApi(teamId, token)
+                ]);
+                return {
+                    mcp,
+                    web: connections.filter(item => item.kind === "web_search" && item.enabled)
+                };
+            })
+            .then(result => {
+                setMcpServers(result.mcp);
+                setWebSearchConnections(result.web);
+            })
+            .catch(error => console.error("load Agent integrations failed", error));
     }, [open, instance, teamId, agent?._id]);
 
     const [agentName, setAgentName] = useState("");
@@ -1503,6 +1534,129 @@ export function AgentDialog({
                                                     label={label}
                                                 />
                                             ))}
+                                            <Divider />
+                                            <Typography variant="subtitle2">External Web Search</Typography>
+                                            <FormControlLabel
+                                                control={
+                                                    <Switch
+                                                        disabled={
+                                                            isFieldDisabled ||
+                                                            (!webSearchConfigured && webSearchConnections.length === 0 && !config.tool_settings?.web_search)
+                                                        }
+                                                        checked={config.tool_settings?.web_search === true}
+                                                        onChange={(_, checked) =>
+                                                            setConfig({
+                                                                ...config,
+                                                                tool_settings: {
+                                                                    ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                                    ...(config.tool_settings ?? {}),
+                                                                    web_search: checked
+                                                                }
+                                                            })
+                                                        }
+                                                    />
+                                                }
+                                                label="Governed Web Search"
+                                            />
+                                            <Alert severity={webSearchConnections.length > 0 || webSearchConfigured ? "info" : "warning"}>
+                                                {webSearchConnections.length > 0
+                                                    ? `${webSearchConnections.length} Team Web Search connection(s) available. Select one below.`
+                                                    : webSearchConfigured
+                                                        ? `Legacy environment fallback: ${webSearchProvider === "searxng" ? "SearXNG" : "Brave Search"}.`
+                                                        : "No Web Search Integration is assigned to this Team. Configure it under Integrations first."}
+                                            </Alert>
+                                            {config.tool_settings?.web_search && (
+                                                <Stack spacing={1}>
+                                                    {webSearchConnections.length > 0 && <TextField
+                                                        select
+                                                        size="small"
+                                                        label="Web Search Connection"
+                                                        required
+                                                        disabled={isFieldDisabled}
+                                                        value={config.tool_settings.web_search_connection_id ?? ""}
+                                                        onChange={event =>
+                                                            setConfig({
+                                                                ...config,
+                                                                tool_settings: {
+                                                                    ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                                    ...(config.tool_settings ?? {}),
+                                                                    web_search_connection_id: event.target.value
+                                                                }
+                                                            })
+                                                        }
+                                                    >
+                                                        {webSearchConnections.map(connection => (
+                                                            <MenuItem key={connection.id} value={connection.id}>
+                                                                {connection.name} · {connection.provider === "searxng" ? "SearXNG" : "Brave Search"}
+                                                            </MenuItem>
+                                                        ))}
+                                                    </TextField>}
+                                                    <TextField
+                                                        size="small"
+                                                        label="Allowed Web Domains"
+                                                        required
+                                                        disabled={isFieldDisabled}
+                                                        value={(config.tool_settings.web_search_allowed_domains ?? []).join(", ")}
+                                                        onChange={event =>
+                                                            setConfig({
+                                                                ...config,
+                                                                tool_settings: {
+                                                                    ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                                    ...(config.tool_settings ?? {}),
+                                                                    web_search_allowed_domains: event.target.value
+                                                                        .split(/[,\n]/)
+                                                                        .map(value => value.trim())
+                                                                        .filter(Boolean)
+                                                                }
+                                                            })
+                                                        }
+                                                        helperText="Required. Enter domain names only, separated by commas; for example docs.datadoghq.com, learn.microsoft.com. Subdomains are included."
+                                                    />
+                                                    <Stack direction={{ xs: "column", md: "row" }} spacing={1}>
+                                                        <TextField
+                                                            size="small"
+                                                            type="number"
+                                                            fullWidth
+                                                            label="Maximum Results"
+                                                            disabled={isFieldDisabled}
+                                                            value={config.tool_settings.web_search_max_results ?? 5}
+                                                            inputProps={{ min: 1, max: 10 }}
+                                                            onChange={event =>
+                                                                setConfig({
+                                                                    ...config,
+                                                                    tool_settings: {
+                                                                        ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                                        ...(config.tool_settings ?? {}),
+                                                                        web_search_max_results: Number(event.target.value)
+                                                                    }
+                                                                })
+                                                            }
+                                                        />
+                                                        <TextField
+                                                            size="small"
+                                                            type="number"
+                                                            fullWidth
+                                                            label="Search Timeout (seconds)"
+                                                            disabled={isFieldDisabled}
+                                                            value={config.tool_settings.web_search_timeout_seconds ?? 15}
+                                                            inputProps={{ min: 1, max: 30 }}
+                                                            onChange={event =>
+                                                                setConfig({
+                                                                    ...config,
+                                                                    tool_settings: {
+                                                                        ...DEFAULT_AGENT_TOOL_SETTINGS,
+                                                                        ...(config.tool_settings ?? {}),
+                                                                        web_search_timeout_seconds: Number(event.target.value)
+                                                                    }
+                                                                })
+                                                            }
+                                                        />
+                                                    </Stack>
+                                                    <Typography variant="caption" color="text.secondary">
+                                                        Search snippets are treated as untrusted external evidence. Agents must cite the URL and search date.
+                                                    </Typography>
+                                                </Stack>
+                                            )}
                                             {config.tool_settings?.subagents && (
                                                 <Stack spacing={1}>
                                                     <TextField
@@ -2636,6 +2790,9 @@ export function AgentDialog({
                     </Button>
                 ) : (
                     <Button onClick={onClose} disabled={isSaving || creatingDraft}>Close</Button>
+                )}
+                {isViewMode && onEdit && (
+                    <Button variant="contained" onClick={onEdit}>Edit</Button>
                 )}
                 {/* Native bindings persist directly; Agent Info and MCP policy remain part of the Agent config. */}
                 {isDraft && !isViewMode ? (

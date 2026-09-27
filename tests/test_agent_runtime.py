@@ -7,6 +7,7 @@ from openai.types.chat import ChatCompletion
 from agent_runtime.adapters.mcp import load_mcp_servers
 from agent_runtime.adapters.rag import register_rag_tool
 from agent_runtime.adapters.subagent import SubagentSpec, register_subagent_tools
+from agent_runtime.charting import register_chart_tool
 from agent_runtime.factory import _effective_mcp_allowed_tools
 from agent_runtime.runtime import AgentRuntime, AgentRuntimeConfig
 from agent_runtime.tools import ToolRegistry, ToolRuntimeContext, ToolSpec
@@ -161,6 +162,95 @@ async def test_explicit_mcp_request_requires_mcp_tool_on_first_iteration():
     assert first_tool_names == {"mcp_datadog_search_datadog_monitors"}
     assert model.await_args_list[1].args[2] is None
     mcp_handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_explicit_chart_request_requires_chart_after_mcp_result():
+    registry = ToolRegistry(
+        ToolRuntimeContext(agent_id="agent-1", auth_claims={"oid": "user-1"})
+    )
+    registry.register(
+        ToolSpec(
+            name="mcp_datadog_aggregate_events",
+            description="Aggregate Datadog events",
+            input_schema={"type": "object", "properties": {}},
+            handler=AsyncMock(
+                return_value={
+                    "rows": [
+                        {"month": "2026-08", "error": 10, "warn": 2},
+                        {"month": "2026-09", "error": 4, "warn": 1},
+                    ]
+                }
+            ),
+            source="mcp:server-1:Datadog",
+        )
+    )
+    register_chart_tool(
+        registry,
+        {
+            "chart_selection_mode": "auto",
+            "allowed_chart_types": ["bar", "line"],
+        },
+    )
+    model = AsyncMock(
+        side_effect=[
+            completion(
+                tool_calls=[
+                    {
+                        "id": "call-datadog",
+                        "type": "function",
+                        "function": {
+                            "name": "mcp_datadog_aggregate_events",
+                            "arguments": "{}",
+                        },
+                    }
+                ]
+            ),
+            completion(
+                tool_calls=[
+                    {
+                        "id": "call-chart",
+                        "type": "function",
+                        "function": {
+                            "name": "create_chart",
+                            "arguments": json.dumps(
+                                {
+                                    "type": "bar",
+                                    "source_tool": "mcp_datadog_aggregate_events",
+                                    "category_field": "month",
+                                    "series_fields": [
+                                        {"field": "error", "name": "Error"},
+                                        {"field": "warn", "name": "Warning"},
+                                    ],
+                                }
+                            ),
+                        },
+                    }
+                ]
+            ),
+            completion(content="Rendered the Datadog severity chart."),
+        ]
+    )
+
+    result = await AgentRuntime(
+        model,
+        registry,
+        AgentRuntimeConfig(
+            mcp_execution_mode="required",
+            chart_trigger_keywords=("กราฟ",),
+        ),
+    ).run([{"role": "user", "content": "ช่วยทำกราฟ Datadog แยกตาม severity"}])
+
+    assert model.await_args_list[0].args[2] == "required"
+    assert {
+        item["function"]["name"] for item in model.await_args_list[1].args[1]
+    } == {"create_chart"}
+    assert model.await_args_list[1].args[2] == "required"
+    assert result["artifacts"]["chart"]["chartType"] == "bar"
+    assert result["artifacts"]["chart"]["option"]["xAxis"]["data"] == [
+        "2026-08",
+        "2026-09",
+    ]
 
 
 def test_mcp_vendor_name_triggers_automatic_mcp_selection():

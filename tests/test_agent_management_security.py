@@ -74,6 +74,49 @@ async def test_create_agent_rejects_cross_team_mcp_connection(client, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_create_agent_rejects_cross_team_web_search_connection(client, monkeypatch):
+    monkeypatch.setattr(
+        backend_app,
+        "_require_team_access",
+        lambda *args, **kwargs: (
+            {"_id": "user-1"},
+            {"_id": "team-1", "agent_id": []},
+        ),
+    )
+    monkeypatch.setattr(backend_app, "_validate_agent_model_config", lambda value: value)
+    monkeypatch.setattr(
+        backend_app,
+        "get_web_search_connection",
+        lambda _connection_id: {
+            "_id": "search-2",
+            "team_id": "team-2",
+            "enabled": True,
+        },
+    )
+
+    response = await client.post(
+        "/create_agent",
+        json={
+            "team_id": "team-1",
+            "agent_name": "Unsafe Search Agent",
+            "config": {
+                "tool_settings": {
+                    "mcp_server_ids": [],
+                    "web_search": True,
+                    "web_search_connection_id": "search-2",
+                }
+            },
+            "prompt": {},
+        },
+    )
+
+    assert response.status_code == 403
+    assert (await response.get_json())["error"] == (
+        "Web Search connection is not assigned to the Agent's team"
+    )
+
+
+@pytest.mark.asyncio
 async def test_edit_agent_rejects_agent_from_another_team(client, monkeypatch):
     monkeypatch.setattr(
         backend_app,

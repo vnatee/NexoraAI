@@ -28,7 +28,8 @@ const KIND_LABELS: Record<IntegrationKind, string> = {
     mail: "Mail",
     messaging: "Messaging",
     mcp: "MCP",
-    business_documents: "Business documents"
+    business_documents: "Business documents",
+    web_search: "Web Search"
 };
 
 const statusColor = (status: SystemHealthStatus | "degraded") => {

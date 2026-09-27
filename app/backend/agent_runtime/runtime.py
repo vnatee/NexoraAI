@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal, TypedDict
@@ -38,6 +39,26 @@ If a returned count conflicts with a count stated by the user, retry with a broa
     knowledge_search_mode: Literal["auto", "always", "disabled"] = "auto"
     knowledge_search_query: str | None = None
     mcp_execution_mode: Literal["auto", "required"] = "auto"
+    chart_trigger_keywords: tuple[str, ...] = ()
+
+
+def _query_requests_chart(query: str, trigger_keywords: tuple[str, ...]) -> bool:
+    normalized_query = str(query or "").casefold()
+    keywords = {
+        "chart",
+        "graph",
+        "plot",
+        "visualize",
+        "visualise",
+        "กราฟ",
+        "แผนภูมิ",
+        *(str(item).strip().casefold() for item in trigger_keywords),
+    }
+    return any(keyword and keyword in normalized_query for keyword in keywords)
+
+
+def _query_contains_numeric_data(query: str) -> bool:
+    return bool(re.search(r"(?<!\w)[+-]?(?:\d+(?:[,.]\d+)*|\.\d+)(?!\w)", query))
 
 
 def _to_openai_message(message: BaseMessage) -> dict[str, Any]:
@@ -109,15 +130,37 @@ class AgentRuntime:
                     or self.tools.query_mentions_source("mcp", latest_user_query)
                 )
             )
+            chart_requested = self.tools.has("create_chart") and _query_requests_chart(
+                latest_user_query, self.config.chart_trigger_keywords
+            )
+            chart_attempted = any(
+                event.get("name") == "create_chart"
+                for event in self.tools.execution_log
+            )
+            successful_source_result = any(
+                event.get("name") != "create_chart" and not event.get("is_error")
+                for event in self.tools.execution_log
+            )
+            require_chart = (
+                not require_mcp
+                and chart_requested
+                and not chart_attempted
+                and (
+                    successful_source_result
+                    or (first_iteration and _query_contains_numeric_data(latest_user_query))
+                )
+            )
             available_tools = (
                 self.tools.openai_tools(source_prefix="mcp")
                 if require_mcp
+                else self.tools.openai_tools(source_prefix="chart")
+                if require_chart
                 else self.tools.openai_tools()
             )
             completion: ChatCompletion = await self.completion_factory(
                 [_to_openai_message(message) for message in state["messages"]],
                 available_tools,
-                "required" if require_mcp else None,
+                "required" if require_mcp or require_chart else None,
             )
             response = completion.choices[0].message
             usage = (
@@ -145,7 +188,13 @@ class AgentRuntime:
                     details={
                         "iteration": state.get("iterations", 0) + 1,
                         "tool_calls": [call["name"] for call in calls],
-                        "tool_choice": "required" if require_mcp else "auto",
+                        "tool_choice": (
+                            "required_mcp"
+                            if require_mcp
+                            else "required_chart"
+                            if require_chart
+                            else "auto"
+                        ),
                         "usage": usage,
                         "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                     },

@@ -30,7 +30,21 @@ export function AssignIntegrationTeamButton({ integrationId, integrationType, on
         getToken(client)
             .then(token => (token ? get_teams(token) : []))
             .then(result => {
-                if (active) setTeams(Array.isArray(result) ? result : []);
+                if (!active) return;
+                const teamList = Array.isArray(result)
+                    ? result
+                    : Array.isArray(result?.result)
+                      ? result.result
+                      : [];
+                setTeams(
+                    teamList
+                        .map((team: Partial<TeamProfile>) => ({
+                            _id: String(team._id ?? ""),
+                            name: String(team.name ?? ""),
+                            permissions: Array.isArray(team.permissions) ? team.permissions : []
+                        }))
+                        .filter((team: TeamProfile) => team._id && team.name)
+                );
             })
             .catch(error => showNotification(error instanceof Error ? error.message : "Unable to load teams", "error"))
             .finally(() => active && setLoading(false));

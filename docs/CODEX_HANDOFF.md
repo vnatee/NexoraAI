@@ -1,6 +1,6 @@
 # Codex handoff — NexoraAI
 
-Last updated: 2026-09-15 UTC
+Last updated: 2026-09-26 UTC
 
 This document replaces a raw chat transcript as the engineering handoff. It
 captures the decisions and evidence needed to continue without storing copied
@@ -9,15 +9,14 @@ logs, credentials, attachments, or repetitive conversational text.
 ## Repository state
 
 - Workspace: `/workspaces/NexoraAI`
-- Branch: `feature/mcp-catalog-navigation`
-- Base checkpoint: `09eef3e feat: add private chat document workflows`.
-- Implementation checkpoint: `eff68fb feat: recover interrupted document
-  processing`. It adds private Chat document extraction recovery and managed OCR
-  routing, plus graceful restart recovery for persistent Knowledge ingestion
-  jobs.
+- Branch: `main`
+- Current product-history root: `436fd69 feat: initialize NexoraAI enterprise
+  AI workspace`. Earlier upstream commit history was intentionally replaced when
+  the repository was established as the NexoraAI product; consult this handoff
+  and the current source rather than historical upstream checkpoints.
 - Azure baseline: `8ee1e8a` / `origin/Release-2.2.0`
-- Latest pushed candidate checkpoint: `698de34 feat: expand agent catalog and
-  enterprise authentication` on `feature/mcp-catalog-navigation`.
+- Latest local checkpoint: `436fd69 feat: initialize NexoraAI enterprise AI
+  workspace` on `main`.
 - This checkpoint includes private Chat/Ask document upload, native extraction,
   temporary retrieval, prompt-intent evidence scope, ACL-checked citations,
   per-Agent image/document policy, request-local Vision routing, local/Azure
@@ -73,6 +72,47 @@ Decisions already made with the product owner:
 ## Implemented work
 
 ### Agent Catalog — Phase 1
+
+- A System-owned **HR Employee Services Advisor** is published for all Teams as
+  Catalog version 1. It uses the deployment-selected tested tool-capable model,
+  LangGraph, and mandatory authorized Knowledge search; external databases,
+  APIs, mail, documents, messaging, MCP, charts, and sub-agents remain disabled.
+  Its policy contract requires current citations, conditional eligibility,
+  conflict escalation, minimal necessary facts, and refusal of confidential
+  employee data or employment decisions. A fictional three-document HR RAG
+  package plus a separate presenter guide and six demonstration prompts is in
+  `docs/demo/hr`. Focused HR/Datadog/catalog/Chart/MCP validation passes (`67
+  passed`), the complete service-free backend regression passes (`972 passed,
+  1 deselected`), the rebuilt application is healthy, and the running Catalog
+  record was verified as published with all-Team visibility and managed GPT-4.1.
+
+- A credential-free, System-owned **Datadog Operations Analyst** template is
+  available for idempotent Catalog seeding through
+  `python -m core.catalog_seed --apply` inside the application container (or
+  `scripts/seed_catalog_templates.py --apply` from a checkout). It is published
+  for all Teams but intentionally contains no tenant connection IDs or tool
+  allowlists; each installed Team copy must bind that Team's authorized
+  Datadog MCP connection and operational Knowledge Data Groups. The Agent uses
+  LangGraph, requires MCP execution, always searches authorized Knowledge, and
+  produces evidence timelines, ranked hypotheses, KM/runbook citations, gaps,
+  and approval-ready actions. It is investigation-only: monitoring or
+  infrastructure write operations remain outside this template. Focused
+  template/catalog/MCP/Chart validation passes (`65 passed`), and the seeded local
+  Catalog record was verified as published with all-Team visibility. The full
+  service-free backend regression passes (`970 passed, 1 deselected`), Ruff and
+  Python compilation pass, and the rebuilt local Compose application and
+  integration controller are healthy. The in-image seed command is idempotent
+  and selects a tested tool-capable managed profile when one is configured,
+  preferring Azure OpenAI over OpenAI and OpenAI-compatible providers. This
+  avoids installing a tool-heavy template on the System local model when the
+  container lacks enough memory. The running Catalog was upgraded to version 2
+  with the tested Azure GPT-4.1 profile; the existing NOC installation was
+  migrated from the memory-constrained System profile and bound to its
+  Team-owned Datadog connection with metadata-only lifecycle audit records.
+  Catalog version 3 additionally declares the portable Chart capability. New
+  installations create a validated Agent-local Chart binding automatically;
+  the NOC installation was also enabled in auto mode for line, area, bar,
+  gauge, scatter, and heatmap charts sourced from exact successful tool output.
 
 - The internal Agent Catalog stores versioned Agent template snapshots rather
   than sharing a mutable Agent instance between Teams.
@@ -138,6 +178,50 @@ Decisions already made with the product owner:
   Agent Catalog tests pass (`15 passed`), the complete service-free suite passes
   (`928 passed, 1 deselected`), the frontend production build passes, and the
   rebuilt local Compose application is healthy.
+
+### Approved Web Sources — Phase 1
+
+- The former demo web scraper is now a bounded administrator-approved Knowledge
+  ingestion path rather than unrestricted Agent internet access. Backend
+  authorization enforces **Manage global uploads** or Team membership plus
+  **Manage team uploads**, and Team Data Groups must belong to that Team.
+- Public HTTP(S) URL validation blocks credentials, root query strings, custom
+  ports, and private/loopback/link-local/reserved destinations. Every page and
+  redirect is revalidated; crawling remains on the approved hostname/path,
+  honors `robots.txt`, accepts HTML only, includes the root page, and enforces
+  page/depth/byte/time limits. Production egress controls remain required to
+  close DNS-rebinding and proxy-bypass risk.
+- Approved Web Sources now uses a server-enforced **Scan & Verify** workflow.
+  A scan writes extracted evidence to temporary object storage and stores only
+  its review manifest in MongoDB; it does not enter RAG. The reviewer sees page
+  URLs, titles, sizes, skipped-page issues, and partial-snapshot status. All
+  pages start selected; the reviewer can clear individual URLs or toggle all,
+  then explicitly selects **Confirm Index** or **Discard Scan**. SHA-256 remains
+  an internal integrity control rather than Portal detail.
+  Confirmation rechecks management authorization and Team Data Group ownership,
+  verifies the exact staged bytes by hash, indexes the replacement first, and
+  removes stale pages only after success. Missing or modified staging content is
+  rejected. Unconfirmed scans expire after 24 hours by default and a cleanup
+  worker removes their temporary objects and manifests.
+- **Confirm Index** now returns HTTP 202 immediately and queues a MongoDB-backed
+  background job. The Portal can be closed and later reopened to view per-page
+  progress, attempt count, and sanitized per-URL errors. Retry resumes failed
+  pages without repeating successful pages. A five-minute worker lease,
+  30-second heartbeat, graceful shutdown release, and a recovery loop (15
+  seconds by default) resume queued or interrupted jobs after an application
+  restart. The worker remains application-hosted rather than a separate service.
+- Standard scans retain the normal bounded limits. An explicit Extended profile
+  raises the default ceiling to 250 pages / 100 MiB but remains hard-bounded;
+  depth remains independently selectable from 0 to 2. Phase 2 governed live
+  search and Phase 3 authenticated/browser-rendered sources remain separate
+  roadmap items. See `docs/approved-web-sources.md` and
+  `docs/product-backlog.md`. Focused crawler and route regressions pass
+  (`44 passed`), the frontend production build and TypeScript check pass, Docker Compose
+  configuration validates, and the rebuilt app and integration controller are
+  healthy. The service-free regression excluding the environment-dependent
+  app-config module and workspace PDF-fixture test passes
+  (`1017 passed, 1 deselected`).
+
 
 ### Runtime and LLM providers
 
@@ -217,6 +301,12 @@ See `docs/embedding-profiles.md`.
   Disabled behavior.
 - REST, external database, MCP, chart, mail, messaging, and sub-agent adapters.
 - MCP invocation Auto/Required behavior.
+- Explicit chart requests are now enforced at runtime after a successful source
+  tool result: the next model step receives only `create_chart` with required
+  tool choice. This prevents a tool-capable model from returning a numeric
+  Datadog summary without the chart artifact requested by the user. Configured
+  chart trigger keywords plus English and Thai chart terms are recognized; the
+  runtime still permits one normal recovery step if chart validation fails.
 - Same-team sub-agent delegation, recursion/cycle protection, and bounded depth.
 - Server-enforced tool execution policy: total/per-tool calls, size, timeout,
   blocked tool/source prefixes, and structured policy-denied results.
@@ -1503,6 +1593,31 @@ explicit audit-mode comparison slice. See `docs/licensing.md`.
 - Prefer exact current UI labels and text-based procedures. Screenshots are
   optional release assets and must be refreshed when labels/layout change; they
   are not the primary source of truth.
+
+### Governed Live Web Search — Phase 2.1
+
+- LangGraph Agents can opt into a read-only `search_web` tool backed by a
+  provider-neutral adapter. Brave Search API and SearXNG are supported.
+- Web Search is now a native Integration with encrypted credentials, secret-free
+  API projections, CRUD, live Test, System-to-Team assignment, Team-scoped Agent
+  selection, unified Integration inventory, and System Health visibility.
+  Environment configuration remains a backward-compatible fallback only for
+  legacy Agents without a managed connection ID.
+- Save-time and runtime checks both reject disabled, missing, unassigned, or
+  cross-Team connection IDs. Agent Catalog snapshots strip the selected
+  connection ID while retaining the declared Web Search dependency.
+- Every enabled Agent must have a non-empty domain allowlist. Returned URLs are
+  normalized, post-filtered to exact domains or their subdomains, deduplicated,
+  stripped of fragments, and bounded to 1–10 results and a 1–30 second timeout.
+- Search results contain current external titles, URLs, snippets, optional
+  publication dates, and the UTC search timestamp. They are treated as
+  untrusted tool output, pass through the existing guardrail/tool-policy path,
+  require URL/date citations, and are not persisted to Knowledge.
+- Focused Web Search, catalog, Agent security/runtime, and health validation
+  passes (`94 passed`); the production frontend build passes. The service-free
+  backend suite passes `1030` tests with one unrelated workspace PDF fixture
+  failure in `test_sentencetextsplitter_list_parse_and_split`. A live provider
+  smoke test still requires a deployment-owned Brave key or SearXNG endpoint.
 
 ## Other next work
 

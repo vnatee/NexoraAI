@@ -7,7 +7,6 @@ from typing import Any
 
 from mongo_table_connecters.mongo_connector import get_database
 
-
 db = get_database()
 items_collection = db["agent_catalog_items"]
 versions_collection = db["agent_catalog_versions"]
@@ -39,6 +38,7 @@ def sanitized_agent_snapshot(agent: dict[str, Any]) -> dict[str, Any]:
         config["tool_settings"] = tool_settings
     tool_settings["mcp_server_ids"] = []
     tool_settings["mcp_tool_allowlists"] = {}
+    tool_settings["web_search_connection_id"] = ""
     tool_settings["subagent_ids"] = []
     return {
         "agent_name": str(agent.get("agent_name") or "").strip(),
@@ -63,6 +63,8 @@ def snapshot_requirements(snapshot: dict[str, Any]) -> dict[str, Any]:
                 "business_documents",
                 "messaging",
                 "mcp",
+                "chart",
+                "web_search",
                 "subagents",
             )
             if tools.get(key) is True

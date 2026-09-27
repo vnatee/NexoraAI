@@ -10,6 +10,7 @@ _COLLECTIONS = {
     "messaging": "messaging_connections",
     "mcp": "mcp_servers",
     "business_documents": "business_document_connections",
+    "web_search": "web_search_connections",
 }
 
 _BINDINGS = {
@@ -19,6 +20,7 @@ _BINDINGS = {
     "messaging": ("messaging_bindings", "connection_id"),
     "mcp": ("agents", "config.tool_settings.mcp_server_ids"),
     "business_documents": ("business_document_bindings", "connection_id"),
+    "web_search": ("agents", "config.tool_settings.web_search_connection_id"),
 }
 
 _CONNECTION_METADATA = {
@@ -52,6 +54,11 @@ _CONNECTION_METADATA = {
         "provider_field": "provider",
         "default_provider": "documents",
     },
+    "web_search": {
+        "connection_type": "native",
+        "provider_field": "provider",
+        "default_provider": "web_search",
+    },
 }
 
 
@@ -67,7 +74,7 @@ def _team_query(team_id: str) -> object:
 def _agent_usage_count(database: Any, kind: str, connection_id: str) -> int:
     binding_collection, integration_field = _BINDINGS[kind]
     query = {integration_field: connection_id, "delete_at": None}
-    if kind == "mcp":
+    if kind in {"mcp", "web_search"}:
         return int(database[binding_collection].count_documents(query))
     return len(database[binding_collection].distinct("agent_id", query))
 
@@ -83,6 +90,8 @@ def _connection_detail(kind: str, document: dict[str, Any]) -> str:
         return " / ".join(value for value in (host, database) if value)
     if kind == "mail":
         return str(document.get("email_address") or "")
+    if kind == "web_search":
+        return str(document.get("base_url") or "Managed API")
     public_config = document.get("public_config") or {}
     if not isinstance(public_config, dict):
         return ""
@@ -154,7 +163,7 @@ def list_agent_integration_bindings(
     database = get_database()
     bindings: list[dict[str, Any]] = []
     for kind, (collection_name, integration_field) in _BINDINGS.items():
-        if kind == "mcp":
+        if kind in {"mcp", "web_search"}:
             continue
         for document in database[collection_name].find(
             {"agent_id": agent_id, "delete_at": None}
@@ -190,6 +199,18 @@ def list_agent_integration_bindings(
                     "source": "legacy_agent_config",
                 }
             )
+    web_search_connection_id = str(tool_settings.get("web_search_connection_id") or "").strip()
+    if web_search_connection_id:
+        bindings.append(
+            {
+                "id": f"agent-config-web-search:{agent_id}:{web_search_connection_id}",
+                "agent_id": agent_id,
+                "connection_id": web_search_connection_id,
+                "kind": "web_search",
+                "enabled": tool_settings.get("web_search") is True,
+                "source": "agent_config",
+            }
+        )
     return bindings
 
 

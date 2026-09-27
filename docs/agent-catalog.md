@@ -64,6 +64,52 @@ publication actions are available from the card detail or overflow menu.
 
 ## Operational notes
 
+### Built-in template seeding
+
+Deployments may seed all maintained built-in templates with:
+
+```bash
+docker compose --env-file .env.local-runtime \
+  -f docker-compose.local-runtime.yml \
+  exec app python -m core.catalog_seed --apply
+```
+
+For a source checkout using the project virtual environment, the equivalent
+command is `.venv/bin/python scripts/seed_catalog_templates.py --apply`.
+
+The command is idempotent. It creates version 1 when absent, creates a new
+version only when the maintained template changes, and otherwise reports
+`already-current`. Run it in the application environment so it uses the same
+MongoDB configuration and encryption boundary as NexoraAI.
+
+### Datadog Operations Analyst template
+
+After installation, a Team administrator must bind the Team's own Datadog MCP
+connection and assign the operational Knowledge Data Groups that contain its
+approved runbooks, incident reviews, architecture, known errors, and change
+procedures. No Datadog connection ID, tenant credential, or tool allowlist is
+stored in the Catalog snapshot. Installation automatically creates a validated
+Chart binding in auto mode for line, area, bar, gauge, scatter, and heatmap
+visualizations. Charts must use exact numeric data from the successful Datadog
+tool result; the Agent may not estimate missing points. The template is
+read-only and prepares approval-ready remediation; it does not silence monitors
+or change workloads.
+
+### HR Employee Services Advisor template
+
+The built-in HR template is a Knowledge-only, privacy-preserving employee
+services advisor. It explains policies, eligibility conditions, approval paths,
+deadlines, required documents, and service targets with source citations. It
+does not access HR systems of record, disclose another employee's information,
+submit requests, approve entitlements, or make employment decisions.
+
+The fictional RAG demonstration package is under `docs/demo/hr`. Upload only
+the three files under `docs/demo/hr/rag` to a restricted HR demo Data Group;
+do not upload `HR_Demo_Guide.md`, because it contains presenter prompts rather
+than policy evidence. The guide includes a six-step demonstration covering
+annual leave, learning allowance, overseas hybrid work, employment letters,
+privacy refusal, and missing evidence.
+
 The application creates indexes for catalog items, versions, installations,
 and audit events during normal startup. Catalog collections use the configured
 MongoDB/Cosmos-compatible database and therefore require the same backup,
