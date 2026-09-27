@@ -2,7 +2,7 @@
 
 **Language:** English  
 **Audience:** End users, business users, analysts, and team members  
-**Last verified:** 2026-09-08  
+**Last verified:** 2026-09-27
 **Applies to:** The current NexoraAI web application on the local/container or Azure runtime
 
 This is the stable User Manual for NexoraAI. Update this file in place when a
@@ -183,6 +183,20 @@ An answer may show tool-source labels such as Azure MCP, Database, REST, or
 Knowledge. These labels identify where structured information came from; they
 do not by themselves prove that every relationship in a generated diagram is
 explicitly present in the source.
+
+### Live Web Search
+
+Some Agents can search current public information within domains approved by
+an administrator. Ask for the relevant external source and request citations,
+for example:
+
+> Search current Datadog documentation for monitor recovery thresholds.
+> Cite the URLs and state the search date.
+
+Web results are external, untrusted snippets—not enterprise Knowledge. Verify
+important statements by opening the cited URL. The Agent should say when no
+allowed result was found and must not send secrets, personal data, or
+confidential company content in a web query.
 
 ### Tables and wide content
 

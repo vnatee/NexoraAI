@@ -259,6 +259,15 @@ export const QuestionInput = ({
     };
 
     const handlePaste = (event: React.ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+        // Rich clipboard payloads from Word and some browsers may include both
+        // text and an image representation. Preserve the browser's normal text
+        // paste in that case; image attachment handling is only for image-only
+        // clipboard content.
+        const clipboardTypes = Array.from(event.clipboardData.types);
+        if (clipboardTypes.includes("text/plain") || clipboardTypes.includes("text/html")) {
+            return;
+        }
+
         const imageFiles = Array.from(event.clipboardData.items)
             .filter(item => item.kind === "file" && item.type.startsWith("image/"))
             .map(item => item.getAsFile())

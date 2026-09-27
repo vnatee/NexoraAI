@@ -662,57 +662,153 @@ export async function retryIngestionJobApi(jobId: string, idToken: string): Prom
     return payload.job;
 }
 
-export type ScrapingAPIResponse = {
-    message?: string;
-    [key: string]: any; // รองรับ fields อื่นๆ จาก backend
-};
-
 export type ErrorResponse = {
     error?: string;
     status?: string;
     message?: string;
 };
 
-export async function scrapingApi(url: string, idToken: string, team_id?: string | null, data_groups_id?: string[]): Promise<SimpleAPIResponse> {
-    const headers = await getHeaders(idToken);
-    // ✨ เตรียม body แบบ dynamic
-    const body: any = { url };
-    if (team_id) {
-        body.team_id = team_id; // เพิ่ม team_id เฉพาะถ้ามีค่า
-        if (data_groups_id && data_groups_id.length > 0) {
-            body.data_groups_id = data_groups_id; // เพิ่ม data_group_id เฉพาะถ้ามีค่า
-        }
-    }
+export type WebSourcePageError = {
+    code: string;
+    message: string;
+};
 
-    const response = await fetch("/scrape", {
+export type WebSourceScanPage = {
+    url: string;
+    title: string;
+    size: number;
+    status: "pending" | "queued" | "indexing" | "indexed" | "failed" | "skipped";
+    attempt: number;
+    error?: WebSourcePageError | null;
+};
+
+export type WebSourceScanIssue = {
+    url: string;
+    reason: string;
+};
+
+export type WebSourceScan = {
+    scan_id: string;
+    status: string;
+    source_url: string;
+    crawl_depth: 0 | 1 | 2;
+    limit_profile: "standard" | "extended";
+    expires_at: string | null;
+    created_at: string | null;
+    started_at: string | null;
+    completed_at: string | null;
+    attempt: number;
+    last_error: string;
+    pages_found: number;
+    pages_selected: number;
+    pages_completed: number;
+    pages_indexed: number;
+    pages_failed: number;
+    pages_active: number;
+    progress_percent: number;
+    bytes_found: number;
+    pages_skipped: number;
+    truncated: boolean;
+    limit_reason: string | null;
+    issues: WebSourceScanIssue[];
+    pages: WebSourceScanPage[];
+};
+
+export async function scanWebSourceApi(
+    url: string,
+    idToken: string,
+    team_id?: string | null,
+    data_groups_id?: string[],
+    crawl_depth: 0 | 1 | 2 = 1,
+    limit_profile: "standard" | "extended" = "standard"
+): Promise<WebSourceScan> {
+    const headers = await getHeaders(idToken);
+    const body: Record<string, unknown> = { url, crawl_depth, limit_profile };
+    if (team_id) {
+        body.team_id = team_id;
+        body.data_groups_id = data_groups_id ?? [];
+    }
+    const response = await fetch("/web-source-scans", {
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json" },
         body: JSON.stringify(body)
     });
-
     if (!response.ok) {
-        // พยายาม parse error response จาก backend
-        try {
-            const errorData: ErrorResponse = await response.json();
-
-            // ใช้ error message จาก backend ถ้ามี
-            let errorMessage = `Scraping data failed: ${response.statusText}`;
-
-            if (errorData.error) {
-                errorMessage = errorData.error;
-            } else if (errorData.message) {
-                errorMessage = errorData.message;
-            }
-
-            throw new Error(errorMessage);
-        } catch (parseError) {
-            // ถ้า parse JSON ไม่ได้ (response ไม่ใช่ JSON)
-            throw new Error(`Scraping data failed: ${response.statusText}`);
-        }
+        const errorData: ErrorResponse = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || errorData.message || `Scanning web source failed: ${response.statusText}`);
     }
+    return response.json();
+}
 
-    const dataResponse: ScrapingAPIResponse = await response.json();
-    return dataResponse;
+export type WebSourceIndexResponse = WebSourceScan & SimpleAPIResponse;
+
+export async function confirmWebSourceScanApi(
+    scanId: string,
+    selectedUrls: string[],
+    idToken: string
+): Promise<WebSourceIndexResponse> {
+    const response = await fetch(`/web-source-scans/${encodeURIComponent(scanId)}/confirm`, {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ selected_urls: selectedUrls })
+    });
+    if (!response.ok) {
+        const errorData: ErrorResponse = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || errorData.message || `Indexing web source failed: ${response.statusText}`);
+    }
+    return response.json();
+}
+
+export async function listWebSourceScansApi(
+    idToken: string,
+    teamId?: string | null,
+    limit = 10
+): Promise<WebSourceScan[]> {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (teamId) query.set("team_id", teamId);
+    const response = await fetch(`/web-source-scans?${query}`, {
+        headers: await getHeaders(idToken)
+    });
+    if (!response.ok) {
+        const errorData: ErrorResponse = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || errorData.message || `Loading web source jobs failed: ${response.statusText}`);
+    }
+    const payload = await response.json();
+    return payload.jobs ?? [];
+}
+
+export async function getWebSourceScanApi(scanId: string, idToken: string): Promise<WebSourceScan> {
+    const response = await fetch(`/web-source-scans/${encodeURIComponent(scanId)}`, {
+        headers: await getHeaders(idToken)
+    });
+    if (!response.ok) {
+        const errorData: ErrorResponse = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || errorData.message || `Loading web source job failed: ${response.statusText}`);
+    }
+    return response.json();
+}
+
+export async function retryWebSourceScanApi(scanId: string, idToken: string): Promise<WebSourceScan> {
+    const response = await fetch(`/web-source-scans/${encodeURIComponent(scanId)}/retry`, {
+        method: "POST",
+        headers: await getHeaders(idToken)
+    });
+    if (!response.ok) {
+        const errorData: ErrorResponse = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || errorData.message || `Retrying web source job failed: ${response.statusText}`);
+    }
+    return response.json();
+}
+
+export async function cancelWebSourceScanApi(scanId: string, idToken: string): Promise<void> {
+    const response = await fetch(`/web-source-scans/${encodeURIComponent(scanId)}`, {
+        method: "DELETE",
+        headers: await getHeaders(idToken)
+    });
+    if (!response.ok && response.status !== 202) {
+        const errorData: ErrorResponse = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || errorData.message || `Cancelling web source scan failed: ${response.statusText}`);
+    }
 }
 
 export async function deleteUploadedFileApi(filename: string, idToken: string): Promise<SimpleAPIResponse> {
@@ -775,7 +871,7 @@ export async function listUploadedGlobalFilesApi(idToken: string): Promise<Array
     return dataResponse;
 }
 
-export async function listWebApi(idToken: string, team_id?: string | null): Promise<string[]> {
+export async function listWebApi(idToken: string, team_id?: string | null): Promise<Array<string | [string, string[], string | null, number, 0 | 1 | 2, boolean, string | null]>> {
     const url = team_id ? `/list_web_contents?team_id=${team_id}` : `/list_web_contents`;
     const response = await fetch(url, {
         method: "GET",
@@ -786,7 +882,7 @@ export async function listWebApi(idToken: string, team_id?: string | null): Prom
         throw new Error(`Listing webs failed: ${response.statusText}`);
     }
 
-    const dataResponse: string[] = await response.json();
+    const dataResponse: Array<string | [string, string[], string | null, number, 0 | 1 | 2, boolean, string | null]> = await response.json();
     return dataResponse;
 }
 
@@ -803,7 +899,8 @@ export async function deleteWebContentApi(url: string, idToken: string, team_id?
     });
 
     if (!response.ok) {
-        throw new Error(`Deleting web content failed: ${response.statusText}`);
+        const errorData: ErrorResponse = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || errorData.message || `Deleting web source failed: ${response.statusText}`);
     }
 
     const dataResponse: SimpleAPIResponse = await response.json();
@@ -2428,7 +2525,7 @@ export async function get_integrations_by_team(team_id: string, idToken: string)
     return dataResponse;
 }
 
-export type IntegrationCatalogType = "rest_api" | "database" | "mail" | "messaging" | "mcp" | "business_documents";
+export type IntegrationCatalogType = "rest_api" | "database" | "mail" | "messaging" | "mcp" | "business_documents" | "web_search";
 
 export async function assign_integration_team(
     integration_type: IntegrationCatalogType,
@@ -2605,6 +2702,53 @@ export async function test_mail_connection(config_id: string, idToken: string): 
     if (!response.ok) throw new Error(result.error || `test mail connection failed: ${response.statusText}`);
     return result;
 }
+
+// ─── Governed Web Search ───────────────────────────────────────────────────
+
+import { WebSearchConnection } from "./models";
+
+export async function get_web_search_connections(team_id: string, idToken: string): Promise<WebSearchConnection[]> {
+    const response = await fetch(`/web_search_connections?team_id=${encodeURIComponent(team_id)}`, {
+        headers: await getHeaders(idToken)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `get Web Search connections failed: ${response.statusText}`);
+    return result;
+}
+
+export async function save_web_search_connection(payload: Record<string, unknown>, idToken: string): Promise<SimpleAPIResponse> {
+    const response = await fetch("/save_web_search_connection", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `save Web Search connection failed: ${response.statusText}`);
+    return result;
+}
+
+export async function test_web_search_connection(connection_id: string, idToken: string): Promise<{ ok: boolean; message: string }> {
+    const response = await fetch("/test_web_search_connection", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ connection_id })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `test Web Search connection failed: ${response.statusText}`);
+    return result;
+}
+
+export async function delete_web_search_connection(connection_id: string, idToken: string): Promise<SimpleAPIResponse> {
+    const response = await fetch("/delete_web_search_connection", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ connection_id })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `delete Web Search connection failed: ${response.statusText}`);
+    return result;
+}
+
 
 // ─── Microsoft 365 Documents / Google Workspace ────────────────────────────
 

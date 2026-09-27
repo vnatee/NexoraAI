@@ -346,3 +346,56 @@ async def test_install_creates_team_local_agent_without_shared_identity(client, 
     assert response.status_code == 201
     assert (await response.get_json())["agent_id"] == "new-agent"
     assert updated == {"team_id": "team-2", "agent_id": ["existing-agent", "new-agent"]}
+
+
+@pytest.mark.asyncio
+async def test_install_creates_portable_chart_binding(client, monkeypatch):
+    chart = {}
+    monkeypatch.setattr(
+        backend_app,
+        "_require_team_access",
+        lambda *args, **kwargs: ({"_id": "manager-1"}, {"_id": "team-2", "agent_id": []}),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "get_catalog_item",
+        lambda _id: {"_id": "catalog-1", "status": "published", "visibility": "all_teams", "latest_version": 1},
+    )
+    monkeypatch.setattr(backend_app, "is_visible_to_team", lambda *_args: True)
+    monkeypatch.setattr(backend_app, "get_active_installation", lambda *_args: None)
+    monkeypatch.setattr(
+        backend_app,
+        "get_catalog_version",
+        lambda *_args: {
+            "snapshot": {
+                "agent_name": "Chart Agent",
+                "prompt": {},
+                "config": {
+                    "tool_settings": {"chart": True},
+                    "chart_settings": {
+                        "auto_generate": True,
+                        "chart_selection_mode": "auto",
+                        "allowed_chart_types": ["line", "bar"],
+                    },
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(backend_app, "_validate_agent_model_config", lambda value: value)
+    monkeypatch.setattr(backend_app, "_validate_agent_mcp_connections", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        backend_app,
+        "insert_agent",
+        lambda *args: (SimpleNamespace(inserted_id="new-agent"), "new-agent"),
+    )
+    monkeypatch.setattr(backend_app, "insert_chart_binding", lambda **kwargs: chart.update(kwargs))
+    monkeypatch.setattr(backend_app, "update_team", lambda **kwargs: None)
+    monkeypatch.setattr(backend_app, "record_installation", lambda **kwargs: kwargs)
+    monkeypatch.setattr(backend_app, "insert_catalog_audit_event", lambda *args, **kwargs: None)
+
+    response = await client.post("/agent-catalog/catalog-1/install", json={"team_id": "team-2"})
+
+    assert response.status_code == 201
+    assert chart["agent_id"] == "new-agent"
+    assert chart["auto_generate"] is True
+    assert chart["allowed_chart_types"] == ["line", "bar"]

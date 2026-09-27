@@ -7,6 +7,7 @@ from agent_runtime.adapters.mail import register_mail_tools
 from agent_runtime.adapters.messaging import register_messaging_tools
 from agent_runtime.adapters.rag import register_rag_tool
 from agent_runtime.adapters.subagent import SubagentSpec, register_subagent_tools
+from agent_runtime.adapters.web_search import register_web_search_tool
 
 __all__ = [
     "MCPServerConfig",
@@ -20,4 +21,5 @@ __all__ = [
     "register_messaging_tools",
     "register_rag_tool",
     "register_subagent_tools",
+    "register_web_search_tool",
 ]

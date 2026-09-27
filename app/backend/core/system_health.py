@@ -18,6 +18,7 @@ INTEGRATION_COLLECTIONS = {
     "messaging": "messaging_connections",
     "business_documents": "business_document_connections",
     "mcp": "mcp_servers",
+    "web_search": "web_search_connections",
 }
 
 
@@ -165,6 +166,63 @@ def _ollama_health_url(environ: Mapping[str, str]) -> str | None:
     return None
 
 
+def _web_search_service(
+    environ: Mapping[str, str], integrations: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    web_search = next(
+        (
+            item
+            for item in ((integrations or {}).get("by_kind") or [])
+            if item.get("kind") == "web_search"
+        ),
+        None,
+    )
+    if web_search and int(web_search.get("enabled") or 0) > 0:
+        count = int(web_search.get("enabled") or 0)
+        return _service(
+            "web_search",
+            "Live web search",
+            "configured",
+            f"{count} enabled managed connection(s); connectivity is verified by Test or Agent use",
+            provider="Managed Integration",
+        )
+    provider = str(environ.get("WEB_SEARCH_PROVIDER", "")).strip().lower()
+    if not provider:
+        return _service(
+            "web_search",
+            "Live web search",
+            "not_configured",
+            "Not configured",
+        )
+    if provider == "brave":
+        configured = bool(str(environ.get("WEB_SEARCH_API_KEY", "")).strip())
+        label = "Brave Search"
+    elif provider == "searxng":
+        configured = _safe_http_url(
+            str(environ.get("WEB_SEARCH_BASE_URL", "")),
+            "",
+        ) is not None
+        label = "SearXNG"
+    else:
+        return _service(
+            "web_search",
+            "Live web search",
+            "unavailable",
+            "Unsupported provider configuration",
+        )
+    return _service(
+        "web_search",
+        "Live web search",
+        "configured" if configured else "unavailable",
+        (
+            "Configured; connectivity is verified when an Agent searches"
+            if configured
+            else "Provider credentials or endpoint are missing"
+        ),
+        provider=label,
+    )
+
+
 def _resource_status(percent: float) -> str:
     if percent >= 90:
         return "critical"
@@ -305,7 +363,13 @@ async def build_system_health_snapshot(
         "Managed containers",
         controller_url,
     )
-    service_checks = [storage_check, search_check, model_service_check, controller_check]
+    service_checks = [
+        storage_check,
+        search_check,
+        model_service_check,
+        controller_check,
+        _static_service(_web_search_service(settings, integrations)),
+    ]
     gateway_url = _safe_http_url(str(settings.get("NEXORA_TLS_GATEWAY_HEALTH_URL", "")), "/gateway-healthz")
     if gateway_url:
         service_checks.append(

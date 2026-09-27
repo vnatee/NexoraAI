@@ -147,6 +147,42 @@ backend-enforced workflow contract. This synchronous first slice reads at most
 evaluation, server-validated row JSON, and CSV/Excel export remain future
 phases.
 
+## Approved roadmap — governed web knowledge
+
+Phase 1 is implemented as **Approved Web Sources**: permission-enforced
+Company/Team ingestion, Team Data Group validation, same-host/path bounded HTML
+crawling, public-address and redirect checks, `robots.txt`, Standard/Extended
+resource profiles, and administrator-selectable depth 0–2. The delivered
+Scan & Verify workflow stages extracted evidence, exposes a review manifest,
+keeps it out of RAG until explicit confirmation, verifies exact bytes by hash,
+and automatically expires unconfirmed scans. Confirmed refreshes retain page
+URL/time/hash evidence metadata. See `docs/approved-web-sources.md`.
+
+Next delivery order:
+
+1. **Phase 2.1 — governed live web search (implemented):** provider-neutral
+   Brave Search and SearXNG adapters, encrypted Integration CRUD, connectivity
+   testing, System-to-Team assignment, Team-owned Agent selection, per-Agent
+   opt-in and allowed-domain policy, result/time limits, external-evidence
+   citations, existing guardrail/tool-policy enforcement, and metadata-only
+   audit. This slice returns
+   search snippets only and never persists them into Knowledge. See
+   `docs/governed-web-search.md`.
+2. **Phase 2.2 — controlled page retrieval:** fetch explicitly selected search
+   results through the existing SSRF, redirect, DNS/IP, content-type, byte, and
+   timeout protections; add short-lived cache and provenance/freshness metadata.
+3. **Phase 2.3 — reviewed promotion to Knowledge:** allow an authorized user to
+   review selected external evidence and explicitly promote it to a permitted
+   Personal, Team, or Global Knowledge scope.
+4. **Phase 3 — authenticated/browser sources:** isolated browser worker,
+   encrypted connector credentials, host/redirect allowlists, egress policy,
+   MFA/session-expiry behavior, bounded downloads, and complete audit.
+5. Extend the implemented durable indexing jobs with manual/daily/weekly
+   refresh policy, conditional requests, change summaries, and an external
+   worker option for high-volume or multi-replica deployments. This may be
+   delivered before or together with Phase 2 without changing Agent access semantics.
+
+
 ## In progress — AI guardrails
 
 Add configurable safeguards around agent input, model output, retrieved content, and tool execution.

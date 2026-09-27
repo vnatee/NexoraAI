@@ -417,3 +417,68 @@ def test_agent_binding_rejects_unassigned_or_cross_team_integration(
         backend_app._require_agent_integration_team(
             "agent-1", {"_id": "integration-1", "team_id": integration_team_id}
         )
+
+
+def test_web_search_connection_projection_and_assignment(monkeypatch):
+    database = _Database(
+        {
+            "web_search_connections": _Collection(
+                [
+                    {
+                        "_id": "search-1",
+                        "team_id": "",
+                        "name": "Corporate Search",
+                        "provider": "brave",
+                        "api_key_ciphertext": "must-not-leak",
+                        "enabled": True,
+                        "delete_at": None,
+                    }
+                ]
+            ),
+            "agents": _Collection(),
+        }
+    )
+    monkeypatch.setattr(integration_catalog, "get_database", lambda: database)
+
+    unassigned = integration_catalog.list_integration_connections("")
+    search = next(item for item in unassigned if item["id"] == "search-1")
+    assert search["kind"] == "web_search"
+    assert search["detail"] == "Managed API"
+    assert "must-not-leak" not in str(search)
+
+    result = integration_catalog.assign_unassigned_integration(
+        "web_search", "search-1", "team-1"
+    )
+    assert result["team_id"] == "team-1"
+    assert database["web_search_connections"].documents["search-1"]["team_id"] == "team-1"
+
+
+def test_agent_binding_projection_includes_web_search_connection(monkeypatch):
+    database = _Database(
+        {
+            "agents": _Collection(
+                [
+                    {
+                        "_id": "agent-1",
+                        "delete_at": None,
+                        "config": {
+                            "tool_settings": {
+                                "web_search": True,
+                                "web_search_connection_id": "search-1",
+                            }
+                        },
+                    }
+                ]
+            )
+        }
+    )
+    monkeypatch.setattr(integration_catalog, "get_database", lambda: database)
+
+    bindings = integration_catalog.list_agent_integration_bindings("agent-1")
+
+    assert {
+        "connection_id": "search-1",
+        "kind": "web_search",
+        "enabled": True,
+        "source": "agent_config",
+    }.items() <= bindings[0].items()

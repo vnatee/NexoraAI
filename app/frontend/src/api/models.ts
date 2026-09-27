@@ -151,6 +151,8 @@ export type Config = {
     knowledgeStorageProvider?: "azure" | "minio";
     knowledgeSearchProvider?: "azure" | "qdrant";
     agentRuntimeMode?: "legacy" | "langgraph" | "per_agent";
+    webSearchProvider?: "brave" | "searxng" | null;
+    webSearchConfigured?: boolean;
     llmProvider?: string;
     embeddingProvider?: string;
     embeddingProfileId?: string;
@@ -335,7 +337,7 @@ export interface MCPServerPayload {
 
 export type MCPCategory = "observability" | "diagram_collaboration" | "cloud_platform" | "developer_tools" | "business_workflows" | "data_search" | "custom";
 
-export type IntegrationKind = "rest_api" | "database" | "mail" | "messaging" | "mcp" | "business_documents";
+export type IntegrationKind = "rest_api" | "database" | "mail" | "messaging" | "mcp" | "business_documents" | "web_search";
 
 export interface IntegrationConnectionSummary {
     id: string;
@@ -859,6 +861,11 @@ export interface AgentToolSettings {
     messaging: boolean;
     mcp: boolean;
     mcp_execution: "auto" | "required";
+    web_search: boolean;
+    web_search_connection_id: string;
+    web_search_allowed_domains: string[];
+    web_search_max_results: number;
+    web_search_timeout_seconds: number;
     subagents: boolean;
     mcp_server_ids: string[];
     mcp_tool_allowlists: Record<string, string[]>;
@@ -1186,6 +1193,19 @@ export interface MailEmailConfig {
     public_config: MailPublicConfig;
     enabled: boolean;
     has_credentials?: boolean;
+    agent_usage_count?: number;
+}
+
+export type WebSearchProvider = "brave" | "searxng";
+export interface WebSearchConnection {
+    _id: string;
+    team_id: string;
+    name: string;
+    provider: WebSearchProvider;
+    base_url: string;
+    timeout_seconds: number;
+    enabled: boolean;
+    has_api_key?: boolean;
     agent_usage_count?: number;
 }
 

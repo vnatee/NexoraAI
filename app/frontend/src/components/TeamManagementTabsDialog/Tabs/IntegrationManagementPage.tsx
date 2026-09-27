@@ -18,12 +18,13 @@ import { MailIntegrationListPage } from "./MailIntegrationListPage";
 import { MessagingIntegrationListPage } from "./MessagingIntegrationListPage";
 import { DocumentProcessingPage } from "./DocumentProcessingPage";
 import { BusinessDocumentsIntegrationPage } from "./BusinessDocumentsIntegrationPage";
+import { WebSearchIntegrationPage } from "./WebSearchIntegrationPage";
 import { IntegrationConnectionSummary, TeamProfile } from "../../../api/models";
 import { listIntegrationConnectionsApi } from "../../../api/api";
 import { getToken } from "../../../authConfig";
 import { MCPServerManagement } from "../../MCPServerManagement";
 
-type ViewMode = "types" | "external_api" | "database" | "mail" | "messaging" | "mcp" | "document_processing" | "business_documents";
+type ViewMode = "types" | "external_api" | "database" | "mail" | "messaging" | "mcp" | "document_processing" | "business_documents" | "web_search";
 
 const connectionView = (kind: IntegrationConnectionSummary["kind"]): ViewMode => (kind === "rest_api" ? "external_api" : kind);
 
@@ -98,6 +99,7 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
     }
     if (view === "document_processing") return <DocumentProcessingPage onBack={() => setView("types")} />;
     if (view === "business_documents") return <BusinessDocumentsIntegrationPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
+    if (view === "web_search") return <WebSearchIntegrationPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
 
     // ✅ scalable integration type config
     const integrationTypes = [
@@ -125,6 +127,19 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
                 { label: "Native", color: "secondary" as const },
                 { label: "Read-only", color: "success" as const },
                 { label: "Connection catalog", color: "default" as const }
+            ]
+        },
+        {
+            key: "web_search",
+            category: "Data & Search",
+            title: "Web Search",
+            description: "Connect Brave Search or SearXNG for governed, domain-restricted Agent research",
+            icon: <SearchIcon fontSize="large" />,
+            enabled: true,
+            badges: [
+                { label: "Native", color: "secondary" as const },
+                { label: "Read-only", color: "success" as const },
+                { label: "Governed", color: "info" as const }
             ]
         },
         {

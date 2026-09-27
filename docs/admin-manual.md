@@ -2,7 +2,7 @@
 
 **Language:** English  
 **Audience:** System Administrators, Team Administrators, security administrators, and platform operators  
-**Last verified:** 2026-09-08  
+**Last verified:** 2026-09-27
 **Applies to:** The current NexoraAI web application on the local/container or Azure runtime
 
 This is the stable Administrator Manual for NexoraAI. Update this file in place
@@ -126,6 +126,40 @@ Prefer role-based Team permissions for routine administration. Grant System
 Admin only to operators who must control authentication, providers, licensing,
 and organization-wide policy.
 
+## 4.4 Approved Web Sources
+
+Use **Approved Web Sources** to add a bounded public website snapshot to
+Company or Team Knowledge. Company scope requires **Manage global uploads**;
+Team scope requires **Manage team uploads** and at least one Data Group owned by
+the active Team. Enter a public root URL without credentials, query parameters,
+or a custom port. Select crawl depth **0** for the root only, **1** for the
+recommended root-plus-direct-links scope, or **2** for one additional link
+level. Select **Standard** limits for routine documentation or **Extended** only
+after reviewing the website scope.
+
+Select **Scan & Verify** first. The result is staged temporarily and is not yet
+available to Agents or RAG. Review the URLs, page count, extracted size,
+skipped-page issues, and any **Partial snapshot** warning. Select **Confirm
+Index** to queue only the checked pages; all pages are checked initially and
+**Select all pages** can clear or restore the full set. The confirmation request
+returns immediately and indexing continues in the background, so the page can
+be closed safely. Use **Recent indexing jobs** to see status, attempt number,
+and page progress such as `53/100`. A failed job lists the error for each
+affected URL. Select **Retry failed pages** to resume only unsuccessful pages;
+successfully indexed pages are not repeated. Select **Discard Scan** before
+confirmation to delete the staged scan. SHA-256 remains an internal integrity
+check and is hidden from the normal UI. Unconfirmed scans expire automatically
+after 24 hours by default. Repeating and confirming the same URL refreshes its
+indexed snapshot; stale pages are removed only after replacement pages index
+successfully.
+
+The crawler stays on the approved hostname/path, follows only the selected
+depth, honors `robots.txt`, and records source URL, retrieval time, and content
+hash. It does not execute JavaScript, authenticate to websites, or perform live
+web search.
+See [Approved Web Sources](approved-web-sources.md) for limits and security
+controls.
+
 ## 5. Team workspace
 
 ### 5.1 Members
@@ -224,10 +258,31 @@ blocked tool names, and blocked tool-source prefixes.
 Typical actions are **Block**, **Redact**, **Audit only**, and **Allow**. An
 Agent policy cannot weaken an enforced parent System or Team policy.
 
+### 6.4.1 Governed Live Web Search
+
+For current public information that may not yet exist in Knowledge, a
+LangGraph Agent can use the optional read-only **Governed Web Search** tool.
+First open **Integrations → Web Search**, add Brave Search or SearXNG, save it,
+run **Test**, and assign a System-scoped connection to the target Team. Then in
+**Built-in Tools → External Web Search**, enable the tool, select the Team
+connection, and enter one or more allowed domains such as
+`docs.datadoghq.com`. Brave API keys are encrypted and never returned by the
+API.
+
+The domain list is mandatory and is enforced again after search results are
+returned. Set **Maximum Results** from 1–10 and **Search Timeout** from 1–30
+seconds. External snippets are untrusted evidence; the Agent must cite each URL
+and search date and distinguish the result from enterprise Knowledge. Search
+results are not automatically indexed.
+
+See [Governed Live Web Search](governed-web-search.md) for connection management,
+security behavior, limitations, and examples.
+
+
 ### 6.5 Integrations tab
 
-Assignments are grouped into REST APIs, Databases, Mail, Documents, Messaging,
-MCP, and Visualization. Only assign capabilities required by the Agent.
+Assignments are grouped into REST APIs, Databases, Web Search, Mail, Documents,
+Messaging, MCP, and Visualization. Only assign capabilities required by the Agent.
 
 For a new Agent, enter **Agent Name** and select **Integrations**. NexoraAI
 automatically creates a private draft so integration bindings have a stable
@@ -431,6 +486,8 @@ It reports:
 - CPU, memory, disk, process RSS, core/load information;
 - application, MongoDB, MinIO/Azure Storage, Qdrant/Azure Search, model runtime,
   and Integration Controller status;
+- Live web search provider readiness when Brave Search or SearXNG is configured
+  (connectivity is verified when an Agent performs a search);
 - **HTTPS gateway · Nginx** when the TLS overlay is enabled;
 - integration totals and attention states; and
 - ingestion/attachment queues, failures, recovery, and cleanup workers.

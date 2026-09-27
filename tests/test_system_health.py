@@ -87,6 +87,8 @@ async def test_health_snapshot_contains_safe_service_integration_and_job_counts(
             "QDRANT_URL": "http://qdrant:6333",
             "INTEGRATION_CONTROLLER_URL": "http://integration-controller:8080",
             "NEXORA_TLS_GATEWAY_HEALTH_URL": "http://tls-gateway:8081",
+            "WEB_SEARCH_PROVIDER": "brave",
+            "WEB_SEARCH_API_KEY": "web-secret",
             "USE_USER_UPLOAD": "true",
             "CHAT_ATTACHMENT_STORE": "local",
             "SECRET_VALUE": "must-not-leak",
@@ -106,6 +108,7 @@ async def test_health_snapshot_contains_safe_service_integration_and_job_counts(
             {"kind": "messaging", "total": 0, "enabled": 0, "attention": 0},
             {"kind": "business_documents", "total": 0, "enabled": 0, "attention": 0},
             {"kind": "mcp", "total": 2, "enabled": 2, "attention": 1},
+            {"kind": "web_search", "total": 0, "enabled": 0, "attention": 0},
         ],
     }
     assert snapshot["jobs"]["ingestion"]["processing"] == 1
@@ -118,6 +121,14 @@ async def test_health_snapshot_contains_safe_service_integration_and_job_counts(
         "provider": "Nginx",
         "latency_ms": 12,
     }
+    assert next(item for item in snapshot["services"] if item["id"] == "web_search") == {
+        "id": "web_search",
+        "name": "Live web search",
+        "status": "configured",
+        "detail": "Configured; connectivity is verified when an Agent searches",
+        "provider": "Brave Search",
+    }
+    assert "web-secret" not in str(snapshot)
     assert "must-not-leak" not in str(snapshot)
 
 
@@ -191,3 +202,23 @@ async def test_system_health_route_requires_system_admin(client, monkeypatch):
     assert response.status_code == 200
     assert (await response.get_json())["status"] == "healthy"
     assert len(calls) == 1
+
+
+def test_web_search_health_prefers_managed_integrations_over_environment():
+    result = system_health._web_search_service(
+        {},
+        {
+            "by_kind": [
+                {
+                    "kind": "web_search",
+                    "total": 2,
+                    "enabled": 1,
+                    "attention": 0,
+                }
+            ]
+        },
+    )
+
+    assert result["status"] == "configured"
+    assert result["provider"] == "Managed Integration"
+    assert "1 enabled managed connection" in result["detail"]

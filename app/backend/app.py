@@ -1,5 +1,6 @@
 
 import dataclasses
+import hashlib
 import copy
 import io
 from io import BytesIO
@@ -18,7 +19,7 @@ import requests
 # Scraping import
 from bs4 import BeautifulSoup
 from azure.storage.blob import BlobServiceClient
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 import asyncio
 # End of Scraping import
 from collections.abc import AsyncGenerator
@@ -29,6 +30,24 @@ from tokens_usage.save_tokens_usage import insert_user_usage
 from feedback.createfeedback import insert_feedback
 from feedback.getfeedback import get_all_feedback
 from mongo_table_connecters.mongo_connector import get_database
+from mongo_table_connecters.web_source_scans import (
+    claim_web_source_scan,
+    claim_web_source_scan_for_cleanup,
+    complete_web_source_scan,
+    create_web_source_scan,
+    delete_web_source_scan,
+    ensure_web_source_scan_indexes,
+    get_web_source_scan,
+    heartbeat_web_source_scan,
+    list_expired_web_source_scans,
+    list_recoverable_web_source_scans,
+    list_web_source_scans,
+    mark_web_source_scan_failed,
+    queue_web_source_scan,
+    release_web_source_scan,
+    retry_web_source_scan,
+    update_web_source_page,
+)
 from mongo_table_connecters.teams import insert_team, get_all_teams, get_team_by_id, get_team_by_data_group_id, get_team_by_agent_id, update_team, get_team_by_user_id, delete_team_by_id
 from mongo_table_connecters.users import get_user_by_id, get_user_by_ad_email, get_all_user_by_is_sys_admin, get_all_users, insert_user, delete_user_by_id, update_user
 from mongo_table_connecters.local_auth import (
@@ -249,6 +268,17 @@ from mongo_table_connecters.business_document_connections import (
     soft_delete_business_document_connection,
     update_business_document_connection,
 )
+from mongo_table_connecters.web_search_connections import (
+    decrypt_web_search_api_key,
+    get_web_search_connection,
+    insert_web_search_connection,
+    list_web_search_connections,
+    normalize_web_search_connection,
+    serialize_web_search_connection,
+    soft_delete_web_search_connection,
+    update_web_search_connection,
+    web_search_connection_usage_count,
+)
 from mongo_table_connecters.business_document_bindings import (
     collection as business_document_bindings_collection,
     delete_business_document_binding,
@@ -466,6 +496,8 @@ from config import (
     CONFIG_USER_BLOB_CONTAINER_CLIENT,
     CONFIG_USER_UPLOAD_ENABLED,
     CONFIG_VECTOR_SEARCH_ENABLED,
+    CONFIG_WEB_SOURCE_SCAN_CLEANUP_TASK,
+    CONFIG_WEB_SOURCE_INDEX_RECOVERY_TASK,
     CONFIG_MAIL_COMPONENT,
     CONFIG_EXTERNAL_API_ENPOINT
 )
@@ -480,6 +512,12 @@ from core.model_profiles import (
     managed_profile_id,
 )
 from core.provider_secrets import decrypt_provider_secret, encrypt_provider_secret
+from core.web_search import (
+    WebSearchError,
+    configured_web_search_provider,
+    create_web_search_provider,
+    normalize_allowed_domains,
+)
 from core.integration_controller import (
     AzureMCPProvisionRequest,
     IntegrationControllerClient,
@@ -510,7 +548,12 @@ from prepdocslib.filestrategy import UploadUserFileStrategy
 from prepdocslib.listfilestrategy import File
 from prepdocslib.docinteldb import insert_document_processing_usage
 from mongo_table_connecters.usage_analytics import get_usage_analytics
-from addons.scraping_web import run_scraping_job
+from addons.scraping_web import (
+    WebScrapingError,
+    normalize_stored_source_url,
+    run_scraping_job,
+    source_folder,
+)
 
 
 def _require_fields(data: Dict[str, Any], required: list[str]):
@@ -563,6 +606,19 @@ def _validate_agent_model_config(config: object) -> dict[str, Any]:
         for server_id, tool_names in raw_mcp_allowlists.items()
         if str(server_id).strip()
     }
+    web_search_enabled = raw_tool_settings.get("web_search", False) is True
+    web_search_connection_id = (
+        str(raw_tool_settings.get("web_search_connection_id") or "").strip()
+        if web_search_enabled
+        else ""
+    )
+    web_search_domains = normalize_allowed_domains(
+        raw_tool_settings.get("web_search_allowed_domains")
+    )
+    if web_search_enabled and not web_search_domains:
+        raise ValueError("Web Search requires at least one allowed domain")
+    if web_search_enabled and runtime != "langgraph":
+        raise ValueError("Web Search requires the LangGraph runtime")
     tool_settings = {
         "knowledge_search": knowledge_search,
         "external_database": raw_tool_settings.get("external_database", True) is not False,
@@ -571,6 +627,12 @@ def _validate_agent_model_config(config: object) -> dict[str, Any]:
         "business_documents": raw_tool_settings.get("business_documents", True) is not False,
         "messaging": raw_tool_settings.get("messaging", True) is not False,
         "mcp": raw_tool_settings.get("mcp", True) is not False,
+        "chart": raw_tool_settings.get("chart", False) is True,
+        "web_search": web_search_enabled,
+        "web_search_connection_id": web_search_connection_id,
+        "web_search_allowed_domains": list(web_search_domains),
+        "web_search_max_results": max(1, min(int(raw_tool_settings.get("web_search_max_results") or 5), 10)),
+        "web_search_timeout_seconds": max(1, min(int(raw_tool_settings.get("web_search_timeout_seconds") or 15), 30)),
         "mcp_execution": mcp_execution,
         "subagents": raw_tool_settings.get("subagents", False) is True,
         "mcp_server_ids": _normalize_id_list(
@@ -653,6 +715,34 @@ def _validate_agent_mcp_connections(
         raise AccessControlError(
             "MCP tool allowlists must reference an assigned MCP connection",
             status_code=400,
+        )
+    _validate_agent_web_search_connection(config, team_id)
+
+
+def _validate_agent_web_search_connection(config: dict[str, Any], team_id: str) -> None:
+    tool_settings = config.get("tool_settings") or {}
+    connection_id = str(tool_settings.get("web_search_connection_id") or "").strip()
+    if not connection_id:
+        if tool_settings.get("web_search") is not True:
+            return
+        try:
+            if configured_web_search_provider() is not None:
+                return
+        except WebSearchError as error:
+            raise AccessControlError(str(error), status_code=400) from error
+        raise AccessControlError(
+            "Select a Team Web Search connection before enabling Web Search",
+            status_code=400,
+        )
+    connection = get_web_search_connection(connection_id)
+    if not connection:
+        raise AccessControlError("Web Search connection not found", status_code=404)
+    if connection.get("enabled") is False:
+        raise AccessControlError("Web Search connection is disabled", status_code=400)
+    if str(connection.get("team_id") or "") != str(team_id or ""):
+        raise AccessControlError(
+            "Web Search connection is not assigned to the Agent's team",
+            status_code=403,
         )
 
 
@@ -4926,6 +5016,12 @@ async def admin_import_license(auth_claims: dict[str, Any]):
 async def config():
     runtime_settings: RuntimeSettings = current_app.config[CONFIG_RUNTIME_SETTINGS]
     llm_profiles: dict[str, LLMProfile] = current_app.config[CONFIG_LLM_PROFILES]
+    web_search_provider = os.getenv("WEB_SEARCH_PROVIDER", "").strip().lower()
+    web_search_configured = (
+        web_search_provider == "brave" and bool(os.getenv("WEB_SEARCH_API_KEY", "").strip())
+    ) or (
+        web_search_provider == "searxng" and bool(os.getenv("WEB_SEARCH_BASE_URL", "").strip())
+    )
     return jsonify(
         {
             "runtimeMode": runtime_settings.mode.value,
@@ -4936,6 +5032,8 @@ async def config():
                 if os.getenv("AGENT_RUNTIME_MODE", "per_agent").strip().lower() in {"legacy", "langgraph"}
                 else "per_agent"
             ),
+            "webSearchProvider": web_search_provider or None,
+            "webSearchConfigured": web_search_configured,
             "llmProvider": runtime_settings.llm.provider.value,
             "embeddingProvider": runtime_settings.embedding.provider.value,
             "embeddingProfileId": current_app.config.get(CONFIG_ACTIVE_EMBEDDING_PROFILE_ID, ENVIRONMENT_PROFILE_ID),
@@ -5211,6 +5309,99 @@ async def remove_mail_binding(auth_claims: dict[str, Any]):
     if not delete_mail_binding(str(body.get("binding_id") or "")):
         return jsonify({"error": "Mail binding not found"}), 404
     return jsonify({"message": "Mail binding deleted"})
+
+
+@bp.get("/web_search_connections")
+@authenticated
+async def web_search_connections(auth_claims: dict[str, Any]):
+    team_id = str(request.args.get("team_id") or "")
+    try:
+        _require_integration_catalog_access(auth_claims, team_id, allow_agent_management=True)
+        return jsonify([
+            serialize_web_search_connection(
+                item,
+                usage_count=web_search_connection_usage_count(str(item["_id"])),
+            )
+            for item in list_web_search_connections(team_id)
+        ])
+    except AccessControlError as error:
+        return error_response(error, "/web_search_connections")
+
+
+@bp.post("/save_web_search_connection")
+@authenticated
+async def save_web_search_connection(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        connection_id = str(body.get("connection_id") or "")
+        existing = get_web_search_connection(connection_id) if connection_id else None
+        if connection_id and not existing:
+            return jsonify({"error": "Web Search connection not found"}), 404
+        normalized = normalize_web_search_connection(body, existing=existing)
+        current_team_id = str(existing.get("team_id") or "") if existing else normalized["team_id"]
+        _require_integration_catalog_access(auth_claims, current_team_id)
+        if existing and "team_id" in body and str(body.get("team_id") or "") != current_team_id:
+            raise ValueError("Use Assign to team to change integration ownership")
+        document = (
+            update_web_search_connection(connection_id, normalized)
+            if existing
+            else insert_web_search_connection(normalized)
+        )
+        return jsonify({
+            "message": "Web Search connection saved",
+            "connection": serialize_web_search_connection(
+                document or existing,
+                usage_count=web_search_connection_usage_count(connection_id)
+                if connection_id else 0,
+            ),
+        })
+    except AccessControlError as error:
+        return error_response(error, "/save_web_search_connection")
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+
+@bp.post("/test_web_search_connection")
+@authenticated
+async def test_web_search_connection(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        connection = get_web_search_connection(str(body.get("connection_id") or ""))
+        if not connection:
+            raise ValueError("Save the Web Search connection before testing it")
+        _require_integration_catalog_access(auth_claims, str(connection.get("team_id") or ""))
+        provider = create_web_search_provider(
+            connection.get("provider"),
+            api_key=decrypt_web_search_api_key(connection),
+            base_url=connection.get("base_url"),
+            timeout_seconds=float(connection.get("timeout_seconds") or 10),
+        )
+        provider.search("official documentation", 1)
+        return jsonify({"ok": True, "message": "Web Search connection succeeded"})
+    except AccessControlError as error:
+        return error_response(error, "/test_web_search_connection")
+    except (ValueError, WebSearchError) as error:
+        current_app.logger.warning("Web Search connection test failed: %s", error)
+        return jsonify({"ok": False, "error": str(error)}), 400
+
+
+@bp.post("/delete_web_search_connection")
+@authenticated
+async def delete_web_search_connection(auth_claims: dict[str, Any]):
+    try:
+        body = await request.get_json()
+        connection_id = str(body.get("connection_id") or "")
+        existing = get_web_search_connection(connection_id)
+        if not existing:
+            return jsonify({"error": "Web Search connection not found"}), 404
+        _require_integration_catalog_access(auth_claims, str(existing.get("team_id") or ""))
+        if web_search_connection_usage_count(connection_id):
+            return jsonify({"error": "Remove Agent bindings before deleting this connection"}), 409
+        if not soft_delete_web_search_connection(connection_id):
+            return jsonify({"error": "Web Search connection not found"}), 404
+        return jsonify({"message": "Web Search connection deleted"})
+    except AccessControlError as error:
+        return error_response(error, "/delete_web_search_connection")
 
 
 @bp.get("/business_document_connections")
@@ -5953,7 +6144,9 @@ async def delete_chat_attachment(auth_claims: dict[str, Any], attachment_id: str
 BACKGROUND_TASKS = set()
 ATTACHMENT_EXTRACTION_TASKS: set[asyncio.Task] = set()
 INGESTION_TASKS: set[asyncio.Task] = set()
+WEB_SOURCE_INDEX_TASKS: set[asyncio.Task] = set()
 ATTACHMENT_EXTRACTION_WORKER_ID = f"attachment-{uuid.uuid4()}"
+WEB_SOURCE_INDEX_WORKER_ID = f"web-source-{uuid.uuid4()}"
 
 
 def _agent_draft_retention_hours() -> float:
@@ -6669,149 +6862,869 @@ PER_FILE_CONC = 3
 FILES_CONCURRENT = 48
 
 
-async def upload_path(data: str, blob_name: str, metadata: dict, gid=None, data_groups_id=None):
+def _authorize_web_source_scope(
+    auth_claims: dict[str, Any],
+    team_id: Any,
+    data_group_ids: Any = None,
+    *,
+    require_data_groups: bool = False,
+) -> tuple[dict[str, Any], str | None, list[str]]:
+    normalized_team_id = str(team_id or "").strip() or None
+    if data_group_ids is None:
+        normalized_groups: list[str] = []
+    elif not isinstance(data_group_ids, list):
+        raise AccessControlError("data_groups_id must be a list", status_code=400)
+    else:
+        normalized_groups = list(
+            dict.fromkeys(
+                str(item).strip() for item in data_group_ids if str(item).strip()
+            )
+        )
+
+    if not normalized_team_id:
+        if normalized_groups:
+            raise AccessControlError(
+                "Data Groups require a Team scope", status_code=400
+            )
+        return (
+            _require_system_permission(auth_claims, "Manage global uploads"),
+            None,
+            [],
+        )
+
+    user, team = _require_team_access(
+        auth_claims,
+        normalized_team_id,
+        permission="Manage team uploads",
+    )
+    allowed_groups = {str(item) for item in (team.get("data_group_id") or [])}
+    if require_data_groups and not normalized_groups:
+        raise AccessControlError("Select at least one Data Group", status_code=400)
+    if any(
+        group_id not in allowed_groups or not get_data_group_by_id(group_id)
+        for group_id in normalized_groups
+    ):
+        raise AccessControlError("A selected Data Group does not belong to this Team")
+    return user, normalized_team_id, normalized_groups
+
+
+def _web_source_from_key(key: str, team_id: str | None = None) -> str:
+    relative = key.removeprefix(f"{team_id}/") if team_id else key
+    folder = relative.split("/", 1)[0]
+    if "||url=" in folder:
+        return unquote(folder.split("||url=", 1)[1])
+    return folder.replace("_", "/")
+
+
+async def upload_path(
+    data: str,
+    blob_name: str,
+    metadata: dict[str, str],
+    *,
+    source_url: str,
+    source_id: str,
+    content_hash: str,
+    retrieved_at: str,
+    crawl_depth: int,
+    crawl_truncated: bool = False,
+    limit_reason: str | None = None,
+    gid: str | None = None,
+    data_groups_id: list[str] | None = None,
+    raise_on_failure: bool = False,
+):
     scope = "web_team" if gid else "web_global"
     if gid:
         blob_name = f"{gid}/{blob_name}"
-    for stored_object in await _knowledge_store().list(scope):
-        if stored_object.key.split("||")[-1] == blob_name.split("||")[-1]:
-            return True
     ingester: UploadUserFileStrategy = current_app.config[CONFIG_INGESTER]
-    # ใช้ to_thread เปิดไฟล์ เพื่อไม่บล็อค event loop
+    tags = {
+        "source_id": source_id,
+        "content_hash": content_hash,
+        "retrieved_at": retrieved_at.replace("-", "").replace(":", ""),
+        "crawl_depth": str(crawl_depth),
+        "crawl_truncated": "true" if crawl_truncated else "false",
+        "crawl_limit_reason": str(limit_reason or ""),
+        "status": "processing",
+    }
+    if gid:
+        tags["data_groups"] = "/".join(data_groups_id or [])
     delay = 1.0
     for attempt in range(6):
         try:
             encoded = data.encode("utf-8")
-            object_url = await _knowledge_store().put(
+            await _knowledge_store().put(
                 scope,
                 blob_name,
                 encoded,
                 size=len(encoded),
                 metadata=metadata,
-                tags={"data_groups": "/".join(data_groups_id or [])} if gid else None,
+                tags=tags,
                 content_type="text/plain; charset=utf-8",
             )
-            buf = NamedBytesIO(data.encode("utf-8"), blob_name)
-            folder = os.path.dirname(str(blob_name).replace(
-                str(blob_name).split("/")[-1], ""))
-            folder = folder + os.sep if folder else ""
-            if gid:
-                buf.seek(0)
-                await ingester.add_global_file(File(content=buf, acls={"groups": data_groups_id, "oids": []}, url=object_url), folder)
-            else:
-                buf.seek(0)
-                await ingester.add_global_file(File(content=buf, acls={"oids": []}, url=object_url), folder)
+            buf = NamedBytesIO(encoded, blob_name)
+            folder = os.path.dirname(blob_name)
+            folder = f"{folder}{os.sep}" if folder else ""
+            acls = (
+                {"groups": data_groups_id or [], "oids": []}
+                if gid
+                else {"oids": []}
+            )
+            await ingester.add_global_file(
+                File(content=buf, acls=acls, url=source_url), folder
+            )
+            tags["status"] = "indexed"
+            await _knowledge_store().set_tags(scope, blob_name, tags)
             return True
         except Exception:
             if attempt == 5:
+                current_app.logger.exception("Unable to index approved web source page")
+                if raise_on_failure:
+                    raise
                 return False
             await asyncio.sleep(delay + random.random() * 0.2)
             delay = min(delay * 2, 20)
 
 
-async def upload_many(paths, folder, user_oid: str, gid=None, data_groups_id=None):
+async def upload_many(
+    paths,
+    folder,
+    user_oid: str,
+    gid=None,
+    data_groups_id=None,
+    crawl_depth: int = 1,
+    crawl_truncated: bool = False,
+    limit_reason: str | None = None,
+):
+    sem = asyncio.Semaphore(min(FILES_CONCURRENT, 8))
 
-    sem = asyncio.Semaphore(FILES_CONCURRENT)
-    done = 0
-
-    async def worker(p):
-        nonlocal done
-        nonlocal folder
+    async def worker(page: dict[str, str]):
         async with sem:
-            if gid:
-                ok = await upload_path(
-                    p[1],
-                    f"{folder}/{p[0]}",
-                    {"UploadedBy": user_oid},
-                    gid,
-                    data_groups_id
-                )
-            else:
-                ok = await upload_path(
-                    p[1],
-                    f"{folder}/{p[0]}",
-                    {"UploadedBy": user_oid}
-                )
-            done += 1
-            if done % 100 == 0:
-                print(f"progress: {done}/{len(paths)}")
-            return (f"{folder}/{p[0]}", ok)
+            blob_name = f"{folder}/{page['storage_name']}"
+            ok = await upload_path(
+                page["text"],
+                blob_name,
+                {
+                    "UploadedBy": str(user_oid),
+                    "SourceUrl": quote(str(page["source_url"]), safe=""),
+                    "RetrievedAt": str(page["retrieved_at"]),
+                    "ContentHash": str(page["content_hash"]),
+                },
+                source_url=page["source_url"],
+                source_id=folder.removeprefix("source-").split("||", 1)[0],
+                content_hash=page["content_hash"],
+                retrieved_at=page["retrieved_at"],
+                crawl_depth=crawl_depth,
+                crawl_truncated=crawl_truncated,
+                limit_reason=limit_reason,
+                gid=gid,
+                data_groups_id=data_groups_id,
+            )
+            return (f"{gid}/" if gid else "") + blob_name, ok
 
-    tasks = [asyncio.create_task(worker(p)) for p in paths]
-    results = await asyncio.gather(*tasks, return_exceptions=False)
-    return results
+    return await asyncio.gather(*(worker(page) for page in paths))
+
+
+def _web_source_scan_retention_hours() -> float:
+    try:
+        value = float(os.getenv("WEB_SOURCE_SCAN_RETENTION_HOURS", "24"))
+    except ValueError as error:
+        raise ValueError("WEB_SOURCE_SCAN_RETENTION_HOURS must be numeric") from error
+    if not math.isfinite(value) or value < 1 or value > 72:
+        raise ValueError("WEB_SOURCE_SCAN_RETENTION_HOURS must be between 1 and 72")
+    return value
+
+
+def _bounded_web_scan_setting(name: str, default: int, maximum: int) -> int:
+    try:
+        return max(1, min(int(os.getenv(name, str(default))), maximum))
+    except ValueError as error:
+        raise ValueError(f"{name} must be an integer") from error
+
+
+def _web_source_scan_limits(profile: Any) -> tuple[str, int | None, int | None]:
+    normalized = str(profile or "standard").strip().lower()
+    if normalized == "standard":
+        return normalized, None, None
+    if normalized != "extended":
+        raise WebScrapingError("limit_profile must be standard or extended")
+    return (
+        normalized,
+        _bounded_web_scan_setting("WEB_SCRAPE_EXTENDED_MAX_PAGES", 250, 250),
+        _bounded_web_scan_setting(
+            "WEB_SCRAPE_EXTENDED_MAX_TOTAL_BYTES",
+            100 * 1024 * 1024,
+            100 * 1024 * 1024,
+        ),
+    )
+
+
+def _web_source_scan_scope(scan: dict[str, Any]) -> str:
+    return "web_team" if str(scan.get("team_id") or "") else "web_global"
+
+
+def _web_source_stage_prefix(scan_id: str, team_id: str | None) -> str:
+    base = f"__staging__/{scan_id}"
+    return f"{team_id}/{base}" if team_id else base
+
+
+def _serialize_web_source_scan(scan: dict[str, Any]) -> dict[str, Any]:
+    result = scan.get("result") or {}
+    pages = scan.get("pages") or []
+    progress_items = scan.get("page_progress") or []
+    progress_by_url = {
+        str(item.get("url") or ""): item
+        for item in progress_items
+        if str(item.get("url") or "")
+    }
+    selected_total = sum(
+        1 for item in progress_items if item.get("status") != "skipped"
+    )
+    indexed_pages = sum(
+        1 for item in progress_items if item.get("status") == "indexed"
+    )
+    failed_pages = sum(
+        1 for item in progress_items if item.get("status") == "failed"
+    )
+    active_pages = sum(
+        1 for item in progress_items if item.get("status") == "indexing"
+    )
+    completed_pages = indexed_pages + failed_pages
+
+    def timestamp(name: str) -> str | None:
+        value = scan.get(name)
+        return value.isoformat() if value else None
+
+    return {
+        "scan_id": str(scan.get("_id") or ""),
+        "status": str(scan.get("status") or "ready"),
+        "source_url": str(scan.get("source_url") or ""),
+        "crawl_depth": int(scan.get("crawl_depth") or 0),
+        "limit_profile": str(scan.get("limit_profile") or "standard"),
+        "expires_at": timestamp("expires_at"),
+        "created_at": timestamp("created_at"),
+        "started_at": timestamp("started_at"),
+        "completed_at": timestamp("completed_at"),
+        "attempt": int(scan.get("attempt") or 0),
+        "last_error": str(scan.get("last_error") or ""),
+        "pages_found": len(pages),
+        "pages_selected": selected_total,
+        "pages_completed": completed_pages,
+        "pages_indexed": indexed_pages,
+        "pages_failed": failed_pages,
+        "pages_active": active_pages,
+        "progress_percent": (
+            int((completed_pages / selected_total) * 100) if selected_total else 0
+        ),
+        "bytes_found": int(result.get("bytes_indexed") or 0),
+        "pages_skipped": int(result.get("pages_skipped") or 0),
+        "truncated": bool(result.get("truncated")),
+        "limit_reason": result.get("limit_reason"),
+        "issues": list(result.get("issues") or [])[:50],
+        "pages": [
+            {
+                "url": str(page.get("source_url") or ""),
+                "title": str(page.get("title") or ""),
+                "size": int(page.get("size") or 0),
+                "status": str(
+                    progress_by_url.get(str(page.get("source_url") or ""), {}).get("status")
+                    or "pending"
+                ),
+                "attempt": int(
+                    progress_by_url.get(str(page.get("source_url") or ""), {}).get("attempt")
+                    or 0
+                ),
+                "error": progress_by_url.get(
+                    str(page.get("source_url") or ""), {}
+                ).get("error"),
+            }
+            for page in pages
+        ],
+    }
+
+
+async def _delete_web_source_scan_stage(scan: dict[str, Any]) -> bool:
+    scope = _web_source_scan_scope(scan)
+    complete = True
+    for page in scan.get("pages") or []:
+        key = str(page.get("staging_key") or "")
+        if not key:
+            continue
+        try:
+            await _knowledge_store().delete(scope, key)
+        except KnowledgeObjectNotFound:
+            continue
+        except Exception:
+            complete = False
+            current_app.logger.exception("Unable to delete staged web source object")
+    return complete
+
+
+def _schedule_web_source_index_job(scan_id: str) -> None:
+    task = asyncio.create_task(_run_web_source_index_job(scan_id))
+    BACKGROUND_TASKS.add(task)
+    task.add_done_callback(BACKGROUND_TASKS.discard)
+    WEB_SOURCE_INDEX_TASKS.add(task)
+    task.add_done_callback(WEB_SOURCE_INDEX_TASKS.discard)
+
+
+async def _heartbeat_web_source_index_job(scan_id: str) -> None:
+    while True:
+        await asyncio.sleep(30)
+        owns_job = await asyncio.to_thread(
+            heartbeat_web_source_scan,
+            scan_id,
+            WEB_SOURCE_INDEX_WORKER_ID,
+        )
+        if not owns_job:
+            return
+
+
+async def _run_web_source_index_job(scan_id: str) -> None:
+    claimed = await asyncio.to_thread(
+        claim_web_source_scan,
+        scan_id,
+        WEB_SOURCE_INDEX_WORKER_ID,
+    )
+    if not claimed:
+        return
+    heartbeat_task = asyncio.create_task(_heartbeat_web_source_index_job(scan_id))
+    try:
+        scope = _web_source_scan_scope(claimed)
+        team_id = str(claimed.get("team_id") or "") or None
+        data_group_ids = list(claimed.get("data_group_ids") or [])
+        result = claimed.get("result") or {}
+        folder = source_folder(str(claimed["source_url"]))
+        progress = claimed.get("page_progress") or []
+        pages = claimed.get("pages") or []
+        if len(progress) != len(pages):
+            raise WebScrapingError("The indexing job manifest is incomplete")
+
+        semaphore = asyncio.Semaphore(min(FILES_CONCURRENT, 4))
+
+        async def process_page(index: int, page: dict[str, Any]) -> None:
+            page_state = progress[index]
+            if page_state.get("status") in {"indexed", "skipped"}:
+                return
+            async with semaphore:
+                owns_job = await asyncio.to_thread(
+                    update_web_source_page,
+                    scan_id,
+                    WEB_SOURCE_INDEX_WORKER_ID,
+                    index,
+                    "indexing",
+                )
+                if not owns_job:
+                    raise RuntimeError("Web source indexing lease was lost")
+                try:
+                    staged = await _knowledge_store().read(
+                        scope, str(page["staging_key"])
+                    )
+                    if hashlib.sha256(staged.data).hexdigest() != str(page["staged_hash"]):
+                        raise WebScrapingError(
+                            "Staged web source content failed integrity verification"
+                        )
+                    upload_page = {
+                        "storage_name": str(page["storage_name"]),
+                        "text": staged.data.decode("utf-8"),
+                        "source_url": str(page["source_url"]),
+                        "title": str(page.get("title") or ""),
+                        "content_hash": str(page["content_hash"]),
+                        "retrieved_at": str(page["retrieved_at"]),
+                    }
+                    storage_key = (f"{team_id}/" if team_id else "") + (
+                        f"{folder}/{upload_page['storage_name']}"
+                    )
+                    indexed = await upload_path(
+                        upload_page["text"],
+                        f"{folder}/{upload_page['storage_name']}",
+                        {
+                            "UploadedBy": str(claimed.get("created_by") or ""),
+                            "SourceUrl": quote(upload_page["source_url"], safe=""),
+                            "RetrievedAt": upload_page["retrieved_at"],
+                            "ContentHash": upload_page["content_hash"],
+                        },
+                        source_url=upload_page["source_url"],
+                        source_id=folder.removeprefix("source-").split("||", 1)[0],
+                        content_hash=upload_page["content_hash"],
+                        retrieved_at=upload_page["retrieved_at"],
+                        crawl_depth=int(claimed.get("crawl_depth") or 0),
+                        crawl_truncated=bool(result.get("truncated")),
+                        limit_reason=str(result.get("limit_reason") or "") or None,
+                        gid=team_id,
+                        data_groups_id=data_group_ids,
+                        raise_on_failure=True,
+                    )
+                    if not indexed:
+                        raise RuntimeError("Page indexing failed after retries")
+                    await asyncio.to_thread(
+                        update_web_source_page,
+                        scan_id,
+                        WEB_SOURCE_INDEX_WORKER_ID,
+                        index,
+                        "indexed",
+                        storage_key=storage_key,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    await asyncio.to_thread(
+                        update_web_source_page,
+                        scan_id,
+                        WEB_SOURCE_INDEX_WORKER_ID,
+                        index,
+                        "failed",
+                        error=error,
+                    )
+                    current_app.logger.warning(
+                        "Web source page indexing failed: scan=%s url=%s",
+                        scan_id,
+                        str(page.get("source_url") or ""),
+                    )
+
+        await asyncio.gather(*(
+            process_page(index, page) for index, page in enumerate(pages)
+        ))
+        current = await asyncio.to_thread(get_web_source_scan, scan_id)
+        if not current or str(current.get("worker_id") or "") != WEB_SOURCE_INDEX_WORKER_ID:
+            return
+        page_progress = current.get("page_progress") or []
+        failed = [item for item in page_progress if item.get("status") == "failed"]
+        unfinished = [
+            item for item in page_progress
+            if item.get("status") not in {"indexed", "failed", "skipped"}
+        ]
+        if failed or unfinished:
+            await asyncio.to_thread(
+                complete_web_source_scan,
+                scan_id,
+                WEB_SOURCE_INDEX_WORKER_ID,
+                "failed",
+                error=f"{len(failed) + len(unfinished)} page(s) could not be indexed",
+            )
+            return
+
+        legacy_folder = str(claimed["source_url"]).replace("/", "_")
+        all_existing = await _knowledge_store().list(
+            scope, prefix=f"{team_id}/" if team_id else ""
+        )
+        previous = {
+            item.key
+            for item in all_existing
+            if (item.key.removeprefix(f"{team_id}/") if team_id else item.key)
+            .split("/", 1)[0]
+            in {folder, legacy_folder}
+        }
+        selected_keys = {
+            str(item.get("storage_key") or "")
+            for item in page_progress
+            if item.get("status") == "indexed" and item.get("storage_key")
+        }
+        stale = sorted(previous - selected_keys)
+        if stale:
+            await delete_many(stale, team_id)
+        if not await _delete_web_source_scan_stage(current):
+            raise RuntimeError("Indexed pages are ready, but staging cleanup failed")
+        await asyncio.to_thread(
+            complete_web_source_scan,
+            scan_id,
+            WEB_SOURCE_INDEX_WORKER_ID,
+            "indexed",
+        )
+    except asyncio.CancelledError:
+        await asyncio.to_thread(
+            release_web_source_scan,
+            scan_id,
+            WEB_SOURCE_INDEX_WORKER_ID,
+        )
+        raise
+    except Exception as error:
+        current_app.logger.exception("Web source indexing job failed: %s", scan_id)
+        await asyncio.to_thread(
+            complete_web_source_scan,
+            scan_id,
+            WEB_SOURCE_INDEX_WORKER_ID,
+            "failed",
+            error=error,
+        )
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+
+
+async def _recover_web_source_index_jobs(interval_seconds: float) -> None:
+    while True:
+        try:
+            jobs = await asyncio.to_thread(list_recoverable_web_source_scans)
+            for job in jobs:
+                _schedule_web_source_index_job(str(job["_id"]))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            current_app.logger.exception("Unable to recover Web Source indexing jobs")
+        await asyncio.sleep(interval_seconds)
+
+
+async def _cleanup_expired_web_source_scans_once() -> int:
+    expired = await asyncio.to_thread(list_expired_web_source_scans)
+    removed = 0
+    for candidate in expired:
+        scan = await asyncio.to_thread(
+            claim_web_source_scan_for_cleanup,
+            str(candidate.get("_id") or ""),
+        )
+        if not scan:
+            continue
+        if await _delete_web_source_scan_stage(scan):
+            await asyncio.to_thread(delete_web_source_scan, str(scan["_id"]))
+            removed += 1
+        else:
+            await asyncio.to_thread(
+                mark_web_source_scan_failed,
+                str(scan["_id"]),
+                "staging_cleanup",
+            )
+    return removed
+
+
+async def _run_web_source_scan_cleanup(interval_seconds: float) -> None:
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            removed = await _cleanup_expired_web_source_scans_once()
+            if removed:
+                current_app.logger.info("Expired web source scans removed: count=%d", removed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            current_app.logger.exception("Unable to clean up expired web source scans")
+
+
+@bp.post("/web-source-scans")
+@authenticated
+async def create_web_source_scan_route(auth_claims: dict[str, Any]):
+    staged_scan: dict[str, Any] | None = None
+    try:
+        data = await request.get_json()
+        if not isinstance(data, dict):
+            raise WebScrapingError("Request body must be JSON")
+        start_url = str(data.get("url") or "").strip()
+        raw_crawl_depth = data.get("crawl_depth", 1)
+        if isinstance(raw_crawl_depth, bool) or str(raw_crawl_depth) not in {"0", "1", "2"}:
+            raise WebScrapingError("crawl_depth must be 0, 1, or 2")
+        crawl_depth = int(raw_crawl_depth)
+        limit_profile, max_pages, max_total_bytes = _web_source_scan_limits(
+            data.get("limit_profile")
+        )
+        user, team_id, data_group_ids = _authorize_web_source_scope(
+            auth_claims,
+            data.get("team_id"),
+            data.get("data_groups_id"),
+            require_data_groups=bool(data.get("team_id")),
+        )
+        result, pages = await asyncio.to_thread(
+            run_scraping_job,
+            start_url,
+            max_depth=crawl_depth,
+            max_pages=max_pages,
+            max_total_bytes=max_total_bytes,
+        )
+        scan_id = str(uuid.uuid4())
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            hours=_web_source_scan_retention_hours()
+        )
+        scope = "web_team" if team_id else "web_global"
+        prefix = _web_source_stage_prefix(scan_id, team_id)
+        staged_pages: list[dict[str, Any]] = []
+        staged_scan = {"team_id": team_id, "pages": staged_pages}
+        for page in pages:
+            encoded = str(page["text"]).encode("utf-8")
+            staging_key = f"{prefix}/{page['storage_name']}"
+            await _knowledge_store().put(
+                scope,
+                staging_key,
+                encoded,
+                size=len(encoded),
+                metadata={
+                    "SourceUrl": quote(str(page["source_url"]), safe=""),
+                    "RetrievedAt": str(page["retrieved_at"]),
+                    "ContentHash": str(page["content_hash"]),
+                },
+                tags={
+                    "status": "staged",
+                    "scan_id": scan_id,
+                    "expires_at": expires_at.strftime("%Y%m%dT%H%M%SZ"),
+                },
+                content_type="text/plain; charset=utf-8",
+            )
+            staged_pages.append({
+                "staging_key": staging_key,
+                "storage_name": str(page["storage_name"]),
+                "source_url": str(page["source_url"]),
+                "title": str(page.get("title") or ""),
+                "content_hash": str(page["content_hash"]),
+                "staged_hash": hashlib.sha256(encoded).hexdigest(),
+                "retrieved_at": str(page["retrieved_at"]),
+                "size": len(encoded),
+            })
+        staged_scan.update({
+            "_id": scan_id,
+            "created_by": str(user.get("_id") or auth_claims.get("oid") or ""),
+            "data_group_ids": data_group_ids,
+            "source_url": str(result["source_url"]),
+            "crawl_depth": crawl_depth,
+            "limit_profile": limit_profile,
+            "expires_at": expires_at,
+            "result": result,
+        })
+        scan = await asyncio.to_thread(create_web_source_scan, staged_scan)
+        return jsonify(_serialize_web_source_scan(scan)), 201
+    except AccessControlError as error:
+        return error_response(error, "/web-source-scans")
+    except WebScrapingError as error:
+        return jsonify({"status": "error", "message": str(error)}), 400
+    except Exception:
+        current_app.logger.exception("Unable to create web source scan")
+        if staged_scan:
+            await _delete_web_source_scan_stage(staged_scan)
+        return jsonify({"status": "error", "message": "The web source could not be scanned"}), 500
+
+
+@bp.get("/web-source-scans")
+@authenticated
+async def list_web_source_scan_jobs_route(auth_claims: dict[str, Any]):
+    team_id = str(request.args.get("team_id") or "").strip() or None
+    try:
+        _authorize_web_source_scope(auth_claims, team_id)
+        try:
+            limit = int(request.args.get("limit") or 10)
+        except ValueError:
+            return jsonify({"error": "limit must be an integer"}), 400
+        scans = await asyncio.to_thread(
+            list_web_source_scans,
+            team_id=team_id,
+            limit=limit,
+        )
+        return jsonify({"jobs": [_serialize_web_source_scan(scan) for scan in scans]})
+    except AccessControlError as error:
+        return error_response(error, "/web-source-scans")
+
+
+@bp.get("/web-source-scans/<scan_id>")
+@authenticated
+async def get_web_source_scan_route(auth_claims: dict[str, Any], scan_id: str):
+    scan = await asyncio.to_thread(get_web_source_scan, scan_id)
+    if not scan:
+        return jsonify({"error": "Web source indexing job not found"}), 404
+    try:
+        _authorize_web_source_scope(
+            auth_claims,
+            scan.get("team_id"),
+            scan.get("data_group_ids"),
+        )
+    except AccessControlError as error:
+        return error_response(error, "/web-source-scans/status")
+    return jsonify(_serialize_web_source_scan(scan))
+
+
+@bp.post("/web-source-scans/<scan_id>/confirm")
+@authenticated
+async def confirm_web_source_scan_route(auth_claims: dict[str, Any], scan_id: str):
+    scan = await asyncio.to_thread(get_web_source_scan, scan_id)
+    if not scan:
+        return jsonify({"error": "Web source scan not found"}), 404
+    data = await request.get_json(silent=True) or {}
+    selected_urls_value = data.get("selected_urls")
+    if selected_urls_value is not None and not isinstance(selected_urls_value, list):
+        return jsonify({"error": "selected_urls must be a list"}), 400
+    selected_urls = (
+        list(dict.fromkeys(
+            value.strip()
+            for value in selected_urls_value
+            if isinstance(value, str) and value.strip()
+        ))
+        if selected_urls_value is not None
+        else [
+            str(page.get("source_url") or "")
+            for page in scan.get("pages") or []
+            if str(page.get("source_url") or "")
+        ]
+    )
+    if not selected_urls:
+        return jsonify({"error": "Select at least one page to index"}), 400
+    available_urls = {
+        str(page.get("source_url") or "")
+        for page in scan.get("pages") or []
+    }
+    if any(source_url not in available_urls for source_url in selected_urls):
+        return jsonify({
+            "error": "A selected page is not part of this scan manifest"
+        }), 400
+    try:
+        user, _team_id, _data_group_ids = _authorize_web_source_scope(
+            auth_claims,
+            scan.get("team_id"),
+            scan.get("data_group_ids"),
+            require_data_groups=bool(scan.get("team_id")),
+        )
+    except AccessControlError as error:
+        return error_response(error, "/web-source-scans/confirm")
+    queued = await asyncio.to_thread(
+        queue_web_source_scan,
+        scan_id,
+        selected_urls,
+        requested_by=str(user.get("_id") or auth_claims.get("oid") or ""),
+    )
+    if not queued:
+        return jsonify({
+            "error": "The scan expired or is no longer available for indexing"
+        }), 409
+    _schedule_web_source_index_job(scan_id)
+    response = _serialize_web_source_scan(queued)
+    response["message"] = "Web source indexing started in the background."
+    return jsonify(response), 202
+
+
+@bp.post("/web-source-scans/<scan_id>/retry")
+@authenticated
+async def retry_web_source_scan_route(auth_claims: dict[str, Any], scan_id: str):
+    scan = await asyncio.to_thread(get_web_source_scan, scan_id)
+    if not scan:
+        return jsonify({"error": "Web source indexing job not found"}), 404
+    try:
+        _authorize_web_source_scope(
+            auth_claims,
+            scan.get("team_id"),
+            scan.get("data_group_ids"),
+            require_data_groups=bool(scan.get("team_id")),
+        )
+    except AccessControlError as error:
+        return error_response(error, "/web-source-scans/retry")
+    queued = await asyncio.to_thread(retry_web_source_scan, scan_id)
+    if not queued:
+        return jsonify({
+            "error": "Only an unexpired failed indexing job can be retried"
+        }), 409
+    _schedule_web_source_index_job(scan_id)
+    response = _serialize_web_source_scan(queued)
+    response["message"] = "Failed pages were queued for retry."
+    return jsonify(response), 202
+
+
+@bp.delete("/web-source-scans/<scan_id>")
+@authenticated
+async def cancel_web_source_scan_route(auth_claims: dict[str, Any], scan_id: str):
+    scan = await asyncio.to_thread(get_web_source_scan, scan_id)
+    if not scan:
+        return "", 204
+    try:
+        _authorize_web_source_scope(
+            auth_claims,
+            scan.get("team_id"),
+            scan.get("data_group_ids"),
+        )
+    except AccessControlError as error:
+        return error_response(error, "/web-source-scans/cancel")
+    claimed = await asyncio.to_thread(claim_web_source_scan_for_cleanup, scan_id)
+    if not claimed:
+        return jsonify({"error": "The scan is currently being indexed"}), 409
+    if await _delete_web_source_scan_stage(claimed):
+        await asyncio.to_thread(delete_web_source_scan, scan_id)
+        return "", 204
+    await asyncio.to_thread(mark_web_source_scan_failed, scan_id, "staging_cleanup")
+    return jsonify({"error": "Scan cancellation is pending storage cleanup"}), 202
 
 
 @bp.post("/scrape")
 @authenticated
 async def scrape_website(auth_claims: dict[str, Any]):
-    try:
-        data = await request.get_json()
-        user_oid = auth_claims["oid"]
-        start_url = data.get('url', None)
-        tid = data.get('team_id', None)
-        data_groups_id = data.get('data_groups_id', None)
-        folder_name = start_url.replace("/", "_")
-
-        if not start_url:
-            return jsonify({"error": "Missing 'url' in payload"}), 400
-
-        result, files = await asyncio.to_thread(run_scraping_job, start_url)
-        if tid:
-            await upload_many(files, folder_name, user_oid, tid, data_groups_id)
-        else:
-            await upload_many(files, folder_name, user_oid)
-        return jsonify(result), 200
-
-    except Exception as e:
-        current_app.logger.exception(
-            "An error occurred during the scraping process")
-        return jsonify({"status": "error", "message": str(e)}), 500
+    del auth_claims
+    return jsonify({
+        "status": "error",
+        "message": (
+            "Direct web-source indexing is disabled. "
+            "Use Scan & Verify, then Confirm Index."
+        ),
+    }), 410
 
 
 @bp.get("/list_web_contents")
 @authenticated
 async def list_web_contents(auth_claims: dict[str, Any]):
-    request_json = await request.get_json()
-    team_id = request.args.get("team_id")
+    team_id = str(request.args.get("team_id") or "").strip() or None
+    try:
+        _authorize_web_source_scope(auth_claims, team_id)
+    except AccessControlError as error:
+        return error_response(error, "/list_web_contents")
     scope = "web_team" if team_id else "web_global"
-    files = []
-    for stored_object in await _knowledge_store().list(scope, prefix=f"{team_id}/" if team_id else ""):
+    entries: dict[str, dict[str, Any]] = {}
+    for stored_object in await _knowledge_store().list(
+        scope, prefix=f"{team_id}/" if team_id else ""
+    ):
+        if stored_object.tags.get("status") not in {None, "", "indexed"}:
+            continue
+        source_url = _web_source_from_key(stored_object.key, team_id)
+        entry = entries.setdefault(
+            source_url,
+            {
+                "groups": set(),
+                "pages": 0,
+                "last_refreshed_at": None,
+                "crawl_depth": 1,
+                "truncated": False,
+                "limit_reason": None,
+            },
+        )
+        stored_depth = str(stored_object.tags.get("crawl_depth", "1"))
+        if stored_depth in {"0", "1", "2"}:
+            entry["crawl_depth"] = int(stored_depth)
+        if str(stored_object.tags.get("crawl_truncated", "false")).lower() == "true":
+            entry["truncated"] = True
+            stored_reason = str(stored_object.tags.get("crawl_limit_reason", ""))
+            entry["limit_reason"] = stored_reason or None
+        entry["pages"] += 1
+        modified = (
+            stored_object.last_modified.isoformat()
+            if stored_object.last_modified
+            else None
+        )
+        if modified and (
+            entry["last_refreshed_at"] is None
+            or modified > entry["last_refreshed_at"]
+        ):
+            entry["last_refreshed_at"] = modified
         if team_id:
-            groups_id_list = str(stored_object.tags.get("data_groups", "")).split("/")
-            group_list = []
-            for group_id in filter(None, groups_id_list):
+            for group_id in filter(
+                None, str(stored_object.tags.get("data_groups", "")).split("/")
+            ):
                 data_group = get_data_group_by_id(group_id)
                 if data_group:
-                    group_list.append(data_group["name"])
-            files.append([
-                stored_object.key.removeprefix(f"{team_id}/").split("/")[0].replace("_", "/"),
-                group_list,
-            ])
-            seen = set()
-            result = []
-            for key, names in files:
-                item = (key, tuple(names))
-                if item not in seen:
-                    seen.add(item)
-                    result.append([key, names])
-            files = result
-        else:
-            files.append(stored_object.key)
-            files = list({p.split("/")[0].replace("_", "/") for p in files})
-    return jsonify(files), 200
+                    entry["groups"].add(str(data_group["name"]))
+    result = [
+        [
+            url,
+            sorted(entry["groups"]),
+            entry["last_refreshed_at"],
+            entry["pages"],
+            entry["crawl_depth"],
+            entry["truncated"],
+            entry["limit_reason"],
+        ]
+        for url, entry in sorted(entries.items())
+    ]
+    return jsonify(result), 200
 
 
 async def delete_path(data: str, gid=None):
     scope = "web_team" if gid else "web_global"
     ingester = current_app.config[CONFIG_INGESTER]
-    # ใช้ to_thread เปิดไฟล์ เพื่อไม่บล็อค event loop
     delay = 1.0
     for attempt in range(6):
         try:
             if gid:
-                tag_resp = await _knowledge_store().get_tags(scope, data)
-                data_groups = tag_resp["data_groups"].split("/")
+                tags = await _knowledge_store().get_tags(scope, data)
+                data_groups = list(filter(None, tags.get("data_groups", "").split("/")))
                 await _knowledge_store().delete(scope, data)
                 for data_group in data_groups:
                     await ingester.remove_groups_file(data, data_group)
@@ -6823,53 +7736,52 @@ async def delete_path(data: str, gid=None):
             return True
         except Exception:
             if attempt == 5:
+                current_app.logger.exception(
+                    "Unable to delete approved web source page"
+                )
                 return False
             await asyncio.sleep(delay + random.random() * 0.2)
             delay = min(delay * 2, 20)
 
 
 async def delete_many(paths, gid=None):
+    sem = asyncio.Semaphore(min(FILES_CONCURRENT, 8))
 
-    sem = asyncio.Semaphore(FILES_CONCURRENT)
-    done = 0
-
-    async def worker(p):
-        nonlocal done
+    async def worker(path):
         async with sem:
-            if gid:
-                ok = await delete_path(p, gid)
-            else:
-                ok = await delete_path(p)
-            done += 1
-            if done % 100 == 0:
-                print(f"progress: {done}/{len(paths)}")
-            return ("p", ok)
+            return path, await delete_path(path, gid)
 
-    tasks = [asyncio.create_task(worker(p)) for p in paths]
-    results = await asyncio.gather(*tasks, return_exceptions=False)
-    return results
+    return await asyncio.gather(*(worker(path) for path in paths))
 
 
 @bp.post("/delete_web_content")
 @authenticated
 async def delete_web_content(auth_claims: dict[str, Any]):
     request_json = await request.get_json()
-    in_url = request_json.get("url")
-    team_id = request_json.get("team_id")
-    url = str(in_url).replace("/", "_")
-    scope = "web_team" if team_id else "web_global"
+    if not isinstance(request_json, dict):
+        return jsonify({"error": "Request body must be JSON"}), 400
+    team_id = str(request_json.get("team_id") or "").strip() or None
     try:
-        files = []
-        for stored_object in await _knowledge_store().list(scope, prefix=f"{team_id}/" if team_id else ""):
-            if url == stored_object.key.split("/")[1 if team_id else 0]:
-                files.append(stored_object.key)
-        if team_id:
-            await delete_many(files, team_id)
-        else:
-            await delete_many(files)
-    except Exception as error:
-        current_app.logger.exception("Error to delete web content", error)
-    return jsonify({"message": f"url {in_url} deleted successfully"}), 200
+        _authorize_web_source_scope(auth_claims, team_id)
+        source_url = normalize_stored_source_url(str(request_json.get("url") or ""))
+    except AccessControlError as error:
+        return error_response(error, "/delete_web_content")
+    except WebScrapingError as error:
+        return jsonify({"error": str(error)}), 400
+    scope = "web_team" if team_id else "web_global"
+    new_folder = source_folder(source_url)
+    legacy_folder = source_url.replace("/", "_")
+    files = []
+    for stored_object in await _knowledge_store().list(scope, prefix=f"{team_id}/" if team_id else ""):
+        relative = stored_object.key.removeprefix(f"{team_id}/") if team_id else stored_object.key
+        if relative.split("/", 1)[0] in {new_folder, legacy_folder}:
+            files.append(stored_object.key)
+    if not files:
+        return jsonify({"error": "Approved web source not found"}), 404
+    deleted = await delete_many(files, team_id)
+    if any(not ok for _, ok in deleted):
+        return jsonify({"error": "The approved web source could not be fully deleted"}), 500
+    return jsonify({"message": f"Approved web source {source_url} deleted successfully", "deleted_pages": len(files)}), 200
 
 
 @bp.get("/list_roles")
@@ -8360,6 +9272,34 @@ async def install_catalog_agent(auth_claims: dict[str, Any], catalog_item_id: st
             copy.deepcopy(snapshot.get("prompt") or {}),
             config,
         )
+        if (config.get("tool_settings") or {}).get("chart") is True:
+            chart_settings = config.get("chart_settings") or {}
+            if not isinstance(chart_settings, dict):
+                delete_agent_cascade(
+                    str(installed_agent_id),
+                    reason="catalog_install_failed",
+                    actor_id=str(actor.get("_id") or ""),
+                )
+                raise AccessControlError("Catalog chart settings must be an object", status_code=400)
+            try:
+                insert_chart_binding(
+                    agent_id=str(installed_agent_id),
+                    color_palette=chart_settings.get("color_palette"),
+                    title_template=chart_settings.get("title_template", ""),
+                    trigger_keywords=chart_settings.get("trigger_keywords", []),
+                    enabled=chart_settings.get("enabled", True),
+                    auto_generate=chart_settings.get("auto_generate", False),
+                    chart_selection_mode=chart_settings.get("chart_selection_mode", "auto"),
+                    default_chart_type=chart_settings.get("default_chart_type"),
+                    allowed_chart_types=chart_settings.get("allowed_chart_types"),
+                )
+            except Exception:
+                delete_agent_cascade(
+                    str(installed_agent_id),
+                    reason="catalog_install_failed",
+                    actor_id=str(actor.get("_id") or ""),
+                )
+                raise
         team_agent_ids = [str(value) for value in team.get("agent_id") or []]
         if installed_agent_id not in team_agent_ids:
             team_agent_ids.append(installed_agent_id)
@@ -9971,6 +10911,41 @@ async def setup_clients():
         current_app.logger.info("Skipping application data bootstrap")
         return
 
+    _web_source_scan_retention_hours()
+    try:
+        web_scan_cleanup_interval = float(
+            os.getenv("WEB_SOURCE_SCAN_CLEANUP_INTERVAL_SECONDS", "3600")
+        )
+    except ValueError as error:
+        raise ValueError("WEB_SOURCE_SCAN_CLEANUP_INTERVAL_SECONDS must be numeric") from error
+    if not math.isfinite(web_scan_cleanup_interval) or web_scan_cleanup_interval < 60:
+        raise ValueError("WEB_SOURCE_SCAN_CLEANUP_INTERVAL_SECONDS must be at least 60")
+    try:
+        web_index_recovery_interval = float(
+            os.getenv("WEB_SOURCE_INDEX_RECOVERY_INTERVAL_SECONDS", "15")
+        )
+    except ValueError as error:
+        raise ValueError(
+            "WEB_SOURCE_INDEX_RECOVERY_INTERVAL_SECONDS must be numeric"
+        ) from error
+    if not math.isfinite(web_index_recovery_interval) or web_index_recovery_interval < 5:
+        raise ValueError(
+            "WEB_SOURCE_INDEX_RECOVERY_INTERVAL_SECONDS must be at least 5"
+        )
+    await asyncio.to_thread(ensure_web_source_scan_indexes)
+    web_index_recovery_task = asyncio.create_task(
+        _recover_web_source_index_jobs(web_index_recovery_interval)
+    )
+    BACKGROUND_TASKS.add(web_index_recovery_task)
+    web_index_recovery_task.add_done_callback(BACKGROUND_TASKS.discard)
+    current_app.config[CONFIG_WEB_SOURCE_INDEX_RECOVERY_TASK] = web_index_recovery_task
+    web_scan_cleanup_task = asyncio.create_task(
+        _run_web_source_scan_cleanup(web_scan_cleanup_interval)
+    )
+    BACKGROUND_TASKS.add(web_scan_cleanup_task)
+    web_scan_cleanup_task.add_done_callback(BACKGROUND_TASKS.discard)
+    current_app.config[CONFIG_WEB_SOURCE_SCAN_CLEANUP_TASK] = web_scan_cleanup_task
+
     system_permissions = get_all_permissions()
     if system_permissions == []:
         await insert_permissions()
@@ -10033,6 +11008,22 @@ Don’t combine sources, list each source separately, for example [info1.txt][in
 
 @bp.after_app_serving
 async def close_clients():
+    if recovery_task := current_app.config.get(CONFIG_WEB_SOURCE_INDEX_RECOVERY_TASK):
+        recovery_task.cancel()
+        try:
+            await recovery_task
+        except asyncio.CancelledError:
+            pass
+    for web_source_task in tuple(WEB_SOURCE_INDEX_TASKS):
+        web_source_task.cancel()
+    if WEB_SOURCE_INDEX_TASKS:
+        await asyncio.gather(*tuple(WEB_SOURCE_INDEX_TASKS), return_exceptions=True)
+    if cleanup_task := current_app.config.get(CONFIG_WEB_SOURCE_SCAN_CLEANUP_TASK):
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
     if cleanup_task := current_app.config.get("AGENT_DRAFT_CLEANUP_TASK"):
         cleanup_task.cancel()
         try:
