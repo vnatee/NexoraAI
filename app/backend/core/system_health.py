@@ -135,6 +135,7 @@ def _integration_summary(database: Any) -> dict[str, Any]:
 def _job_summary(database: Any, config: Mapping[str, Any], environ: Mapping[str, str]) -> dict[str, Any]:
     ingestion = database["ingestion_jobs"]
     attachments = database["chat_attachment_metadata"]
+    agent_invocations = database["agent_invocation_jobs"]
     attachment_enabled = str(environ.get("CHAT_ATTACHMENT_STORE", "disabled")).lower() != "disabled"
     ingestion_enabled = str(environ.get("USE_USER_UPLOAD", "")).lower() == "true"
     return {
@@ -150,6 +151,14 @@ def _job_summary(database: Any, config: Mapping[str, Any], environ: Mapping[str,
             "failed": int(attachments.count_documents({"status": "failed", "delete_at": None})),
             "worker_status": _task_state(config, "chat_attachment_recovery_task", attachment_enabled),
             "cleanup_status": _task_state(config, "chat_attachment_cleanup_task", attachment_enabled),
+        },
+        "agent_invocations": {
+            "queued": int(agent_invocations.count_documents({"status": "queued"})),
+            "processing": int(agent_invocations.count_documents({"status": "running"})),
+            "failed": int(agent_invocations.count_documents({"status": "failed"})),
+            "worker_status": _task_state(
+                config, "agent_invocation_job_recovery_task", True
+            ),
         },
     }
 
@@ -313,6 +322,12 @@ async def build_system_health_snapshot(
         jobs = {
             "ingestion": {"queued": 0, "processing": 0, "failed": 0, "worker_status": "unknown"},
             "attachments": {"queued": 0, "processing": 0, "failed": 0, "worker_status": "unknown", "cleanup_status": "unknown"},
+            "agent_invocations": {
+                "queued": 0,
+                "processing": 0,
+                "failed": 0,
+                "worker_status": "unknown",
+            },
         }
 
     storage_provider = str(settings.get("KNOWLEDGE_STORAGE_PROVIDER", "azure")).strip().lower()

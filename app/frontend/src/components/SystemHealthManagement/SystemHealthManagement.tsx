@@ -204,6 +204,7 @@ export function SystemHealthManagement() {
                             <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 2 }}>
                                 <JobGroup title="Document ingestion" values={snapshot.jobs.ingestion} />
                                 <JobGroup title="Chat attachments" values={snapshot.jobs.attachments} />
+                                <JobGroup title="Agent API invocations" values={snapshot.jobs.agent_invocations} />
                             </Box>
                         </CardContent>
                     </Card>

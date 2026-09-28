@@ -166,6 +166,20 @@ from mongo_table_connecters.agents import (
     list_expired_agent_draft_ids,
     update_agent,
 )
+from mongo_table_connecters.agent_invocation_jobs import (
+    AgentInvocationJobError,
+    claim_agent_invocation_job,
+    complete_agent_invocation_job,
+    create_agent_invocation_job,
+    decrypt_agent_invocation_job_input,
+    ensure_agent_invocation_job_indexes,
+    get_agent_invocation_job,
+    heartbeat_agent_invocation_job,
+    list_recoverable_agent_invocation_jobs,
+    release_agent_invocation_job,
+    retry_agent_invocation_job,
+    serialize_agent_invocation_job,
+)
 from mongo_table_connecters.agent_invocation_keys import (
     AgentInvocationKeyError,
     authenticate_agent_invocation_key,
@@ -178,6 +192,7 @@ from mongo_table_connecters.agent_invocation_keys import (
     mark_agent_invocation_key_used,
     revoke_agent_invocation_key,
     rotate_agent_invocation_key,
+    validate_agent_invocation_key_document,
 )
 from mongo_table_connecters.agent_catalog import (
     ensure_agent_catalog_indexes,
@@ -2966,14 +2981,35 @@ def _agent_invocation_bearer_token() -> str:
     return token.strip()
 
 
-async def _execute_agent_invocation(
-    *,
-    key_document: dict[str, Any],
-    agent_id: str,
-    input_text: str,
-    conversation_id: str | None,
-    usage_context: dict[str, Any],
-) -> tuple[dict[str, Any], str]:
+def _agent_invocation_request_body(body: object) -> tuple[str, str | None]:
+    if not isinstance(body, dict):
+        raise AgentInvocationKeyError("request body must be an object")
+    input_text = str(body.get("input") or "").strip()
+    try:
+        maximum = max(
+            1,
+            min(
+                int(
+                    os.getenv("AGENT_INVOCATION_MAX_INPUT_CHARACTERS", "32768")
+                ),
+                262144,
+            ),
+        )
+    except ValueError:
+        maximum = 32768
+    if not input_text:
+        raise AgentInvocationKeyError("input is required")
+    if len(input_text) > maximum:
+        raise AgentInvocationKeyError(
+            f"input exceeds the {maximum} character limit", status_code=413
+        )
+    conversation_id = str(body.get("conversation_id") or "").strip() or None
+    return input_text, conversation_id
+
+
+def _validate_agent_invocation_target(
+    key_document: dict[str, Any], agent_id: str
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     team_id = str(key_document.get("team_id") or "")
     team = get_team_by_id(team_id)
     if not team or agent_id not in {
@@ -3008,6 +3044,41 @@ async def _execute_agent_invocation(
             "The API key references a Data Group that is no longer Team-wide",
             status_code=403,
         )
+    return team, agent or {}, data_group_ids
+
+
+def _agent_invocation_public_response(
+    result: dict[str, Any],
+    *,
+    request_id: str,
+    agent_id: str,
+    conversation_id: str,
+) -> dict[str, Any]:
+    result_context = result.get("context") or {}
+    return {
+        "id": request_id,
+        "object": "agent.invocation",
+        "agent_id": agent_id,
+        "conversation_id": conversation_id,
+        "output": str((result.get("message") or {}).get("content") or ""),
+        "citations": ((result_context.get("data_points") or {}).get("text") or []),
+        "chart": result_context.get("chart"),
+        "diagram": result_context.get("diagram"),
+    }
+
+
+async def _execute_agent_invocation(
+    *,
+    key_document: dict[str, Any],
+    agent_id: str,
+    input_text: str,
+    conversation_id: str | None,
+    usage_context: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    team_id = str(key_document.get("team_id") or "")
+    _team, agent, data_group_ids = _validate_agent_invocation_target(
+        key_document, agent_id
+    )
 
     normalized_conversation_id = ensure_conversation_id(conversation_id)
     service_id = f"service:{key_document['_id']}"
@@ -3247,33 +3318,14 @@ async def invoke_agent_api(agent_id: str):
         )
         enforce_agent_invocation_rate_limit(key_document)
         body = await request.get_json()
-        input_text = str((body or {}).get("input") or "").strip()
-        try:
-            max_input_characters = max(
-                1,
-                min(
-                    int(
-                        os.getenv(
-                            "AGENT_INVOCATION_MAX_INPUT_CHARACTERS", "32768"
-                        )
-                    ),
-                    262144,
-                ),
-            )
-        except ValueError:
-            max_input_characters = 32768
-        if not input_text:
-            raise AgentInvocationKeyError("input is required")
-        if len(input_text) > max_input_characters:
-            raise AgentInvocationKeyError(
-                f"input exceeds the {max_input_characters} character limit",
-                status_code=413,
-            )
+        input_text, requested_conversation_id = _agent_invocation_request_body(
+            body
+        )
         result, conversation_id = await _execute_agent_invocation(
             key_document=key_document,
             agent_id=str(agent_id or ""),
             input_text=input_text,
-            conversation_id=(body or {}).get("conversation_id"),
+            conversation_id=requested_conversation_id,
             usage_context=context,
         )
         mark_agent_invocation_key_used(str(key_document["_id"]))
@@ -3286,22 +3338,13 @@ async def invoke_agent_api(agent_id: str):
             status="success",
             duration_ms=int((time.monotonic() - started) * 1000),
         )
-        result_context = result.get("context") or {}
         response = jsonify(
-            {
-                "id": request_id,
-                "object": "agent.invocation",
-                "agent_id": agent_id,
-                "conversation_id": conversation_id,
-                "output": str(
-                    (result.get("message") or {}).get("content") or ""
-                ),
-                "citations": (
-                    (result_context.get("data_points") or {}).get("text") or []
-                ),
-                "chart": result_context.get("chart"),
-                "diagram": result_context.get("diagram"),
-            }
+            _agent_invocation_public_response(
+                result,
+                request_id=request_id,
+                agent_id=agent_id,
+                conversation_id=conversation_id,
+            )
         )
         response.headers["Cache-Control"] = "no-store"
         return response
@@ -3319,6 +3362,212 @@ async def invoke_agent_api(agent_id: str):
                 error_code=type(error).__name__,
             )
         return error_response(error, "/api/v1/agents/<agent_id>/invoke")
+
+
+def _agent_invocation_sse(event: str, data: dict[str, Any]) -> str:
+    payload = json.dumps(
+        data, ensure_ascii=False, separators=(",", ":"), default=str
+    )
+    return f"event: {event}\ndata: {payload}\n\n"
+
+
+@bp.post("/api/v1/agents/<agent_id>/invoke/stream")
+async def stream_agent_api(agent_id: str):
+    request_id = str(uuid.uuid4())
+    key_document: dict[str, Any] | None = None
+    try:
+        if not request.is_json:
+            raise AgentInvocationKeyError("request must be json", status_code=415)
+        key_document = authenticate_agent_invocation_key(
+            _agent_invocation_bearer_token()
+        )
+        enforce_agent_invocation_rate_limit(key_document)
+        body = await request.get_json()
+        input_text, requested_conversation_id = _agent_invocation_request_body(
+            body
+        )
+        _validate_agent_invocation_target(key_document, str(agent_id or ""))
+    except Exception as error:
+        return error_response(error, "/api/v1/agents/<agent_id>/invoke/stream")
+
+    @stream_with_context
+    async def generate():
+        context: dict[str, Any] = {}
+        started = time.monotonic()
+        execution_task: asyncio.Task | None = None
+        yield _agent_invocation_sse(
+            "started",
+            {"id": request_id, "agent_id": agent_id, "status": "running"},
+        )
+        try:
+            execution_task = asyncio.create_task(
+                _execute_agent_invocation(
+                    key_document=key_document or {},
+                    agent_id=str(agent_id or ""),
+                    input_text=input_text,
+                    conversation_id=requested_conversation_id,
+                    usage_context=context,
+                )
+            )
+            while not execution_task.done():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(execution_task), timeout=15
+                    )
+                except asyncio.TimeoutError:
+                    yield _agent_invocation_sse(
+                        "heartbeat", {"id": request_id, "status": "running"}
+                    )
+            result, conversation_id = await execution_task
+            await asyncio.to_thread(
+                mark_agent_invocation_key_used, str((key_document or {})["_id"])
+            )
+            await asyncio.to_thread(
+                insert_agent_invocation_audit,
+                request_id=request_id,
+                key_id=str((key_document or {}).get("_id") or ""),
+                team_id=str((key_document or {}).get("team_id") or ""),
+                agent_id=agent_id,
+                event_type="agent_stream_completed",
+                status="success",
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            yield _agent_invocation_sse(
+                "completed",
+                _agent_invocation_public_response(
+                    result,
+                    request_id=request_id,
+                    agent_id=agent_id,
+                    conversation_id=conversation_id,
+                ),
+            )
+        except asyncio.CancelledError:
+            if execution_task and not execution_task.done():
+                execution_task.cancel()
+                await asyncio.gather(execution_task, return_exceptions=True)
+            await _finish_usage_reservation(context, state="released")
+            raise
+        except Exception as error:
+            await _finish_usage_reservation(context, state="released")
+            await asyncio.to_thread(
+                insert_agent_invocation_audit,
+                request_id=request_id,
+                key_id=str((key_document or {}).get("_id") or ""),
+                team_id=str((key_document or {}).get("team_id") or ""),
+                agent_id=agent_id,
+                event_type="agent_stream_completed",
+                status="failed",
+                duration_ms=int((time.monotonic() - started) * 1000),
+                error_code=type(error).__name__,
+            )
+            current_app.logger.exception(
+                "Streaming Agent invocation failed: id=%s", request_id
+            )
+            yield _agent_invocation_sse(
+                "error",
+                {
+                    "id": request_id,
+                    "status": "failed",
+                    "error": {
+                        "code": type(error).__name__,
+                        "message": "The Agent invocation failed",
+                    },
+                },
+            )
+
+    response = await make_response(generate())
+    response.headers["Content-Type"] = "text/event-stream; charset=utf-8"
+    response.headers["Cache-Control"] = "no-cache, no-store"
+    response.headers["X-Accel-Buffering"] = "no"
+    return response
+
+
+@bp.post("/api/v1/agents/<agent_id>/jobs")
+async def create_agent_api_job(agent_id: str):
+    try:
+        if not request.is_json:
+            raise AgentInvocationKeyError("request must be json", status_code=415)
+        key_document = authenticate_agent_invocation_key(
+            _agent_invocation_bearer_token()
+        )
+        enforce_agent_invocation_rate_limit(key_document)
+        body = await request.get_json()
+        input_text, conversation_id = _agent_invocation_request_body(body)
+        _validate_agent_invocation_target(key_document, str(agent_id or ""))
+        job, created = await asyncio.to_thread(
+            create_agent_invocation_job,
+            key_id=str(key_document["_id"]),
+            team_id=str(key_document.get("team_id") or ""),
+            agent_id=str(agent_id or ""),
+            input_text=input_text,
+            conversation_id=conversation_id,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+        )
+        if created:
+            _schedule_agent_invocation_job(str(job["_id"]))
+        payload = serialize_agent_invocation_job(job, include_result=False)
+        payload["idempotent_replay"] = not created
+        response = jsonify(payload)
+        response.status_code = 202
+        response.headers["Location"] = f"/api/v1/agent-jobs/{job['_id']}"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception as error:
+        return error_response(error, "/api/v1/agents/<agent_id>/jobs")
+
+
+@bp.get("/api/v1/agent-jobs/<job_id>")
+async def get_agent_api_job(job_id: str):
+    try:
+        key_document = authenticate_agent_invocation_key(
+            _agent_invocation_bearer_token()
+        )
+        job = await asyncio.to_thread(get_agent_invocation_job, job_id)
+        if not job or str(job.get("key_id") or "") != str(key_document["_id"]):
+            raise AgentInvocationJobError(
+                "Invocation job not found", status_code=404
+            )
+        response = jsonify(serialize_agent_invocation_job(job))
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception as error:
+        return error_response(error, "/api/v1/agent-jobs/<job_id>")
+
+
+@bp.post("/api/v1/agent-jobs/<job_id>/retry")
+async def retry_agent_api_job(job_id: str):
+    try:
+        key_document = authenticate_agent_invocation_key(
+            _agent_invocation_bearer_token()
+        )
+        existing = await asyncio.to_thread(get_agent_invocation_job, job_id)
+        if not existing or str(existing.get("key_id") or "") != str(
+            key_document["_id"]
+        ):
+            raise AgentInvocationJobError(
+                "Invocation job not found", status_code=404
+            )
+        enforce_agent_invocation_rate_limit(key_document)
+        job = await asyncio.to_thread(
+            retry_agent_invocation_job, job_id, str(key_document["_id"])
+        )
+        if not job:
+            raise AgentInvocationJobError(
+                "Only a failed, unexpired invocation job can be retried",
+                status_code=409,
+            )
+        _schedule_agent_invocation_job(str(job["_id"]))
+        response = jsonify(
+            serialize_agent_invocation_job(job, include_result=False)
+        )
+        response.status_code = 202
+        response.headers["Location"] = f"/api/v1/agent-jobs/{job['_id']}"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception as error:
+        return error_response(error, "/api/v1/agent-jobs/<job_id>/retry")
+
+
 @bp.route("/chat/stream", methods=["POST"])
 @authenticated
 async def chat_stream(auth_claims: dict[str, Any]):
@@ -6616,8 +6865,140 @@ BACKGROUND_TASKS = set()
 ATTACHMENT_EXTRACTION_TASKS: set[asyncio.Task] = set()
 INGESTION_TASKS: set[asyncio.Task] = set()
 WEB_SOURCE_INDEX_TASKS: set[asyncio.Task] = set()
+AGENT_INVOCATION_JOB_TASKS: set[asyncio.Task] = set()
+AGENT_INVOCATION_JOB_IDS: set[str] = set()
 ATTACHMENT_EXTRACTION_WORKER_ID = f"attachment-{uuid.uuid4()}"
 WEB_SOURCE_INDEX_WORKER_ID = f"web-source-{uuid.uuid4()}"
+AGENT_INVOCATION_JOB_WORKER_ID = f"agent-invocation-{uuid.uuid4()}"
+
+
+async def _heartbeat_agent_invocation_job(job_id: str) -> None:
+    while True:
+        await asyncio.sleep(30)
+        updated = await asyncio.to_thread(
+            heartbeat_agent_invocation_job, job_id, AGENT_INVOCATION_JOB_WORKER_ID
+        )
+        if not updated:
+            return
+
+
+async def _run_agent_invocation_job(job_id: str) -> None:
+    usage_context: dict[str, Any] = {}
+    heartbeat_task: asyncio.Task | None = None
+    started = time.monotonic()
+    claimed: dict[str, Any] | None = None
+    try:
+        claimed = await asyncio.to_thread(
+            claim_agent_invocation_job, job_id, AGENT_INVOCATION_JOB_WORKER_ID
+        )
+        if not claimed:
+            return
+        heartbeat_task = asyncio.create_task(
+            _heartbeat_agent_invocation_job(job_id)
+        )
+        key_document = await asyncio.to_thread(
+            get_agent_invocation_key, str(claimed.get("key_id") or "")
+        )
+        validate_agent_invocation_key_document(key_document)
+        input_text = await asyncio.to_thread(
+            decrypt_agent_invocation_job_input, claimed
+        )
+        result, conversation_id = await _execute_agent_invocation(
+            key_document=key_document or {},
+            agent_id=str(claimed.get("agent_id") or ""),
+            input_text=input_text,
+            conversation_id=claimed.get("conversation_id"),
+            usage_context=usage_context,
+        )
+        public_result = _agent_invocation_public_response(
+            result,
+            request_id=str(claimed["_id"]),
+            agent_id=str(claimed.get("agent_id") or ""),
+            conversation_id=conversation_id,
+        )
+        await asyncio.to_thread(
+            complete_agent_invocation_job,
+            job_id,
+            AGENT_INVOCATION_JOB_WORKER_ID,
+            result=public_result,
+        )
+        await asyncio.to_thread(
+            mark_agent_invocation_key_used, str(claimed.get("key_id") or "")
+        )
+        await asyncio.to_thread(
+            insert_agent_invocation_audit,
+            request_id=job_id,
+            key_id=str(claimed.get("key_id") or ""),
+            team_id=str(claimed.get("team_id") or ""),
+            agent_id=str(claimed.get("agent_id") or ""),
+            event_type="agent_job_completed",
+            status="success",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+    except asyncio.CancelledError:
+        await _finish_usage_reservation(usage_context, state="released")
+        if claimed:
+            await asyncio.to_thread(
+                release_agent_invocation_job,
+                job_id,
+                AGENT_INVOCATION_JOB_WORKER_ID,
+            )
+        raise
+    except Exception as error:
+        await _finish_usage_reservation(usage_context, state="released")
+        if claimed:
+            await asyncio.to_thread(
+                complete_agent_invocation_job,
+                job_id,
+                AGENT_INVOCATION_JOB_WORKER_ID,
+                error=error,
+            )
+            await asyncio.to_thread(
+                insert_agent_invocation_audit,
+                request_id=job_id,
+                key_id=str(claimed.get("key_id") or ""),
+                team_id=str(claimed.get("team_id") or ""),
+                agent_id=str(claimed.get("agent_id") or ""),
+                event_type="agent_job_completed",
+                status="failed",
+                duration_ms=int((time.monotonic() - started) * 1000),
+                error_code=type(error).__name__,
+            )
+        current_app.logger.exception("Agent invocation job failed: id=%s", job_id)
+    finally:
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+
+
+def _schedule_agent_invocation_job(job_id: str) -> None:
+    normalized_job_id = str(job_id)
+    if normalized_job_id in AGENT_INVOCATION_JOB_IDS:
+        return
+    AGENT_INVOCATION_JOB_IDS.add(normalized_job_id)
+    task = asyncio.create_task(_run_agent_invocation_job(normalized_job_id))
+    AGENT_INVOCATION_JOB_TASKS.add(task)
+    BACKGROUND_TASKS.add(task)
+
+    def _discard(_task: asyncio.Task) -> None:
+        AGENT_INVOCATION_JOB_IDS.discard(normalized_job_id)
+        AGENT_INVOCATION_JOB_TASKS.discard(_task)
+        BACKGROUND_TASKS.discard(_task)
+
+    task.add_done_callback(_discard)
+
+
+async def _recover_agent_invocation_jobs(interval_seconds: float) -> None:
+    while True:
+        try:
+            jobs = await asyncio.to_thread(list_recoverable_agent_invocation_jobs)
+            for job in jobs:
+                _schedule_agent_invocation_job(str(job.get("_id") or ""))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            current_app.logger.exception("Unable to recover Agent invocation jobs")
+        await asyncio.sleep(interval_seconds)
 
 
 def _agent_draft_retention_hours() -> float:
@@ -10875,6 +11256,7 @@ async def setup_clients():
         ensure_agent_catalog_indexes()
         ensure_agent_indexes()
         ensure_agent_invocation_key_indexes()
+        ensure_agent_invocation_job_indexes()
 
     # Use the current user identity for keyless authentication to Azure services.
     # This assumes you use 'azd auth login' locally, and managed identity when deployed on Azure.
@@ -11383,6 +11765,30 @@ async def setup_clients():
         current_app.logger.info("Skipping application data bootstrap")
         return
 
+    try:
+        agent_invocation_recovery_interval = float(
+            os.getenv("AGENT_INVOCATION_JOB_RECOVERY_INTERVAL_SECONDS", "15")
+        )
+    except ValueError as error:
+        raise ValueError(
+            "AGENT_INVOCATION_JOB_RECOVERY_INTERVAL_SECONDS must be numeric"
+        ) from error
+    if (
+        not math.isfinite(agent_invocation_recovery_interval)
+        or agent_invocation_recovery_interval < 5
+    ):
+        raise ValueError(
+            "AGENT_INVOCATION_JOB_RECOVERY_INTERVAL_SECONDS must be at least 5"
+        )
+    agent_invocation_recovery_task = asyncio.create_task(
+        _recover_agent_invocation_jobs(agent_invocation_recovery_interval)
+    )
+    BACKGROUND_TASKS.add(agent_invocation_recovery_task)
+    agent_invocation_recovery_task.add_done_callback(BACKGROUND_TASKS.discard)
+    current_app.config["agent_invocation_job_recovery_task"] = (
+        agent_invocation_recovery_task
+    )
+
     _web_source_scan_retention_hours()
     try:
         web_scan_cleanup_interval = float(
@@ -11480,6 +11886,20 @@ Don’t combine sources, list each source separately, for example [info1.txt][in
 
 @bp.after_app_serving
 async def close_clients():
+    if recovery_task := current_app.config.get(
+        "agent_invocation_job_recovery_task"
+    ):
+        recovery_task.cancel()
+        try:
+            await recovery_task
+        except asyncio.CancelledError:
+            pass
+    for invocation_task in tuple(AGENT_INVOCATION_JOB_TASKS):
+        invocation_task.cancel()
+    if AGENT_INVOCATION_JOB_TASKS:
+        await asyncio.gather(
+            *tuple(AGENT_INVOCATION_JOB_TASKS), return_exceptions=True
+        )
     if recovery_task := current_app.config.get(CONFIG_WEB_SOURCE_INDEX_RECOVERY_TASK):
         recovery_task.cancel()
         try:

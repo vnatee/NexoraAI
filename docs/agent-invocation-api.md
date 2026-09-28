@@ -54,7 +54,7 @@ curl -X POST "https://YOUR-NEXORA-HOST/api/v1/agents/AGENT_ID/invoke" \
 ```
 
 `conversation_id` is optional. If omitted, NexoraAI creates one and returns it
-for request correlation. Phase 1 invocations are stateless.
+for request correlation. Synchronous invocations are stateless.
 
 Successful response:
 
@@ -73,6 +73,74 @@ Successful response:
 
 Internal reasoning and tool traces are never returned. Citations, a validated
 chart, or a diagram are returned only when the Agent runtime produced them.
+
+## Stream an invocation
+
+Use Server-Sent Events (SSE) when the caller needs an open connection and
+lifecycle updates while the Agent works:
+
+```bash
+curl -N -X POST \
+  "https://YOUR-NEXORA-HOST/api/v1/agents/AGENT_ID/invoke/stream" \
+  -H "Authorization: Bearer nxai_REDACTED" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{"input":"Investigate the current service alerts."}'
+```
+
+The stream emits `started`, periodic `heartbeat`, and either `completed` or
+`error` events. The completed event uses the same public response schema as
+the synchronous endpoint. This stream reports execution lifecycle and the final
+answer; it deliberately does not expose internal tool events, chain-of-thought,
+or unvalidated token fragments.
+
+## Run an asynchronous job
+
+Use an asynchronous job for long-running integrations or callers that should
+not keep an HTTP connection open:
+
+```bash
+curl -X POST \
+  "https://YOUR-NEXORA-HOST/api/v1/agents/AGENT_ID/jobs" \
+  -H "Authorization: Bearer nxai_REDACTED" \
+  -H "Idempotency-Key: customer-operation-123" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Analyze the incident and compare it with our runbooks."}'
+```
+
+The API returns `202 Accepted`, a job object, and a `Location` header. Poll
+that URL with the same API key:
+
+```bash
+curl "https://YOUR-NEXORA-HOST/api/v1/agent-jobs/JOB_ID" \
+  -H "Authorization: Bearer nxai_REDACTED"
+```
+
+Job status is one of `queued`, `running`, `succeeded`, or `failed`. A
+successful job includes `result` in the synchronous invocation response
+format. Only the key that created the job may read or retry it.
+
+If a failed job remains within its retention period, retry it with:
+
+```bash
+curl -X POST \
+  "https://YOUR-NEXORA-HOST/api/v1/agent-jobs/JOB_ID/retry" \
+  -H "Authorization: Bearer nxai_REDACTED"
+```
+
+`Idempotency-Key` is optional but strongly recommended. Repeating the same
+request with the same key returns the original job and does not run it twice.
+Reusing that key with a different Agent, input, or conversation returns `409`.
+Only keyed HMAC digests of the idempotency key and request fingerprint are stored.
+
+Queued and running jobs use leases so another application replica can resume
+work after a restart. Recovery is at-least-once: an external action may have
+completed immediately before a worker failed, so action tools should also use
+their own idempotency controls. Inputs and successful results are encrypted with
+`APP_DATA_ENCRYPTION_KEY` while stored. They expire automatically after
+`AGENT_INVOCATION_JOB_RETENTION_HOURS` (168 hours by default). Keep the
+encryption key stable across replicas and restarts.
+
 
 ## Key lifecycle
 
@@ -101,5 +169,7 @@ Common status codes are:
 - `413`: input exceeds the configured character limit;
 - `429`: API-key rate limit or Team usage quota exceeded.
 
-The Phase 1 API is synchronous. Streaming, asynchronous jobs, idempotency keys,
-OpenAPI publication and client SDKs remain planned follow-up work.
+The Phase 2 API supports synchronous calls, lifecycle SSE, durable asynchronous
+jobs, retry/recovery, and idempotency keys. OpenAPI publication, client SDKs,
+webhooks, cancellation, and true token-delta streaming remain planned follow-up
+work.

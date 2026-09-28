@@ -43,6 +43,9 @@ class _Database:
             "chat_attachment_metadata": _Collection(
                 [{"status": "stored", "delete_at": None}, {"status": "failed", "delete_at": None}]
             ),
+            "agent_invocation_jobs": _Collection(
+                [{"status": "queued"}, {"status": "running"}, {"status": "failed"}]
+            ),
         }
 
     def command(self, name):
@@ -79,6 +82,7 @@ async def test_health_snapshot_contains_safe_service_integration_and_job_counts(
             "ingestion_recovery_task": _Task(),
             "chat_attachment_recovery_task": _Task(),
             "chat_attachment_cleanup_task": _Task(),
+            "agent_invocation_job_recovery_task": _Task(),
         },
         {
             "KNOWLEDGE_STORAGE_PROVIDER": "minio",
@@ -113,6 +117,12 @@ async def test_health_snapshot_contains_safe_service_integration_and_job_counts(
     }
     assert snapshot["jobs"]["ingestion"]["processing"] == 1
     assert snapshot["jobs"]["attachments"]["failed"] == 1
+    assert snapshot["jobs"]["agent_invocations"] == {
+        "queued": 1,
+        "processing": 1,
+        "failed": 1,
+        "worker_status": "running",
+    }
     assert next(item for item in snapshot["services"] if item["id"] == "tls_gateway") == {
         "id": "tls_gateway",
         "name": "HTTPS gateway",

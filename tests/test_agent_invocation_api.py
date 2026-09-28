@@ -226,6 +226,162 @@ async def test_invocation_route_returns_stable_response_without_tool_trace(
     assert "Summarize the policy" not in str(audits)
 
 
+
+@pytest.mark.asyncio
+async def test_async_job_route_is_idempotent_and_schedules_only_new_job(
+    client, monkeypatch
+):
+    now = datetime.now(timezone.utc)
+    key_document = {
+        "_id": "key-1",
+        "team_id": "team-1",
+        "allowed_agent_ids": ["agent-1"],
+    }
+    job = {
+        "_id": "job-1",
+        "key_id": "key-1",
+        "team_id": "team-1",
+        "agent_id": "agent-1",
+        "conversation_id": None,
+        "status": "queued",
+        "attempt": 0,
+        "created_at": now,
+        "updated_at": now,
+        "started_at": None,
+        "completed_at": None,
+        "expires_at": now + timedelta(hours=1),
+    }
+    scheduled = []
+    created_values = iter((True, False))
+    monkeypatch.setattr(
+        backend_app, "authenticate_agent_invocation_key", lambda _token: key_document
+    )
+    monkeypatch.setattr(
+        backend_app, "enforce_agent_invocation_rate_limit", lambda _key: None
+    )
+    monkeypatch.setattr(
+        backend_app, "_validate_agent_invocation_target", lambda *_args: ({}, {}, [])
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "create_agent_invocation_job",
+        lambda **_kwargs: (job, next(created_values)),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_schedule_agent_invocation_job",
+        lambda job_id: scheduled.append(job_id),
+    )
+
+    headers = {
+        "Authorization": "Bearer nxai_test.secret",
+        "Idempotency-Key": "customer-request-1",
+    }
+    first = await client.post(
+        "/api/v1/agents/agent-1/jobs",
+        headers=headers,
+        json={"input": "run the analysis"},
+    )
+    second = await client.post(
+        "/api/v1/agents/agent-1/jobs",
+        headers=headers,
+        json={"input": "run the analysis"},
+    )
+
+    assert first.status_code == 202
+    assert first.headers["Location"] == "/api/v1/agent-jobs/job-1"
+    assert (await first.get_json())["idempotent_replay"] is False
+    assert (await second.get_json())["idempotent_replay"] is True
+    assert scheduled == ["job-1"]
+
+
+@pytest.mark.asyncio
+async def test_job_status_is_visible_only_to_creating_key(client, monkeypatch):
+    now = datetime.now(timezone.utc)
+    job = {
+        "_id": "job-1",
+        "key_id": "key-1",
+        "team_id": "team-1",
+        "agent_id": "agent-1",
+        "conversation_id": None,
+        "status": "queued",
+        "attempt": 0,
+        "created_at": now,
+        "updated_at": now,
+        "started_at": None,
+        "completed_at": None,
+        "expires_at": now + timedelta(hours=1),
+    }
+    monkeypatch.setattr(
+        backend_app,
+        "authenticate_agent_invocation_key",
+        lambda _token: {"_id": "key-2", "team_id": "team-1"},
+    )
+    monkeypatch.setattr(
+        backend_app, "get_agent_invocation_job", lambda _job_id: job
+    )
+
+    response = await client.get(
+        "/api/v1/agent-jobs/job-1",
+        headers={"Authorization": "Bearer nxai_other.secret"},
+    )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_stream_route_emits_lifecycle_and_public_result(client, monkeypatch):
+    key_document = {
+        "_id": "key-1",
+        "team_id": "team-1",
+        "allowed_agent_ids": ["agent-1"],
+    }
+    monkeypatch.setattr(
+        backend_app, "authenticate_agent_invocation_key", lambda _token: key_document
+    )
+    monkeypatch.setattr(
+        backend_app, "enforce_agent_invocation_rate_limit", lambda _key: None
+    )
+    monkeypatch.setattr(
+        backend_app, "_validate_agent_invocation_target", lambda *_args: ({}, {}, [])
+    )
+    monkeypatch.setattr(
+        backend_app, "mark_agent_invocation_key_used", lambda _key_id: None
+    )
+    monkeypatch.setattr(
+        backend_app, "insert_agent_invocation_audit", lambda **_event: None
+    )
+
+    async def execute(**_kwargs):
+        return (
+            {
+                "message": {"content": "streamed answer"},
+                "context": {
+                    "data_points": {"text": [{"title": "Runbook"}]},
+                    "thoughts": ["private"],
+                },
+            },
+            "11111111-1111-4111-8111-111111111111",
+        )
+
+    monkeypatch.setattr(backend_app, "_execute_agent_invocation", execute)
+
+    response = await client.post(
+        "/api/v1/agents/agent-1/invoke/stream",
+        headers={"Authorization": "Bearer nxai_test.secret"},
+        json={"input": "check the service"},
+    )
+    body = (await response.get_data()).decode("utf-8")
+
+    assert response.status_code == 200
+    assert response.content_type == "text/event-stream; charset=utf-8"
+    assert "event: started" in body
+    assert "event: completed" in body
+    assert "streamed answer" in body
+    assert "private" not in body
+
+
+
 @pytest.mark.asyncio
 async def test_invocation_route_requires_bearer_key(client):
     response = await client.post(
