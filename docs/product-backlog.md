@@ -383,5 +383,10 @@ Recommended order when these items are scheduled:
 
 1. Define the usage-event and audit-event schemas shared by all three features.
 2. Design AI guardrails and tool-execution policies before exposing agents externally.
-3. Implement the Agent Invocation API with guardrails, authorization, quotas, and audit events enabled from the beginning.
+3. **Implemented (Phase 1):** synchronous Team-scoped Agent Invocation API with
+   expiring, restricted API keys; per-key rate limits; existing Agent
+   guardrails/tool policy/usage quotas; metadata-only audit; and Portal
+   create/list/rotate/revoke workflows. See `docs/agent-invocation-api.md`.
 4. Build dashboard aggregation and reporting from the collected events.
+5. Extend Agent Invocation with streaming, asynchronous jobs, idempotency keys,
+   OpenAPI publication, client SDKs and optional enterprise gateway integration.

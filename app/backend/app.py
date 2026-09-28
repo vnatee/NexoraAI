@@ -166,6 +166,19 @@ from mongo_table_connecters.agents import (
     list_expired_agent_draft_ids,
     update_agent,
 )
+from mongo_table_connecters.agent_invocation_keys import (
+    AgentInvocationKeyError,
+    authenticate_agent_invocation_key,
+    create_agent_invocation_key,
+    enforce_agent_invocation_rate_limit,
+    ensure_agent_invocation_key_indexes,
+    get_agent_invocation_key,
+    insert_agent_invocation_audit,
+    list_agent_invocation_keys,
+    mark_agent_invocation_key_used,
+    revoke_agent_invocation_key,
+    rotate_agent_invocation_key,
+)
 from mongo_table_connecters.agent_catalog import (
     ensure_agent_catalog_indexes,
     get_active_installation,
@@ -2848,6 +2861,464 @@ async def chat(auth_claims: dict[str, Any]):
         return error_response(error, "/chat")
 
 
+def _agent_invocation_prompt(agent: dict[str, Any]) -> str:
+    prompt = agent.get("prompt") or {}
+    if isinstance(prompt, str):
+        return prompt.strip()
+    if not isinstance(prompt, dict):
+        return ""
+    labels = (
+        ("Role", "role"),
+        ("Task", "task"),
+        ("Detail Context", "detail_context"),
+        ("Constraints", "constraints"),
+        ("Output Format", "output_format"),
+    )
+    sections = [
+        f"{label}:\n{str(prompt.get(field)).strip()}"
+        for label, field in labels
+        if str(prompt.get(field) or "").strip()
+    ]
+    return "\n\n".join(sections)
+
+
+def _team_wide_invocation_data_groups(team: dict[str, Any]) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for group_id in team.get("data_group_id") or []:
+        group = get_data_group_by_id(str(group_id))
+        if not group:
+            continue
+        member_ids = [str(item) for item in (group.get("user_id") or [])]
+        access_mode = str(group.get("access_mode") or "").strip().lower()
+        if not access_mode:
+            access_mode = "team" if not member_ids else "selected_users"
+        if access_mode == "team":
+            result.append(
+                {
+                    "_id": str(group.get("_id") or ""),
+                    "name": str(group.get("name") or group.get("_id") or ""),
+                }
+            )
+    return result
+
+
+def _validate_agent_invocation_scope(
+    team: dict[str, Any],
+    *,
+    agent_ids: object,
+    data_group_ids: object,
+) -> tuple[list[str], list[str]]:
+    if not isinstance(agent_ids, list) or not agent_ids:
+        raise AgentInvocationKeyError(
+            "allowed_agent_ids must contain at least one Agent"
+        )
+    normalized_agents = list(
+        dict.fromkeys(
+            str(item or "").strip() for item in agent_ids if str(item or "").strip()
+        )
+    )
+    team_agent_ids = {str(item) for item in (team.get("agent_id") or [])}
+    if any(item not in team_agent_ids for item in normalized_agents):
+        raise AgentInvocationKeyError(
+            "One or more Agents do not belong to this Team", status_code=403
+        )
+    for selected_agent_id in normalized_agents:
+        selected_agent = get_agent_by_id(selected_agent_id)
+        if not is_active_agent(selected_agent):
+            raise AgentInvocationKeyError(
+                "Only active Agents can be exposed through the API", status_code=409
+            )
+        runtime = str(
+            ((selected_agent or {}).get("config") or {}).get("runtime") or "legacy"
+        ).strip().lower()
+        if runtime != "langgraph":
+            raise AgentInvocationKeyError(
+                "Agent Invocation API currently supports only LangGraph Agents",
+                status_code=409,
+            )
+
+    if not isinstance(data_group_ids, list):
+        raise AgentInvocationKeyError("allowed_data_group_ids must be an array")
+    normalized_groups = list(
+        dict.fromkeys(
+            str(item or "").strip()
+            for item in data_group_ids
+            if str(item or "").strip()
+        )
+    )
+    allowed_groups = {
+        item["_id"] for item in _team_wide_invocation_data_groups(team)
+    }
+    if any(item not in allowed_groups for item in normalized_groups):
+        raise AgentInvocationKeyError(
+            "API keys may use only Team-wide Data Groups", status_code=403
+        )
+    return normalized_agents, normalized_groups
+
+
+def _agent_invocation_bearer_token() -> str:
+    authorization = str(request.headers.get("Authorization") or "").strip()
+    scheme, separator, token = authorization.partition(" ")
+    if not separator or scheme.lower() != "bearer" or not token.strip():
+        raise AgentInvocationKeyError(
+            "Authorization: Bearer <API key> is required", status_code=401
+        )
+    return token.strip()
+
+
+async def _execute_agent_invocation(
+    *,
+    key_document: dict[str, Any],
+    agent_id: str,
+    input_text: str,
+    conversation_id: str | None,
+    usage_context: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    team_id = str(key_document.get("team_id") or "")
+    team = get_team_by_id(team_id)
+    if not team or agent_id not in {
+        str(item) for item in (team.get("agent_id") or [])
+    }:
+        raise AgentInvocationKeyError(
+            "Agent is unavailable to this API key", status_code=404
+        )
+    if agent_id not in {
+        str(item) for item in (key_document.get("allowed_agent_ids") or [])
+    }:
+        raise AgentInvocationKeyError(
+            "Agent is not allowed for this API key", status_code=403
+        )
+    agent = get_agent_by_id(agent_id)
+    if not is_active_agent(agent):
+        raise AgentInvocationKeyError("Agent is not active", status_code=409)
+    if not _use_langgraph_runtime(agent_id):
+        raise AgentInvocationKeyError(
+            "Agent Invocation API currently requires the LangGraph runtime",
+            status_code=409,
+        )
+
+    available_groups = {
+        item["_id"] for item in _team_wide_invocation_data_groups(team)
+    }
+    data_group_ids = [
+        str(item) for item in (key_document.get("allowed_data_group_ids") or [])
+    ]
+    if any(item not in available_groups for item in data_group_ids):
+        raise AgentInvocationKeyError(
+            "The API key references a Data Group that is no longer Team-wide",
+            status_code=403,
+        )
+
+    normalized_conversation_id = ensure_conversation_id(conversation_id)
+    service_id = f"service:{key_document['_id']}"
+    auth_claims = {
+        "oid": service_id,
+        "application_user_id": service_id,
+        "auth_provider": "agent_api_key",
+        "service_principal_id": str(key_document["_id"]),
+        "team_id": team_id,
+        "data_groups_id": data_group_ids,
+        "selected_scopes": (
+            ["global"] if key_document.get("allow_global_knowledge") is True else []
+        ),
+    }
+    request_json: dict[str, Any] = {
+        "agent_id": agent_id,
+        "team_id": team_id,
+        "conversation_id": normalized_conversation_id,
+        "usage_request_id": str(uuid.uuid4()),
+        "messages": [{"role": "user", "content": input_text}],
+    }
+    context = usage_context
+    context.update({
+        "auth_claims": auth_claims,
+        "conversation_id": normalized_conversation_id,
+        "overrides": {},
+    })
+    _prepare_usage_request(request_json, context)
+    guardrail_policy, guardrail_audit = await _enforce_input_guardrails(
+        messages=request_json["messages"],
+        agent_id=agent_id,
+        team_id=team_id,
+        auth_claims=auth_claims,
+    )
+    _apply_agent_llm_profile(context, agent_id)
+    await _enforce_llm_quota(
+        auth_claims, context, request_json, workload="agent_api"
+    )
+    await _prepare_guardrail_context(context, guardrail_policy, guardrail_audit)
+    approach = cast(Approach, current_app.config[CONFIG_CHAT_APPROACH])
+    session_state = create_session_id(False, False)
+    stream = _run_langgraph_as_chat_stream(
+        approach=approach,
+        messages=request_json["messages"],
+        context=context,
+        auth_claims=auth_claims,
+        agent_id=agent_id,
+        team_id=team_id,
+        system_prompt=_agent_invocation_prompt(agent or {}),
+        session_state=session_state,
+    )
+    guarded_stream = _guardrail_response_stream(
+        stream, guardrail_policy, guardrail_audit
+    )
+    content_parts: list[str] = []
+    response_context: dict[str, Any] = {}
+    async for event in guarded_stream:
+        content = _stream_event_content(event)
+        if content:
+            content_parts.append(content)
+        event_context = event.get("context")
+        if isinstance(event_context, dict):
+            response_context.update(event_context)
+
+    result = {
+        "message": {"role": "assistant", "content": "".join(content_parts)},
+        "context": response_context,
+        "session_state": session_state,
+    }
+    await _persist_user_usage(
+        auth_claims,
+        result,
+        "agent_api",
+        _usage_metadata(context, agent_id, "agent_api"),
+        context,
+    )
+    return result, normalized_conversation_id
+
+
+@bp.get("/teams/<team_id>/agent-api-keys")
+@authenticated
+async def get_team_agent_api_keys(auth_claims: dict[str, Any], team_id: str):
+    try:
+        _actor, team = _require_team_access(
+            auth_claims, team_id, permission="Manage agents"
+        )
+        agents = []
+        for agent_id in team.get("agent_id") or []:
+            agent = get_agent_by_id(str(agent_id))
+            runtime = str(
+                ((agent or {}).get("config") or {}).get("runtime") or "legacy"
+            ).strip().lower()
+            if is_active_agent(agent) and runtime == "langgraph":
+                agents.append(
+                    {
+                        "_id": str(agent_id),
+                        "name": str((agent or {}).get("agent_name") or agent_id),
+                        "runtime": str(
+                            ((agent or {}).get("config") or {}).get("runtime")
+                            or "legacy"
+                        ),
+                    }
+                )
+        return jsonify(
+            {
+                "items": list_agent_invocation_keys(team_id),
+                "available_agents": agents,
+                "available_data_groups": _team_wide_invocation_data_groups(team),
+            }
+        )
+    except Exception as error:
+        return error_response(error, "/teams/<team_id>/agent-api-keys")
+
+
+@bp.post("/teams/<team_id>/agent-api-keys")
+@authenticated
+async def create_team_agent_api_key(auth_claims: dict[str, Any], team_id: str):
+    try:
+        if not request.is_json:
+            raise AgentInvocationKeyError("request must be json", status_code=415)
+        actor, team = _require_team_access(
+            auth_claims, team_id, permission="Manage agents"
+        )
+        body = await request.get_json()
+        agent_ids, group_ids = _validate_agent_invocation_scope(
+            team,
+            agent_ids=(body or {}).get("allowed_agent_ids"),
+            data_group_ids=(body or {}).get("allowed_data_group_ids") or [],
+        )
+        item, token = create_agent_invocation_key(
+            team_id=team_id,
+            name=(body or {}).get("name"),
+            allowed_agent_ids=agent_ids,
+            allowed_data_group_ids=group_ids,
+            allow_global_knowledge=(
+                (body or {}).get("allow_global_knowledge") is True
+            ),
+            expiry_days=(body or {}).get("expiry_days", 90),
+            rate_limit_per_minute=(
+                (body or {}).get("rate_limit_per_minute", 60)
+            ),
+            created_by=str(actor.get("_id") or ""),
+        )
+        insert_agent_invocation_audit(
+            request_id=str(uuid.uuid4()),
+            key_id=item["_id"],
+            team_id=team_id,
+            agent_id="",
+            event_type="api_key_created",
+            status="success",
+        )
+        response = jsonify({"item": item, "api_key": token})
+        response.status_code = 201
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception as error:
+        return error_response(error, "/teams/<team_id>/agent-api-keys")
+
+
+@bp.post("/teams/<team_id>/agent-api-keys/<key_id>/rotate")
+@authenticated
+async def rotate_team_agent_api_key(
+    auth_claims: dict[str, Any], team_id: str, key_id: str
+):
+    try:
+        if not request.is_json:
+            raise AgentInvocationKeyError("request must be json", status_code=415)
+        actor, _team = _require_team_access(
+            auth_claims, team_id, permission="Manage agents"
+        )
+        current = get_agent_invocation_key(key_id)
+        if not current or str(current.get("team_id") or "") != team_id:
+            raise AgentInvocationKeyError("API key not found", status_code=404)
+        body = await request.get_json()
+        item, token = rotate_agent_invocation_key(
+            key_id,
+            actor_id=str(actor.get("_id") or ""),
+            expiry_days=(body or {}).get("expiry_days", 90),
+        )
+        insert_agent_invocation_audit(
+            request_id=str(uuid.uuid4()),
+            key_id=key_id,
+            team_id=team_id,
+            agent_id="",
+            event_type="api_key_rotated",
+            status="success",
+        )
+        response = jsonify({"item": item, "api_key": token})
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception as error:
+        return error_response(
+            error, "/teams/<team_id>/agent-api-keys/<key_id>/rotate"
+        )
+
+
+@bp.delete("/teams/<team_id>/agent-api-keys/<key_id>")
+@authenticated
+async def revoke_team_agent_api_key(
+    auth_claims: dict[str, Any], team_id: str, key_id: str
+):
+    try:
+        actor, _team = _require_team_access(
+            auth_claims, team_id, permission="Manage agents"
+        )
+        current = get_agent_invocation_key(key_id)
+        if not current or str(current.get("team_id") or "") != team_id:
+            raise AgentInvocationKeyError("API key not found", status_code=404)
+        revoked = revoke_agent_invocation_key(
+            key_id, actor_id=str(actor.get("_id") or "")
+        )
+        if revoked:
+            insert_agent_invocation_audit(
+                request_id=str(uuid.uuid4()),
+                key_id=key_id,
+                team_id=team_id,
+                agent_id="",
+                event_type="api_key_revoked",
+                status="success",
+            )
+        return jsonify({"result": "revoked" if revoked else "unchanged"})
+    except Exception as error:
+        return error_response(error, "/teams/<team_id>/agent-api-keys/<key_id>")
+
+
+@bp.post("/api/v1/agents/<agent_id>/invoke")
+async def invoke_agent_api(agent_id: str):
+    request_id = str(uuid.uuid4())
+    key_document: dict[str, Any] | None = None
+    context: dict[str, Any] = {}
+    started = time.monotonic()
+    try:
+        if not request.is_json:
+            raise AgentInvocationKeyError("request must be json", status_code=415)
+        key_document = authenticate_agent_invocation_key(
+            _agent_invocation_bearer_token()
+        )
+        enforce_agent_invocation_rate_limit(key_document)
+        body = await request.get_json()
+        input_text = str((body or {}).get("input") or "").strip()
+        try:
+            max_input_characters = max(
+                1,
+                min(
+                    int(
+                        os.getenv(
+                            "AGENT_INVOCATION_MAX_INPUT_CHARACTERS", "32768"
+                        )
+                    ),
+                    262144,
+                ),
+            )
+        except ValueError:
+            max_input_characters = 32768
+        if not input_text:
+            raise AgentInvocationKeyError("input is required")
+        if len(input_text) > max_input_characters:
+            raise AgentInvocationKeyError(
+                f"input exceeds the {max_input_characters} character limit",
+                status_code=413,
+            )
+        result, conversation_id = await _execute_agent_invocation(
+            key_document=key_document,
+            agent_id=str(agent_id or ""),
+            input_text=input_text,
+            conversation_id=(body or {}).get("conversation_id"),
+            usage_context=context,
+        )
+        mark_agent_invocation_key_used(str(key_document["_id"]))
+        insert_agent_invocation_audit(
+            request_id=request_id,
+            key_id=str(key_document["_id"]),
+            team_id=str(key_document.get("team_id") or ""),
+            agent_id=agent_id,
+            event_type="agent_invoked",
+            status="success",
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+        result_context = result.get("context") or {}
+        response = jsonify(
+            {
+                "id": request_id,
+                "object": "agent.invocation",
+                "agent_id": agent_id,
+                "conversation_id": conversation_id,
+                "output": str(
+                    (result.get("message") or {}).get("content") or ""
+                ),
+                "citations": (
+                    (result_context.get("data_points") or {}).get("text") or []
+                ),
+                "chart": result_context.get("chart"),
+                "diagram": result_context.get("diagram"),
+            }
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception as error:
+        await _finish_usage_reservation(context, state="released")
+        if key_document:
+            insert_agent_invocation_audit(
+                request_id=request_id,
+                key_id=str(key_document.get("_id") or ""),
+                team_id=str(key_document.get("team_id") or ""),
+                agent_id=agent_id,
+                event_type="agent_invoked",
+                status="failed",
+                duration_ms=int((time.monotonic() - started) * 1000),
+                error_code=type(error).__name__,
+            )
+        return error_response(error, "/api/v1/agents/<agent_id>/invoke")
 @bp.route("/chat/stream", methods=["POST"])
 @authenticated
 async def chat_stream(auth_claims: dict[str, Any]):
@@ -10403,6 +10874,7 @@ async def setup_clients():
         ensure_license_indexes()
         ensure_agent_catalog_indexes()
         ensure_agent_indexes()
+        ensure_agent_invocation_key_indexes()
 
     # Use the current user identity for keyless authentication to Azure services.
     # This assumes you use 'azd auth login' locally, and managed identity when deployed on Azure.

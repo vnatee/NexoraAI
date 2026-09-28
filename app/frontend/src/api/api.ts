@@ -44,7 +44,10 @@ import {
     UsageQuotaPolicy,
     UsageQuotaSettingsResponse,
     GuardrailSettingsResponse,
-    ChatHistoryRetentionSettingsResponse
+    ChatHistoryRetentionSettingsResponse,
+    AgentInvocationKeyOptions,
+    AgentInvocationKeyCreatePayload,
+    AgentInvocationKeyCreatedResponse
 } from "./models";
 import { useLogin, getToken, isUsingAppServicesLogin } from "../authConfig";
 
@@ -3013,4 +3016,58 @@ export async function update_chart_binding(payload: ChartBindingData, idToken: s
     });
     if (!response.ok) throw await chartBindingError(response, "Update chart capability");
     return response.json();
+}
+
+export async function getAgentInvocationKeys(teamId: string, idToken: string): Promise<AgentInvocationKeyOptions> {
+    const response = await fetch(`/teams/${encodeURIComponent(teamId)}/agent-api-keys`, { headers: await getHeaders(idToken) });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "Unable to load Agent API keys");
+    return result;
+}
+
+export async function createAgentInvocationKey(
+    teamId: string,
+    payload: AgentInvocationKeyCreatePayload,
+    idToken: string
+): Promise<AgentInvocationKeyCreatedResponse> {
+    const response = await fetch(`/teams/${encodeURIComponent(teamId)}/agent-api-keys`, {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "Unable to create Agent API key");
+    return result;
+}
+
+export async function rotateAgentInvocationKey(
+    teamId: string,
+    keyId: string,
+    expiryDays: number,
+    idToken: string
+): Promise<AgentInvocationKeyCreatedResponse> {
+    const response = await fetch(
+        `/teams/${encodeURIComponent(teamId)}/agent-api-keys/${encodeURIComponent(keyId)}/rotate`,
+        {
+            method: "POST",
+            headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+            body: JSON.stringify({ expiry_days: expiryDays })
+        }
+    );
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "Unable to rotate Agent API key");
+    return result;
+}
+
+export async function revokeAgentInvocationKey(
+    teamId: string,
+    keyId: string,
+    idToken: string
+): Promise<void> {
+    const response = await fetch(
+        `/teams/${encodeURIComponent(teamId)}/agent-api-keys/${encodeURIComponent(keyId)}`,
+        { method: "DELETE", headers: await getHeaders(idToken) }
+    );
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "Unable to revoke Agent API key");
 }

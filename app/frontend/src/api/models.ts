@@ -1264,3 +1264,41 @@ export interface DocumentProcessingUploadOptions {
     can_override: boolean;
     profiles: DocumentProcessingProfile[];
 }
+
+export interface AgentInvocationKey {
+    _id: string;
+    team_id: string;
+    name: string;
+    key_prefix: string;
+    allowed_agent_ids: string[];
+    allowed_data_group_ids: string[];
+    allow_global_knowledge: boolean;
+    rate_limit_per_minute: number;
+    active: boolean;
+    expires_at: string;
+    created_at: string;
+    created_by: string;
+    last_used_at?: string | null;
+    revoked_at?: string | null;
+    replaced_by?: string | null;
+}
+
+export interface AgentInvocationKeyOptions {
+    items: AgentInvocationKey[];
+    available_agents: Array<{ _id: string; name: string; runtime: string }>;
+    available_data_groups: Array<{ _id: string; name: string }>;
+}
+
+export interface AgentInvocationKeyCreatePayload {
+    name: string;
+    allowed_agent_ids: string[];
+    allowed_data_group_ids: string[];
+    allow_global_knowledge: boolean;
+    expiry_days: number;
+    rate_limit_per_minute: number;
+}
+
+export interface AgentInvocationKeyCreatedResponse {
+    item: AgentInvocationKey;
+    api_key: string;
+}

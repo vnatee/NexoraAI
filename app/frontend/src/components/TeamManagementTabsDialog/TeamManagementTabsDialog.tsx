@@ -33,6 +33,7 @@ import { useMsal } from "@azure/msal-react";
 
 import { TeamUserManagementPage } from "./Tabs/TeamUserManagementPage";
 import { AgentManagementPage } from "./Tabs/AgentManagementPage";
+import { AgentApiAccessPage } from "./Tabs/AgentApiAccessPage";
 import { DataGroupManagementPage } from "./Tabs/DataGroupManagementPage";
 import { RBACManagementPage } from "./Tabs/RBACManagementPage";
 import { UserManagementPage } from "./Tabs/UserManagementPage";
@@ -223,6 +224,16 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             scope: "both",
             selfPadded: true,
             element: <IntegrationManagementPage team={managedTeam} isSystemAdmin={is_sys_admin} />
+        },
+        {
+            id: "agent-api-access",
+            label: "Agent API access",
+            permission: ["Manage agents"],
+            group: "governance",
+            scope: "team",
+            teamScoped: true,
+            selfPadded: true,
+            element: <AgentApiAccessPage team={managedTeam} />
         },
         {
             id: "teams",

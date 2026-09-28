@@ -301,6 +301,27 @@ For MCP Agents configure:
 | Invocation Mode | Auto calls when relevant; Required calls an assigned MCP first | `Auto` for general Agents; `Required` for dedicated inventory Agents |
 | Agent MCP Timeout | Agent-level maximum execution time | Lower than the overall request timeout |
 
+### 6.6 Agent API access
+
+Use **Team governance → Agent API access** to allow a server-side application
+to invoke selected Team Agents. The administrator must have **Manage agents**.
+
+When creating a key, enter a clear application/environment name, select one or
+more active LangGraph Agents, choose only the Team-wide Data Groups that the
+application needs, optionally allow Global Knowledge, then set expiry and the
+per-minute request limit. The default expiry is 90 days.
+
+The generated secret is displayed once. Copy it directly to the application's
+secret store. The Portal later shows only its non-secret prefix, status, expiry,
+scope and last-used time. Use **Rotate** to issue a replacement and immediately
+revoke the old key, or **Revoke** to stop access.
+
+Personal Knowledge and selected-user Data Groups are intentionally unavailable
+to service keys. Invocations retain the Agent's guardrails, tool policy,
+licensing and Team usage quota. See
+[Agent Invocation API](agent-invocation-api.md) for the request format and
+operational guidance.
+
 ## 7. Unified integrations
 
 **Team integrations** and **Integration catalog** present Native and MCP
