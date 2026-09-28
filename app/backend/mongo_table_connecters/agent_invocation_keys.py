@@ -241,6 +241,23 @@ def rotate_agent_invocation_key(
     return created, token
 
 
+def validate_agent_invocation_key_document(
+    document: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not document:
+        raise AgentInvocationKeyError("Invalid API key", status_code=401)
+    if document.get("active") is not True or document.get("revoked_at") is not None:
+        raise AgentInvocationKeyError("API key is revoked", status_code=401)
+    expires_at = document.get("expires_at")
+    if not isinstance(expires_at, datetime):
+        raise AgentInvocationKeyError("API key expiry is invalid", status_code=401)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at <= _now():
+        raise AgentInvocationKeyError("API key has expired", status_code=401)
+    return document
+
+
 def authenticate_agent_invocation_key(token: str) -> dict[str, Any]:
     normalized = str(token or "").strip()
     if not normalized.startswith(KEY_PREFIX) or "." not in normalized:
@@ -253,16 +270,7 @@ def authenticate_agent_invocation_key(token: str) -> dict[str, Any]:
         str(document.get("token_digest") or ""), _token_digest(normalized)
     ):
         raise AgentInvocationKeyError("Invalid API key", status_code=401)
-    if document.get("active") is not True or document.get("revoked_at") is not None:
-        raise AgentInvocationKeyError("API key is revoked", status_code=401)
-    expires_at = document.get("expires_at")
-    if not isinstance(expires_at, datetime):
-        raise AgentInvocationKeyError("API key expiry is invalid", status_code=401)
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if expires_at <= _now():
-        raise AgentInvocationKeyError("API key has expired", status_code=401)
-    return document
+    return validate_agent_invocation_key_document(document)
 
 
 def enforce_agent_invocation_rate_limit(document: dict[str, Any]) -> None:

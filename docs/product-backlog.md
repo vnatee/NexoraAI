@@ -388,5 +388,7 @@ Recommended order when these items are scheduled:
    guardrails/tool policy/usage quotas; metadata-only audit; and Portal
    create/list/rotate/revoke workflows. See `docs/agent-invocation-api.md`.
 4. Build dashboard aggregation and reporting from the collected events.
-5. Extend Agent Invocation with streaming, asynchronous jobs, idempotency keys,
-   OpenAPI publication, client SDKs and optional enterprise gateway integration.
+5. **Implemented (Phase 2 core):** lifecycle SSE, encrypted durable asynchronous
+   jobs, polling, retry/lease recovery, TTL retention, and `Idempotency-Key`
+   deduplication. Next: OpenAPI publication, client SDKs, webhooks, cancellation,
+   true token-delta streaming, and optional enterprise gateway integration.

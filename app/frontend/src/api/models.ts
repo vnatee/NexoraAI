@@ -387,6 +387,7 @@ export interface SystemHealthSnapshot {
     jobs: {
         ingestion: { queued: number; processing: number; failed: number; worker_status: SystemHealthStatus };
         attachments: { queued: number; processing: number; failed: number; worker_status: SystemHealthStatus; cleanup_status: SystemHealthStatus };
+        agent_invocations: { queued: number; processing: number; failed: number; worker_status: SystemHealthStatus };
     };
 }
 

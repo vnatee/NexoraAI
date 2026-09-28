@@ -71,7 +71,7 @@ Decisions already made with the product owner:
 
 ## Implemented work
 
-### Agent Invocation API — Phase 1
+### Agent Invocation API — Phase 2 core
 
 - Team administrators with **Manage agents** can create, list, rotate and revoke
   service API keys from **Team governance > Agent API access**.
@@ -80,18 +80,23 @@ Decisions already made with the product owner:
   expiry (90 days by default, maximum 365), and a per-minute rate limit.
 - The plaintext secret is returned only at creation or rotation. MongoDB stores
   only a SHA-256 digest and the non-secret key prefix.
-- `POST /api/v1/agents/<agent_id>/invoke` applies existing Agent prompts,
-  guardrails, server-side tool policy, licensing and durable Team usage quotas.
-  The stable response exposes answer content, citations and validated
-  chart/diagram output, but not internal reasoning or tool traces.
+- `POST /api/v1/agents/<agent_id>/invoke` retains the Phase 1 synchronous
+  contract. `/invoke/stream` adds lifecycle SSE, while `/jobs` plus
+  `/api/v1/agent-jobs/<job_id>` provides durable background execution, polling,
+  retry, lease recovery, and request deduplication through `Idempotency-Key`.
+- Stored job input and result payloads are Fernet-encrypted and expire by TTL.
+  Job reads and retries require the same API key that created the job. Agent
+  prompts, guardrails, server-side tool policy, licensing and Team usage quotas
+  remain enforced. Public responses omit internal reasoning and tool traces.
 - Metadata-only lifecycle/invocation audit records never contain prompt,
-  response or tool output. Phase 1 is synchronous; streaming, asynchronous jobs,
-  idempotency keys, OpenAPI publication and SDKs remain backlog items.
-- Focused API-key/runtime tests pass (`10 passed`), frontend TypeScript and the
-  memory-safe production build pass, Compose configuration validates, and the
-  rebuilt local application is healthy. The wider service-free run reached
-  `1042 passed` with one unrelated workspace PDF
-  fixture failure in `test_sentencetextsplitter_list_parse_and_split`.
+  response or tool output. OpenAPI publication, SDKs, webhooks, cancellation,
+  and true token-delta streaming remain backlog items.
+- Phase 2 API, job, and System Health focused validation passes (`27 passed`).
+  The wider service-free regression excluding the environment-slow
+  `tests/test_app_config.py` reaches `1053 passed` with one unrelated workspace
+  PDF fixture failure in `test_sentencetextsplitter_list_parse_and_split`.
+  TypeScript and the memory-safe production build pass, Compose configuration
+  validates, and the rebuilt local application is healthy.
 - See `docs/agent-invocation-api.md`.
 
 ### Agent Catalog — Phase 1
@@ -1666,8 +1671,9 @@ explicit audit-mode comparison slice. See `docs/licensing.md`.
   health/readiness, secret injection, tested backup/restore, and then
   Helm/Kubernetes.
 - AI guardrails.
-- Agent Invocation API Phase 2: streaming, asynchronous jobs, idempotency,
-  OpenAPI/SDK publication, and optional enterprise gateway integration.
+- Agent Invocation API follow-up: OpenAPI/SDK publication, webhooks,
+  cancellation, true token-delta streaming, and optional enterprise gateway
+  integration.
 - Extend usage analytics with a versioned pricing catalog, estimated cost,
   budgets/alerts, CSV/Excel export, scheduled reports, tool/error/latency
   telemetry, retention rollups, and high-volume database indexes.
