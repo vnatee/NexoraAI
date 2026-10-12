@@ -5,6 +5,11 @@ NexoraAI Agent without using an interactive Portal session. Access is
 Team-scoped and is configured in **Team workspace > Team governance > Agent API
 access**.
 
+For application code, Postman setup, and an acceptance checklist, start with
+the [Agent API Developer Guide](agent-api-developer-guide.md). A deployment
+publishes its machine-readable OpenAPI 3.0 contract at
+`/api/v1/openapi.yaml`.
+
 ## Security model
 
 Each key is restricted to:
@@ -169,7 +174,7 @@ Common status codes are:
 - `413`: input exceeds the configured character limit;
 - `429`: API-key rate limit or Team usage quota exceeded.
 
-The Phase 2 API supports synchronous calls, lifecycle SSE, durable asynchronous
-jobs, retry/recovery, and idempotency keys. OpenAPI publication, client SDKs,
-webhooks, cancellation, and true token-delta streaming remain planned follow-up
-work.
+The Phase 3A API publishes an OpenAPI contract and includes a Postman collection
+plus Python, TypeScript, C#, and curl integration examples. Generated client SDK
+packages, webhooks, cancellation, and true token-delta streaming remain planned
+follow-up work.

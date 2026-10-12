@@ -694,6 +694,8 @@ export type WebSourceScan = {
     scan_id: string;
     status: string;
     source_url: string;
+    fetch_mode: "auto" | "http" | "browser";
+    browser_pages: number;
     crawl_depth: 0 | 1 | 2;
     limit_profile: "standard" | "extended";
     expires_at: string | null;
@@ -723,10 +725,11 @@ export async function scanWebSourceApi(
     team_id?: string | null,
     data_groups_id?: string[],
     crawl_depth: 0 | 1 | 2 = 1,
-    limit_profile: "standard" | "extended" = "standard"
+    limit_profile: "standard" | "extended" = "standard",
+    fetch_mode: "auto" | "http" | "browser" = "auto"
 ): Promise<WebSourceScan> {
     const headers = await getHeaders(idToken);
-    const body: Record<string, unknown> = { url, crawl_depth, limit_profile };
+    const body: Record<string, unknown> = { url, crawl_depth, limit_profile, fetch_mode };
     if (team_id) {
         body.team_id = team_id;
         body.data_groups_id = data_groups_id ?? [];

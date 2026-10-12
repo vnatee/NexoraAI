@@ -19,7 +19,7 @@ import requests
 # Scraping import
 from bs4 import BeautifulSoup
 from azure.storage.blob import BlobServiceClient
-from urllib.parse import quote, unquote, urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 import asyncio
 # End of Scraping import
 from collections.abc import AsyncGenerator
@@ -578,9 +578,11 @@ from prepdocslib.docinteldb import insert_document_processing_usage
 from mongo_table_connecters.usage_analytics import get_usage_analytics
 from addons.scraping_web import (
     WebScrapingError,
+    legacy_source_folder,
     normalize_stored_source_url,
     run_scraping_job,
     source_folder,
+    source_url_from_folder,
 )
 
 
@@ -3302,6 +3304,18 @@ async def revoke_team_agent_api_key(
         return jsonify({"result": "revoked" if revoked else "unchanged"})
     except Exception as error:
         return error_response(error, "/teams/<team_id>/agent-api-keys/<key_id>")
+
+
+@bp.get("/api/v1/openapi.yaml")
+async def get_agent_invocation_openapi():
+    response = await send_file(
+        Path(__file__).with_name("agent-invocation-openapi.yaml"),
+        mimetype="application/yaml",
+        as_attachment=False,
+    )
+    response.headers["Cache-Control"] = "public, max-age=300"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @bp.post("/api/v1/agents/<agent_id>/invoke")
@@ -7763,9 +7777,7 @@ def _authorize_web_source_scope(
 def _web_source_from_key(key: str, team_id: str | None = None) -> str:
     relative = key.removeprefix(f"{team_id}/") if team_id else key
     folder = relative.split("/", 1)[0]
-    if "||url=" in folder:
-        return unquote(folder.split("||url=", 1)[1])
-    return folder.replace("_", "/")
+    return source_url_from_folder(folder)
 
 
 async def upload_path(
@@ -7951,6 +7963,8 @@ def _serialize_web_source_scan(scan: dict[str, Any]) -> dict[str, Any]:
         "source_url": str(scan.get("source_url") or ""),
         "crawl_depth": int(scan.get("crawl_depth") or 0),
         "limit_profile": str(scan.get("limit_profile") or "standard"),
+        "fetch_mode": str(scan.get("fetch_mode") or "auto"),
+        "browser_pages": int(result.get("browser_pages") or 0),
         "expires_at": timestamp("expires_at"),
         "created_at": timestamp("created_at"),
         "started_at": timestamp("started_at"),
@@ -8154,6 +8168,7 @@ async def _run_web_source_index_job(scan_id: str) -> None:
             )
             return
 
+        encoded_legacy_folder = legacy_source_folder(str(claimed["source_url"]))
         legacy_folder = str(claimed["source_url"]).replace("/", "_")
         all_existing = await _knowledge_store().list(
             scope, prefix=f"{team_id}/" if team_id else ""
@@ -8163,7 +8178,7 @@ async def _run_web_source_index_job(scan_id: str) -> None:
             for item in all_existing
             if (item.key.removeprefix(f"{team_id}/") if team_id else item.key)
             .split("/", 1)[0]
-            in {folder, legacy_folder}
+            in {folder, encoded_legacy_folder, legacy_folder}
         }
         selected_keys = {
             str(item.get("storage_key") or "")
@@ -8266,6 +8281,9 @@ async def create_web_source_scan_route(auth_claims: dict[str, Any]):
         if isinstance(raw_crawl_depth, bool) or str(raw_crawl_depth) not in {"0", "1", "2"}:
             raise WebScrapingError("crawl_depth must be 0, 1, or 2")
         crawl_depth = int(raw_crawl_depth)
+        fetch_mode = str(data.get("fetch_mode") or "auto").strip().lower()
+        if fetch_mode not in {"auto", "http", "browser"}:
+            raise WebScrapingError("fetch_mode must be auto, http, or browser")
         limit_profile, max_pages, max_total_bytes = _web_source_scan_limits(
             data.get("limit_profile")
         )
@@ -8281,6 +8299,7 @@ async def create_web_source_scan_route(auth_claims: dict[str, Any]):
             max_depth=crawl_depth,
             max_pages=max_pages,
             max_total_bytes=max_total_bytes,
+            fetch_mode=fetch_mode,
         )
         scan_id = str(uuid.uuid4())
         expires_at = datetime.now(timezone.utc) + timedelta(
@@ -8327,6 +8346,7 @@ async def create_web_source_scan_route(auth_claims: dict[str, Any]):
             "source_url": str(result["source_url"]),
             "crawl_depth": crawl_depth,
             "limit_profile": limit_profile,
+            "fetch_mode": fetch_mode,
             "expires_at": expires_at,
             "result": result,
         })
@@ -8622,11 +8642,16 @@ async def delete_web_content(auth_claims: dict[str, Any]):
         return jsonify({"error": str(error)}), 400
     scope = "web_team" if team_id else "web_global"
     new_folder = source_folder(source_url)
+    encoded_legacy_folder = legacy_source_folder(source_url)
     legacy_folder = source_url.replace("/", "_")
     files = []
     for stored_object in await _knowledge_store().list(scope, prefix=f"{team_id}/" if team_id else ""):
         relative = stored_object.key.removeprefix(f"{team_id}/") if team_id else stored_object.key
-        if relative.split("/", 1)[0] in {new_folder, legacy_folder}:
+        if relative.split("/", 1)[0] in {
+            new_folder,
+            encoded_legacy_folder,
+            legacy_folder,
+        }:
             files.append(stored_object.key)
     if not files:
         return jsonify({"error": "Approved web source not found"}), 404

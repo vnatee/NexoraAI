@@ -1,0 +1,296 @@
+openapi: 3.0.3
+info:
+  title: NexoraAI Agent Invocation API
+  version: 1.0.0
+  description: |
+    Team-scoped API for invoking approved NexoraAI Agents. API keys are created
+    in Team workspace > Team governance > Agent API access. Internal reasoning
+    and tool traces are never returned.
+servers:
+  - url: /
+security:
+  - bearerAuth: []
+tags:
+  - name: Agent invocation
+  - name: Agent jobs
+paths:
+  /api/v1/agents/{agent_id}/invoke:
+    post:
+      tags: [Agent invocation]
+      operationId: invokeAgent
+      summary: Invoke an Agent synchronously
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      requestBody:
+        $ref: "#/components/requestBodies/InvocationRequest"
+      responses:
+        "200":
+          description: Invocation completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvocationResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/ServerError" }
+  /api/v1/agents/{agent_id}/invoke/stream:
+    post:
+      tags: [Agent invocation]
+      operationId: streamAgent
+      summary: Invoke an Agent with lifecycle SSE
+      description: |
+        Emits started, periodic heartbeat, and completed or error events.
+        This is lifecycle streaming, not token-delta streaming.
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      requestBody:
+        $ref: "#/components/requestBodies/InvocationRequest"
+      responses:
+        "200":
+          description: Server-Sent Events stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                event: started
+                data: {"id":"request-id","agent_id":"agent-id","status":"running"}
+
+                event: completed
+                data: {"id":"request-id","object":"agent.invocation","agent_id":"agent-id","conversation_id":"conversation-id","output":"Completed answer","citations":[],"chart":null,"diagram":null}
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/ServerError" }
+  /api/v1/agents/{agent_id}/jobs:
+    post:
+      tags: [Agent jobs]
+      operationId: createAgentJob
+      summary: Queue an asynchronous Agent invocation
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        $ref: "#/components/requestBodies/InvocationRequest"
+      responses:
+        "202":
+          description: Job accepted
+          headers:
+            Location:
+              description: Relative URL used to poll the job
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/ServerError" }
+  /api/v1/agent-jobs/{job_id}:
+    get:
+      tags: [Agent jobs]
+      operationId: getAgentJob
+      summary: Get asynchronous job status or result
+      description: The same API key that created the job must be used.
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Current job state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/ServerError" }
+  /api/v1/agent-jobs/{job_id}/retry:
+    post:
+      tags: [Agent jobs]
+      operationId: retryAgentJob
+      summary: Retry a failed, unexpired job
+      description: The same API key that created the job must be used.
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "202":
+          description: Job queued for another attempt
+          headers:
+            Location:
+              description: Relative URL used to poll the job
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/ServerError" }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: NexoraAI API key
+      description: API key beginning with nxai_. Never place it in source control.
+  parameters:
+    AgentId:
+      name: agent_id
+      in: path
+      required: true
+      description: Active Team Agent allowed by the API key
+      schema: { type: string, minLength: 1 }
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      description: Asynchronous invocation job identifier
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Repeating the same request returns the original job. Reusing this value
+        for a different request returns 409.
+      schema: { type: string, maxLength: 128 }
+  requestBodies:
+    InvocationRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/InvocationRequest"
+          example:
+            input: Summarize the current employee leave policy.
+            conversation_id: 71d143ae-ad2f-45f3-915e-a7d465141486
+  schemas:
+    InvocationRequest:
+      type: object
+      additionalProperties: false
+      required: [input]
+      properties:
+        input:
+          type: string
+          minLength: 1
+          description: User request. The deployment controls the maximum length.
+        conversation_id:
+          type: string
+          nullable: true
+          description: Optional correlation identifier; a UUID is generated when omitted.
+    InvocationResponse:
+      type: object
+      required: [id, object, agent_id, conversation_id, output, citations, chart, diagram]
+      properties:
+        id: { type: string, format: uuid }
+        object: { type: string, enum: [agent.invocation] }
+        agent_id: { type: string }
+        conversation_id: { type: string, format: uuid }
+        output: { type: string }
+        citations:
+          type: array
+          items: { type: object, additionalProperties: true }
+        chart: { type: object, nullable: true, additionalProperties: true }
+        diagram: { type: object, nullable: true, additionalProperties: true }
+    JobResponse:
+      type: object
+      required: [id, object, agent_id, status, attempt]
+      properties:
+        id: { type: string, format: uuid }
+        object: { type: string, enum: [agent.invocation.job] }
+        agent_id: { type: string }
+        conversation_id: { type: string, nullable: true }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+        attempt: { type: integer, minimum: 0 }
+        idempotent_replay:
+          type: boolean
+          description: Present on job creation responses.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        started_at: { type: string, format: date-time, nullable: true }
+        completed_at: { type: string, format: date-time, nullable: true }
+        expires_at: { type: string, format: date-time }
+        result:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/InvocationResponse"
+        error:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/JobError"
+    JobError:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string, example: Agent invocation failed }
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Unauthorized:
+      description: Missing, invalid, revoked, or expired API key
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Forbidden:
+      description: API key scope does not allow this operation
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    NotFound:
+      description: Agent or job is unavailable to this API key
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    Conflict:
+      description: Agent state, job state, or idempotency conflict
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    PayloadTooLarge:
+      description: Input exceeds the configured character limit
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    UnsupportedMediaType:
+      description: Content-Type must be application/json
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    TooManyRequests:
+      description: API-key rate limit or Team usage quota exceeded
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }
+    ServerError:
+      description: Internal processing failure
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ErrorResponse" }

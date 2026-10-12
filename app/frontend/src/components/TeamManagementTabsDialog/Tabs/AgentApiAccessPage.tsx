@@ -26,6 +26,9 @@ import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import KeyOutlinedIcon from "@mui/icons-material/KeyOutlined";
 import AutorenewOutlinedIcon from "@mui/icons-material/AutorenewOutlined";
 import BlockOutlinedIcon from "@mui/icons-material/BlockOutlined";
+import CloseIcon from "@mui/icons-material/Close";
+import HelpOutlineOutlinedIcon from "@mui/icons-material/HelpOutlineOutlined";
+import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import { useMsal } from "@azure/msal-react";
 
 import {
@@ -83,6 +86,7 @@ export function AgentApiAccessPage({ team }: Props) {
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [createOpen, setCreateOpen] = useState(false);
+    const [guideOpen, setGuideOpen] = useState(false);
     const [secretOpen, setSecretOpen] = useState(false);
     const [secret, setSecret] = useState("");
     const [secretAgentId, setSecretAgentId] = useState("");
@@ -186,6 +190,20 @@ export function AgentApiAccessPage({ team }: Props) {
 
     const curlExample = `curl -X POST "${window.location.origin}/api/v1/agents/${secretAgentId}/invoke" \\\n  -H "Authorization: Bearer ${secret}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"input":"Summarize the current policy."}'`;
 
+    const guideAgentId = options.available_agents[0]?._id || "AGENT_ID";
+    const guideSyncExample = [
+        `curl -X POST "${window.location.origin}/api/v1/agents/${guideAgentId}/invoke" \\`,
+        '  -H "Authorization: Bearer $NEXORA_API_KEY" \\',
+        '  -H "Content-Type: application/json" \\',
+        `  -d '{"input":"Summarize the current policy."}'`
+    ].join("\n");
+    const guideAsyncExample = [
+        `curl -X POST "${window.location.origin}/api/v1/agents/${guideAgentId}/jobs" \\`,
+        '  -H "Authorization: Bearer $NEXORA_API_KEY" \\',
+        '  -H "Idempotency-Key: YOUR-UNIQUE-REQUEST-ID" \\',
+        '  -H "Content-Type: application/json" \\',
+        `  -d '{"input":"Analyze the incident and recommend next steps."}'`
+    ].join("\n");
     return (
         <Stack spacing={3}>
             <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" spacing={2}>
@@ -195,14 +213,23 @@ export function AgentApiAccessPage({ team }: Props) {
                         Let approved applications invoke selected Team Agents with a restricted Knowledge scope.
                     </Typography>
                 </Box>
-                <Button
-                    variant="contained"
-                    startIcon={<AddIcon />}
-                    onClick={() => setCreateOpen(true)}
-                    disabled={loading || options.available_agents.length === 0}
-                >
-                    Create API key
-                </Button>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                    <Button
+                        variant="outlined"
+                        startIcon={<HelpOutlineOutlinedIcon />}
+                        onClick={() => setGuideOpen(true)}
+                    >
+                        Developer Guide
+                    </Button>
+                    <Button
+                        variant="contained"
+                        startIcon={<AddIcon />}
+                        onClick={() => setCreateOpen(true)}
+                        disabled={loading || options.available_agents.length === 0}
+                    >
+                        Create API key
+                    </Button>
+                </Stack>
             </Stack>
 
             <Alert severity="info">
@@ -269,6 +296,137 @@ export function AgentApiAccessPage({ team }: Props) {
                     })}
                 </Box>
             )}
+
+            <Dialog open={guideOpen} fullWidth maxWidth="lg" disableEscapeKeyDown>
+                <DialogTitle sx={{ pr: 7 }}>
+                    Agent API Developer Guide
+                    <IconButton
+                        aria-label="Close developer guide"
+                        onClick={() => setGuideOpen(false)}
+                        sx={{ position: "absolute", right: 12, top: 12 }}
+                    >
+                        <CloseIcon />
+                    </IconButton>
+                </DialogTitle>
+                <DialogContent dividers>
+                    <Stack spacing={3}>
+                        <Alert severity="warning">
+                            Keep API keys on a trusted server. Never place a key in browser code, a mobile application,
+                            source control, logs, or screenshots.
+                        </Alert>
+                        <Box>
+                            <Typography variant="h6" gutterBottom>Quick start</Typography>
+                            <Box sx={{
+                                display: "grid",
+                                gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 220px), 1fr))",
+                                gap: 1.5
+                            }}>
+                                {[
+                                    ["1", "Create a restricted key", "Select only the Agents and Team-wide Knowledge the application needs."],
+                                    ["2", "Save the secret once", "Store the one-time secret in your server-side secret manager."],
+                                    ["3", "Call the Agent", "Send the key as a Bearer token and handle HTTP errors explicitly."]
+                                ].map(([step, title, detail]) => (
+                                    <Card key={step} variant="outlined">
+                                        <CardContent>
+                                            <Stack direction="row" spacing={1.5} alignItems="flex-start">
+                                                <Chip color="primary" label={step} size="small" />
+                                                <Box>
+                                                    <Typography fontWeight={700}>{title}</Typography>
+                                                    <Typography variant="body2" color="text.secondary">{detail}</Typography>
+                                                </Box>
+                                            </Stack>
+                                        </CardContent>
+                                    </Card>
+                                ))}
+                            </Box>
+                        </Box>
+                        <Box>
+                            <Typography variant="h6" gutterBottom>Choose an endpoint</Typography>
+                            <Stack spacing={1}>
+                                <Typography>
+                                    <strong>Sync</strong> · <code>POST /api/v1/agents/:agent_id/invoke</code> for
+                                    short requests that can keep the connection open.
+                                </Typography>
+                                <Typography>
+                                    <strong>Lifecycle stream</strong> ·{" "}
+                                    <code>POST /api/v1/agents/:agent_id/invoke/stream</code> for SSE status events.
+                                </Typography>
+                                <Typography>
+                                    <strong>Background job</strong> · <code>POST /api/v1/agents/:agent_id/jobs</code>{" "}
+                                    for durable work with polling, retry, and idempotency.
+                                </Typography>
+                            </Stack>
+                        </Box>
+                        <Box>
+                            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} mb={1}>
+                                <Typography variant="h6">Synchronous request</Typography>
+                                <Tooltip title="Copy example">
+                                    <IconButton size="small" onClick={() => void copy(guideSyncExample)}>
+                                        <ContentCopyOutlinedIcon fontSize="small" />
+                                    </IconButton>
+                                </Tooltip>
+                            </Stack>
+                            <Box component="pre" sx={{
+                                m: 0,
+                                p: 2,
+                                bgcolor: "grey.100",
+                                borderRadius: 1,
+                                overflowX: "auto",
+                                whiteSpace: "pre"
+                            }}>
+                                {guideSyncExample}
+                            </Box>
+                        </Box>
+                        <Box>
+                            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} mb={1}>
+                                <Box>
+                                    <Typography variant="h6">Background job</Typography>
+                                    <Typography variant="body2" color="text.secondary">
+                                        Reuse the same unique Idempotency-Key when safely replaying the same request,
+                                        then poll the returned job URL.
+                                    </Typography>
+                                </Box>
+                                <Tooltip title="Copy example">
+                                    <IconButton size="small" onClick={() => void copy(guideAsyncExample)}>
+                                        <ContentCopyOutlinedIcon fontSize="small" />
+                                    </IconButton>
+                                </Tooltip>
+                            </Stack>
+                            <Box component="pre" sx={{
+                                m: 0,
+                                p: 2,
+                                bgcolor: "grey.100",
+                                borderRadius: 1,
+                                overflowX: "auto",
+                                whiteSpace: "pre"
+                            }}>
+                                {guideAsyncExample}
+                            </Box>
+                        </Box>
+                        <Alert severity="info">
+                            Background job status progresses through <code>queued</code>, <code>running</code>, and
+                            then <code>succeeded</code> or <code>failed</code>. Retry is available only for eligible
+                            failed jobs.
+                        </Alert>
+                        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ sm: "center" }}>
+                            <Button
+                                component="a"
+                                href="/api/v1/openapi.yaml"
+                                target="_blank"
+                                rel="noreferrer"
+                                variant="outlined"
+                                startIcon={<OpenInNewOutlinedIcon />}
+                            >
+                                Open API specification
+                            </Button>
+                            <Typography variant="body2" color="text.secondary">
+                                In Postman, select Import → Link and paste{" "}
+                                <code>{window.location.origin}/api/v1/openapi.yaml</code>.
+                            </Typography>
+                        </Stack>
+                    </Stack>
+                </DialogContent>
+            </Dialog>
 
             <Dialog open={createOpen} onClose={() => !saving && setCreateOpen(false)} fullWidth maxWidth="sm">
                 <DialogTitle>Create Agent API key</DialogTitle>

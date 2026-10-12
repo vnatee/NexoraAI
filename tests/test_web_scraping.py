@@ -7,9 +7,11 @@ import requests
 
 from addons.scraping_web import (
     WebScrapingError,
+    legacy_source_folder,
     normalize_public_url,
     run_scraping_job,
     source_folder,
+    source_url_from_folder,
 )
 
 
@@ -89,9 +91,24 @@ def test_bounded_crawl_indexes_root_and_same_path_with_evidence(monkeypatch):
     assert "Source URL: https://docs.example.com/product/setup" in pages[1]["text"]
     assert "Retrieved at:" in pages[1]["text"]
     assert "Content SHA-256:" in pages[1]["text"]
-    assert "||https:__docs.example.com_product_setup.txt" in pages[1]["storage_name"]
+    assert pages[1]["storage_name"].startswith("page-")
+    assert pages[1]["storage_name"].endswith(".txt")
     assert "https://docs.example.com/private" not in session.requested
     assert source_folder(root).startswith("source-")
+
+
+def test_source_folder_is_minio_safe_and_reversible_for_encoded_thai_url():
+    source_url = (
+        "https://www.sangchaimeter.com/sub-category/34/"
+        "%E0%B8%A1%E0%B8%B1%E0%B8%A5%E0%B8%95%E0%B8%B4%E0%B8%A1%E0%B8%B4"
+        "%E0%B9%80%E0%B8%95%E0%B8%AD%E0%B8%A3%E0%B9%8C-multimeter"
+    )
+    folder = source_folder(source_url)
+
+    assert len(folder.encode("utf-8")) <= 255
+    assert "/" not in folder
+    assert source_url_from_folder(folder) == source_url
+    assert source_url_from_folder(legacy_source_folder(source_url)) == source_url
 
 
 def test_crawl_depth_controls_link_traversal(monkeypatch):
@@ -220,3 +237,77 @@ def test_external_links_are_not_resolved(monkeypatch):
     })
     run_scraping_job(root, session=session, resolver=recording_resolver)
     assert set(resolved_hosts) == {"docs.example.com"}
+
+
+def test_auto_mode_renders_javascript_shell(monkeypatch):
+    monkeypatch.setenv("WEB_SCRAPE_MIN_TEXT_CHARS", "80")
+    root = "https://docs.example.com/"
+    session = FakeSession({
+        "https://docs.example.com/robots.txt": FakeResponse(
+            200, "text/plain", "User-agent: *\nAllow: /"
+        ),
+        root: FakeResponse(
+            200,
+            "text/html",
+            '<html><head><title>App</title></head><body>'
+            '<div id="app"></div><script src="/app.js"></script></body></html>',
+        ),
+    })
+    rendered = (
+        "<html><head><title>Rendered App</title></head><body><main>"
+        + ("Rendered evidence " * 10)
+        + "</main></body></html>"
+    ).encode()
+    calls: list[str] = []
+
+    def renderer(url: str):
+        calls.append(url)
+        return url, rendered
+
+    result, pages = run_scraping_job(
+        root,
+        session=session,
+        resolver=public_resolver,
+        max_depth=0,
+        fetch_mode="auto",
+        browser_renderer=renderer,
+    )
+
+    assert calls == [root]
+    assert result["fetch_mode"] == "auto"
+    assert result["browser_pages"] == 1
+    assert pages[0]["title"] == "Rendered App"
+    assert "Rendered evidence" in pages[0]["text"]
+
+
+def test_http_mode_reports_javascript_rendered_page(monkeypatch):
+    monkeypatch.setenv("WEB_SCRAPE_MIN_TEXT_CHARS", "80")
+    root = "https://docs.example.com/"
+    session = FakeSession({
+        "https://docs.example.com/robots.txt": FakeResponse(
+            200, "text/plain", "User-agent: *\nAllow: /"
+        ),
+        root: FakeResponse(
+            200,
+            "text/html",
+            '<html><body><div id="root"></div><script src="/bundle.js"></script></body></html>',
+        ),
+    })
+
+    with pytest.raises(WebScrapingError, match="JavaScript-rendered page detected"):
+        run_scraping_job(
+            root,
+            session=session,
+            resolver=public_resolver,
+            max_depth=0,
+            fetch_mode="http",
+        )
+
+
+def test_rejects_unknown_fetch_mode():
+    with pytest.raises(WebScrapingError, match="fetch_mode"):
+        run_scraping_job(
+            "https://docs.example.com/",
+            resolver=public_resolver,
+            fetch_mode="stealth",
+        )

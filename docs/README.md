@@ -9,6 +9,8 @@ These are advanced topics that are not necessary for a basic deployment.
 - [NexoraAI User Manual — Microsoft Word](NexoraAI-User-Manual.docx)
 - [NexoraAI Administrator Manual](admin-manual.md)
 - [NexoraAI Administrator Manual — Microsoft Word](NexoraAI-Administrator-Manual.docx)
+- [Agent API Developer Guide](agent-api-developer-guide.md)
+- [Agent Invocation API reference](agent-invocation-api.md)
 - [Azure VM + Docker Compose Deployment Guide](azure-vm-docker-compose-deployment-guide.md)
 - [Azure VM + Docker Compose Deployment Guide — Microsoft Word](NexoraAI-Azure-VM-Docker-Compose-Deployment-Guide.docx)
 

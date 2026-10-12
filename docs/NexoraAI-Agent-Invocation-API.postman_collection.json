@@ -1,0 +1,273 @@
+{
+  "info": {
+    "_postman_id": "e7f2e5ef-6980-45cd-a19a-72179c27045b",
+    "name": "NexoraAI Agent Invocation API",
+    "description": "Phase 3A collection for synchronous, lifecycle SSE, and durable asynchronous Agent invocation. Never save a real API key in the collection file.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{apiKey}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://ai.example.com",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "",
+      "type": "secret"
+    },
+    {
+      "key": "agentId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "jobId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "idempotencyKey",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "API contract",
+      "item": [
+        {
+          "name": "Download OpenAPI specification",
+          "auth": {
+            "type": "noauth"
+          },
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/openapi.yaml",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "openapi.yaml"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Synchronous and streaming",
+      "item": [
+        {
+          "name": "Invoke Agent synchronously",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input\": \"Summarize the current employee leave policy.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/agents/{{agentId}}/invoke",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "agents", "{{agentId}}", "invoke"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Stable response schema', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.object).to.eql('agent.invocation');",
+                  "  pm.expect(body.output).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Invoke Agent with lifecycle SSE",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input\": \"Investigate current service alerts.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/agents/{{agentId}}/invoke/stream",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "agents", "{{agentId}}", "invoke", "stream"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Asynchronous jobs",
+      "item": [
+        {
+          "name": "Create async job",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('idempotencyKey')) {",
+                  "  pm.collectionVariables.set('idempotencyKey', pm.variables.replaceIn('{{$guid}}'));",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 202', () => pm.response.to.have.status(202));",
+                  "const body = pm.response.json();",
+                  "pm.collectionVariables.set('jobId', body.id);",
+                  "pm.test('Job ID captured', () => pm.expect(body.id).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input\": \"Analyze the incident and compare it with our runbooks.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/agents/{{agentId}}/jobs",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "agents", "{{agentId}}", "jobs"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Replay same idempotent request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input\": \"Analyze the incident and compare it with our runbooks.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/agents/{{agentId}}/jobs",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "agents", "{{agentId}}", "jobs"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Returns original job', () => {",
+                  "  pm.response.to.have.status(202);",
+                  "  pm.expect(pm.response.json().idempotent_replay).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Get job",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/agent-jobs/{{jobId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "agent-jobs", "{{jobId}}"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Known job status', () => {",
+                  "  pm.expect(['queued', 'running', 'succeeded', 'failed']).to.include(pm.response.json().status);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "Retry failed job",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/agent-jobs/{{jobId}}/retry",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "agent-jobs", "{{jobId}}", "retry"]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

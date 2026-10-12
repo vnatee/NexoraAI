@@ -90,6 +90,7 @@ export const ScrapData: React.FC<Props> = ({ disabled, dialogRef, className }) =
     const [url, setUrl] = useState("");
     const [crawlDepth, setCrawlDepth] = useState<0 | 1 | 2>(1);
     const [limitProfile, setLimitProfile] = useState<"standard" | "extended">("standard");
+    const [fetchMode, setFetchMode] = useState<"auto" | "http" | "browser">("auto");
     const [scanPreview, setScanPreview] = useState<WebSourceScan | null>(null);
     const [selectedPageUrls, setSelectedPageUrls] = useState<string[]>([]);
     const [isLoading, setIsLoading] = useState(false);
@@ -326,7 +327,8 @@ export const ScrapData: React.FC<Props> = ({ disabled, dialogRef, className }) =
                 teamId,
                 tab === "team" ? selectedDataGroupIds : undefined,
                 crawlDepth,
-                limitProfile
+                limitProfile,
+                fetchMode
             );
             setScanPreview(preview);
             setSelectedPageUrls(preview.pages.map(page => page.url));
@@ -602,7 +604,7 @@ export const ScrapData: React.FC<Props> = ({ disabled, dialogRef, className }) =
                     ) : (
                         <>
                             <Paper elevation={0} sx={{ p: 3, background: "linear-gradient(145deg, #f8f9fa, #e9ecef)", borderRadius: "12px" }}>
-                                <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "minmax(0, 1fr) 180px 210px" }, gap: 2 }}>
+                                <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", md: "minmax(0, 1fr) repeat(3, 180px)" }, gap: 2 }}>
                                     <TextField
                                         fullWidth
                                         label="Approved website root URL"
@@ -637,6 +639,18 @@ export const ScrapData: React.FC<Props> = ({ disabled, dialogRef, className }) =
                                         <MenuItem value="standard">Standard limits</MenuItem>
                                         <MenuItem value="extended">Extended (up to 250 / 100 MiB)</MenuItem>
                                     </TextField>
+                                    <TextField
+                                        select
+                                        label="Fetch mode"
+                                        value={fetchMode}
+                                        onChange={event => setFetchMode(event.target.value as "auto" | "http" | "browser")}
+                                        disabled={isLoading || isIndexing || Boolean(scanPreview)}
+                                        helperText="Auto detects JavaScript pages"
+                                    >
+                                        <MenuItem value="auto">Auto — Recommended</MenuItem>
+                                        <MenuItem value="http">Standard HTTP</MenuItem>
+                                        <MenuItem value="browser">Browser-rendered</MenuItem>
+                                    </TextField>
                                 </Box>
                             </Paper>
 
@@ -670,6 +684,7 @@ export const ScrapData: React.FC<Props> = ({ disabled, dialogRef, className }) =
                                             <Chip size="small" label={`${selectedPageUrls.length} of ${scanPreview.pages_found} selected`} color="primary" />
                                             <Chip size="small" label={`${formatBytes(selectedPageBytes)} selected`} />
                                             <Chip size="small" label={`Depth ${scanPreview.crawl_depth}`} />
+                                            <Chip size="small" label={scanPreview.browser_pages ? `${scanPreview.browser_pages} browser-rendered` : "Static HTML"} />
                                             <Chip size="small" label={scanPreview.limit_profile === "extended" ? "Extended limits" : "Standard limits"} />
                                         </Box>
                                     </Box>
