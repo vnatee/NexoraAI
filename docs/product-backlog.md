@@ -174,9 +174,17 @@ Next delivery order:
 3. **Phase 2.3 — reviewed promotion to Knowledge:** allow an authorized user to
    review selected external evidence and explicitly promote it to a permitted
    Personal, Team, or Global Knowledge scope.
-4. **Phase 3 — authenticated/browser sources:** isolated browser worker,
-   encrypted connector credentials, host/redirect allowlists, egress policy,
+4. **Phase 3 — authenticated sources:** extend the delivered public-page
+   browser renderer with an isolated authenticated worker, encrypted connector
+   credentials, host/redirect allowlists, egress policy,
    MFA/session-expiry behavior, bounded downloads, and complete audit.
+   Evaluate Moli and comparable agent-oriented headless-browser providers at
+   this phase; do not add one to the current public crawler. Any selected
+   provider must remain behind a provider-neutral browser integration, default
+   to read-only access, isolate sessions per Team or user, keep credentials out
+   of model context, resist page-based prompt injection, and require an
+   approval gate for form submission or other write actions. Playwright remains
+   the current bounded renderer for public JavaScript pages.
 5. Extend the implemented durable indexing jobs with manual/daily/weekly
    refresh policy, conditional requests, change summaries, and an external
    worker option for high-volume or multi-replica deployments. This may be
@@ -390,5 +398,8 @@ Recommended order when these items are scheduled:
 4. Build dashboard aggregation and reporting from the collected events.
 5. **Implemented (Phase 2 core):** lifecycle SSE, encrypted durable asynchronous
    jobs, polling, retry/lease recovery, TTL retention, and `Idempotency-Key`
-   deduplication. Next: OpenAPI publication, client SDKs, webhooks, cancellation,
-   true token-delta streaming, and optional enterprise gateway integration.
+   deduplication.
+6. **Implemented (Phase 3A):** published OpenAPI 3.0 contract, developer guide,
+   curl/Python/TypeScript/C# examples, Postman collection, and contract tests.
+   Next: generated client SDK packages, webhooks, cancellation, true token-delta
+   streaming, and optional enterprise gateway integration.

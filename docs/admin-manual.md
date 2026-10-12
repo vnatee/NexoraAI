@@ -134,7 +134,11 @@ Team scope requires **Manage team uploads** and at least one Data Group owned by
 the active Team. Enter a public root URL without credentials, query parameters,
 or a custom port. Select crawl depth **0** for the root only, **1** for the
 recommended root-plus-direct-links scope, or **2** for one additional link
-level. Select **Standard** limits for routine documentation or **Extended** only
+level. Keep **Auto** fetch mode for normal use: it starts with standard HTTP and
+automatically renders a page in an isolated browser when it detects a JavaScript
+application shell. Use **Standard HTTP** to prohibit JavaScript, or
+**Browser-rendered** when every page must be rendered. Select **Standard** limits
+for routine documentation or **Extended** only
 after reviewing the website scope.
 
 Select **Scan & Verify** first. The result is staged temporarily and is not yet
@@ -155,8 +159,8 @@ successfully.
 
 The crawler stays on the approved hostname/path, follows only the selected
 depth, honors `robots.txt`, and records source URL, retrieval time, and content
-hash. It does not execute JavaScript, authenticate to websites, or perform live
-web search.
+hash. Browser mode does not sign in, reuse user cookies, solve CAPTCHAs, or
+bypass access controls. Approved Web Sources does not perform live web search.
 See [Approved Web Sources](approved-web-sources.md) for limits and security
 controls.
 
@@ -321,6 +325,12 @@ to service keys. Invocations retain the Agent's guardrails, tool policy,
 licensing and Team usage quota. See
 [Agent Invocation API](agent-invocation-api.md) for the request format and
 operational guidance.
+
+Application developers should start with the
+[Agent API Developer Guide](agent-api-developer-guide.md), which includes curl,
+Python, TypeScript, C#, Postman, and acceptance-test examples.
+The same page provides a **Developer Guide** button with a safe quick start,
+copyable Sync/Background examples, and the deployment's OpenAPI link.
 
 ## 7. Unified integrations
 

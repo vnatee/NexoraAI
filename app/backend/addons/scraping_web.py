@@ -1,6 +1,8 @@
 """Bounded crawler for administrator-approved public Knowledge sources."""
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import ipaddress
 import logging
@@ -8,12 +10,13 @@ import os
 import posixpath
 import re
 import socket
+import zlib
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from urllib import robotparser
-from urllib.parse import quote, urljoin, urlsplit, urlunsplit
+from urllib.parse import quote, unquote, urljoin, urlsplit, urlunsplit
 
 import requests
 from bs4 import BeautifulSoup
@@ -121,8 +124,33 @@ def source_identifier(source_url: str) -> str:
     return hashlib.sha256(source_url.encode("utf-8")).hexdigest()[:20]
 
 
-def source_folder(source_url: str) -> str:
+def legacy_source_folder(source_url: str) -> str:
+    """Return the previous folder so refresh/delete can find existing objects."""
     return f"source-{source_identifier(source_url)}||url={quote(source_url, safe='')}"
+
+
+def source_folder(source_url: str) -> str:
+    """Encode the URL in one reversible, object-store-safe path component."""
+    compressed = zlib.compress(source_url.encode("utf-8"), level=9)
+    encoded = base64.urlsafe_b64encode(compressed).decode("ascii").rstrip("=")
+    folder = f"source-{source_identifier(source_url)}||urlz={encoded}"
+    if len(folder.encode("utf-8")) > 255:
+        raise WebScrapingError("The approved root URL is too long to store safely")
+    return folder
+
+
+def source_url_from_folder(folder: str) -> str:
+    """Recover a source URL from current, previous, or legacy folder formats."""
+    if "||urlz=" in folder:
+        encoded = folder.split("||urlz=", 1)[1]
+        try:
+            padded = encoded + ("=" * (-len(encoded) % 4))
+            return zlib.decompress(base64.urlsafe_b64decode(padded)).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError, ValueError, zlib.error):
+            return folder
+    if "||url=" in folder:
+        return unquote(folder.split("||url=", 1)[1])
+    return folder.replace("_", "/")
 
 
 def _path_prefix(source_url: str) -> str:
@@ -225,15 +253,167 @@ def _extract(body: bytes, url: str, retrieved_at: str) -> tuple[ScrapedPage, lis
         text=text,
         content_hash=digest,
         retrieved_at=retrieved_at,
-        storage_name=f"page-{page_id}||{url.replace('_', '%5F').replace('/', '_')}.txt",
+        storage_name=f"page-{page_id}.txt",
     )
     return page, links
+
+
+
+def _looks_like_javascript_shell(body: bytes, page: ScrapedPage, minimum_chars: int) -> bool:
+    """Detect common client-rendered shells without treating every short page as JavaScript."""
+    if len(page.text) >= minimum_chars:
+        return False
+    soup = BeautifulSoup(body, "html.parser")
+    mount_point = soup.find(id=re.compile(r"^(app|root|__next|__nuxt)$", re.IGNORECASE))
+    script_sources = [item.get("src") for item in soup.find_all("script", src=True)]
+    return bool(mount_point and script_sources)
+
+
+class _BrowserRenderer:
+    """Ephemeral Playwright context for one approved crawl."""
+
+    def __init__(
+        self,
+        source_url: str,
+        path_prefix: str,
+        resolver: Callable[..., Iterable[tuple]],
+        timeout: float,
+        maximum_bytes: int,
+    ):
+        self.source_url = source_url
+        self.path_prefix = path_prefix
+        self.resolver = resolver
+        self.timeout = timeout
+        self.maximum_bytes = maximum_bytes
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._page = None
+        self._timeout_error = TimeoutError
+
+    def _start(self) -> None:
+        if self._page is not None:
+            return
+        try:
+            from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+            from playwright.sync_api import sync_playwright
+        except ImportError as error:
+            raise WebScrapingError(
+                "Browser-rendered scanning is not installed on this deployment"
+            ) from error
+        self._timeout_error = PlaywrightTimeoutError
+        try:
+            self._playwright = sync_playwright().start()
+            launch_options: dict[str, object] = {
+                "headless": True,
+                "args": ["--disable-dev-shm-usage"],
+            }
+            executable = os.getenv("WEB_SCRAPE_BROWSER_EXECUTABLE", "").strip()
+            if executable:
+                launch_options["executable_path"] = executable
+            self._browser = self._playwright.chromium.launch(**launch_options)
+            self._context = self._browser.new_context(
+                user_agent=USER_AGENT,
+                service_workers="block",
+                ignore_https_errors=False,
+            )
+            self._page = self._context.new_page()
+            self._page.route("**/*", self._route)
+        except Exception as error:
+            self.close()
+            raise WebScrapingError(
+                "Browser-rendered scanning is unavailable on this deployment"
+            ) from error
+
+    def _route(self, route) -> None:
+        request = route.request
+        try:
+            parsed = urlsplit(request.url)
+            approved_host = urlsplit(self.source_url).hostname
+            if parsed.scheme not in {"http", "https"} or parsed.hostname != approved_host:
+                route.abort()
+                return
+            checked = _canonicalize(
+                request.url,
+                allow_query=True,
+                resolve=True,
+                resolver=self.resolver,
+            )
+            if request.is_navigation_request() and request.frame == self._page.main_frame:
+                parsed_checked = urlsplit(checked)
+                target = urlunsplit(
+                    (parsed_checked.scheme, parsed_checked.netloc, parsed_checked.path, "", "")
+                )
+                if not _in_scope(target, self.source_url, self.path_prefix):
+                    route.abort()
+                    return
+            if request.resource_type in {"image", "media", "font"}:
+                route.abort()
+                return
+            route.continue_()
+        except (WebScrapingError, ValueError):
+            route.abort()
+
+    def render(self, url: str) -> tuple[str, bytes]:
+        self._start()
+        try:
+            response = self._page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=int(self.timeout * 1000),
+            )
+            if response is None:
+                raise WebScrapingError("The browser did not receive a website response")
+            if response.status >= 400:
+                raise WebScrapingError(f"The website returned HTTP {response.status}")
+            kind = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            if kind not in {"text/html", "application/xhtml+xml"}:
+                raise WebScrapingError(
+                    f"Unsupported website content type: {kind or 'unknown'}"
+                )
+            try:
+                self._page.wait_for_load_state(
+                    "networkidle",
+                    timeout=min(int(self.timeout * 1000), 10_000),
+                )
+            except self._timeout_error:
+                pass
+            settle_ms = _limit("WEB_SCRAPE_BROWSER_SETTLE_MS", 750, 5_000)
+            self._page.wait_for_timeout(settle_ms)
+            final_url = normalize_public_url(self._page.url, resolver=self.resolver)
+            if not _in_scope(final_url, self.source_url, self.path_prefix):
+                raise WebScrapingError("The website redirect left the approved host or path")
+            body = self._page.content().encode("utf-8")
+            if len(body) > self.maximum_bytes:
+                raise WebScrapingError(
+                    "A rendered website page exceeded the configured size limit"
+                )
+            return final_url, body
+        except WebScrapingError:
+            raise
+        except Exception as error:
+            raise WebScrapingError("The browser could not render the website page") from error
+
+    def close(self) -> None:
+        for resource in (self._context, self._browser):
+            if resource is not None:
+                try:
+                    resource.close()
+                except Exception:
+                    pass
+        if self._playwright is not None:
+            try:
+                self._playwright.stop()
+            except Exception:
+                pass
+        self._page = self._context = self._browser = self._playwright = None
 
 
 def run_scraping_job(start_url: str, *, session: requests.Session | None = None,
                      resolver: Callable[..., Iterable[tuple]] = socket.getaddrinfo,
                      max_pages: int | None = None, max_total_bytes: int | None = None,
-                     max_depth: int = 1) -> tuple[dict[str, object], list[dict[str, str]]]:
+                     max_depth: int = 1, fetch_mode: str = "auto",
+                     browser_renderer=None) -> tuple[dict[str, object], list[dict[str, str]]]:
     """Crawl the approved host/path and return upload-ready evidence documents."""
     source_url = normalize_public_url(start_url, resolver=resolver)
     folder = source_folder(source_url)
@@ -251,6 +431,10 @@ def run_scraping_job(start_url: str, *, session: requests.Session | None = None,
     timeout = float(_limit("WEB_SCRAPE_TIMEOUT_SECONDS", 15, 60))
     minimum_chars = _limit("WEB_SCRAPE_MIN_TEXT_CHARS", 80, 10_000)
     depth_limit = max(0, min(int(max_depth), 2))
+    mode = str(fetch_mode or "auto").strip().lower()
+    if mode not in {"auto", "http", "browser"}:
+        raise WebScrapingError("fetch_mode must be auto, http, or browser")
+    browser_page_limit = _limit("WEB_SCRAPE_BROWSER_MAX_PAGES", 25, 100)
     prefix = _path_prefix(source_url)
     client = session or requests.Session()
     client.headers.update({"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"})
@@ -261,6 +445,9 @@ def run_scraping_job(start_url: str, *, session: requests.Session | None = None,
     pages, skipped, total_bytes = [], 0, 0
     issues: list[dict[str, str]] = []
     total_size_reached = False
+    javascript_detected = False
+    browser_pages = 0
+    owned_browser: _BrowserRenderer | None = None
 
     while pending and len(visited) < page_limit:
         candidate, depth = pending.popleft()
@@ -283,6 +470,50 @@ def run_scraping_job(start_url: str, *, session: requests.Session | None = None,
             if len(issues) < 50:
                 issues.append({"url": candidate, "reason": str(error)})
             continue
+        page, links = _extract(body, final_url, retrieved_at)
+        javascript_shell = _looks_like_javascript_shell(body, page, minimum_chars)
+        if javascript_shell:
+            javascript_detected = True
+        if mode == "http" and javascript_shell:
+            skipped += 1
+            if len(issues) < 50:
+                issues.append({
+                    "url": final_url,
+                    "reason": (
+                        "JavaScript-rendered page detected; select Auto or "
+                        "Browser-rendered fetch mode"
+                    ),
+                })
+            continue
+        needs_browser = mode == "browser" or (mode == "auto" and javascript_shell)
+        if needs_browser:
+            if browser_pages >= browser_page_limit:
+                skipped += 1
+                if len(issues) < 50:
+                    issues.append({
+                        "url": final_url,
+                        "reason": "Browser-rendered page limit reached",
+                    })
+                continue
+            try:
+                renderer = browser_renderer
+                if renderer is None:
+                    if owned_browser is None:
+                        owned_browser = _BrowserRenderer(
+                            source_url,
+                            prefix,
+                            resolver,
+                            timeout,
+                            byte_limit,
+                        )
+                    renderer = owned_browser.render
+                final_url, body = renderer(final_url)
+                browser_pages += 1
+                page, links = _extract(body, final_url, retrieved_at)
+            except WebScrapingError:
+                if depth == 0 and owned_browser is not None:
+                    owned_browser.close()
+                raise
         if total_bytes + len(body) > total_limit:
             total_size_reached = True
             skipped += 1
@@ -290,7 +521,6 @@ def run_scraping_job(start_url: str, *, session: requests.Session | None = None,
                 issues.append({"url": final_url, "reason": "Total size limit reached"})
             break
         total_bytes += len(body)
-        page, links = _extract(body, final_url, retrieved_at)
         storage_key_size = len(f"{folder}/{page.storage_name}".encode())
         if len(page.text) >= minimum_chars and storage_key_size <= 900:
             pages.append(page)
@@ -321,7 +551,13 @@ def run_scraping_job(start_url: str, *, session: requests.Session | None = None,
                 queued.add(normalized)
                 pending.append((normalized, depth + 1))
 
+    if owned_browser is not None:
+        owned_browser.close()
     if not pages:
+        if javascript_detected and mode == "http":
+            raise WebScrapingError(
+                "JavaScript-rendered page detected; select Auto or Browser-rendered fetch mode"
+            )
         if total_size_reached:
             raise WebScrapingError(
                 "The approved root page exceeded the configured total size limit"
@@ -347,6 +583,8 @@ def run_scraping_job(start_url: str, *, session: requests.Session | None = None,
         "crawl_depth": depth_limit,
         "truncated": bool(limit_reason),
         "limit_reason": limit_reason,
+        "fetch_mode": mode,
+        "browser_pages": browser_pages,
         "bytes_indexed": total_bytes,
         "issues": issues,
     }, [page.upload() for page in pages])

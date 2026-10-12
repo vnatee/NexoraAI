@@ -99,6 +99,7 @@ async def test_web_source_scan_stages_manifest_without_indexing(client, monkeypa
     assert payload["pages_found"] == 1
     assert payload["status"] == "ready"
     assert captured == {
+        "fetch_mode": "auto",
         "max_depth": 2,
         "max_pages": 250,
         "max_total_bytes": 100 * 1024 * 1024,

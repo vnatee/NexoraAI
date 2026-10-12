@@ -27,17 +27,22 @@ not grant an Agent unrestricted internet access.
    - **0 — Root only** scans only the submitted page;
    - **1 — Recommended** scans the root plus links found on it; or
    - **2 — Extended depth** follows one additional link level.
-6. Select a scan limit:
+6. Select **Fetch mode**:
+   - **Auto — Recommended** starts with standard HTTP and uses an isolated
+     browser only when the response is a JavaScript application shell;
+   - **Standard HTTP** never executes JavaScript; or
+   - **Browser-rendered** renders every selected page with Chromium.
+7. Select a scan limit:
    - **Standard** uses the normal bounded page and byte limits; or
    - **Extended** allows up to 250 pages and 100 MiB by default. It is still
      bounded and should be used only when the website scope has been reviewed.
-7. Select **Scan & Verify**. This creates a temporary staged snapshot only.
+8. Select **Scan & Verify**. This creates a temporary staged snapshot only.
    Nothing from the scan is searchable in RAG at this point.
-8. Review the page count, total extracted bytes, URLs, titles, skipped-page
+9. Review the page count, total extracted bytes, URLs, titles, skipped-page
    issues, and any **Partial snapshot** warning. All pages are selected initially;
    clear individual checkboxes or use **Select all pages** to choose the exact
    pages to retain.
-9. Select **Confirm Index** to queue only the checked pages, or **Discard Scan**
+10. Select **Confirm Index** to queue only the checked pages, or **Discard Scan**
    to remove the entire staged scan. Confirmation returns immediately; indexing
    continues in the background and the page may be closed safely.
 
@@ -70,7 +75,9 @@ The Phase 1 crawler:
   or token-bearing URLs;
 - honors an available `robots.txt` policy;
 - accepts HTML/XHTML only and does not download arbitrary files;
-- does not execute JavaScript or sign in to a site;
+- can render public JavaScript applications in Auto or Browser-rendered mode
+  using a fresh isolated Chromium context; it does not sign in, reuse user
+  cookies, solve CAPTCHAs, or bypass access controls;
 - limits redirects, pages, bytes per page, total bytes, and request duration,
   and marks a bounded result as partial when a ceiling stops traversal;
 - rejects URL credentials, query strings on the root URL, custom ports, and
@@ -93,6 +100,9 @@ hash. Citations continue to open the original public page.
 | `WEB_SCRAPE_EXTENDED_MAX_TOTAL_BYTES` | 100 MiB | 100 MiB | Extended total byte ceiling |
 | `WEB_SCRAPE_TIMEOUT_SECONDS` | 15 | 60 | Per-request timeout |
 | `WEB_SCRAPE_MIN_TEXT_CHARS` | 80 | 10,000 | Minimum extracted text length |
+| `WEB_SCRAPE_BROWSER_EXECUTABLE` | image default | — | Chromium executable for rendered scans |
+| `WEB_SCRAPE_BROWSER_MAX_PAGES` | 25 | 100 | Rendered-page ceiling per scan |
+| `WEB_SCRAPE_BROWSER_SETTLE_MS` | 750 ms | 5,000 ms | Extra render settle time |
 | `WEB_SOURCE_SCAN_RETENTION_HOURS` | 24 | 72 | Unconfirmed staging retention |
 | `WEB_SOURCE_SCAN_CLEANUP_INTERVAL_SECONDS` | 3600 | — | Cleanup worker interval; minimum 60 |
 | `WEB_SOURCE_INDEX_RECOVERY_INTERVAL_SECONDS` | 15 | — | Queued/interrupted index-job recovery interval; minimum 5 |
@@ -112,6 +122,10 @@ file passes them into the application container.
 - Application URL checks reduce SSRF risk, but production deployments should
   also enforce outbound network policy and DNS controls to prevent DNS-rebinding
   or proxy bypass at the infrastructure layer.
+- Browser rendering keeps the approved hostname and public-address checks for
+  navigation and subresources, blocks service workers plus image/media/font
+  downloads, and uses a new cookie-free browser context for each scan. It is a
+  compatibility mode, not an anti-bot or authenticated-browser mechanism.
 - Website scanning remains synchronous so the reviewer can inspect the staged
   result. Confirmed indexing uses a MongoDB-backed background job with a worker
   lease, heartbeat, per-URL progress, and retry/resume after an application
@@ -129,9 +143,9 @@ allowed domains, result/query limits, safe retrieval of selected results,
 short-lived caching, source/date citations, metadata-only audit, and separate
 permissions from permanent Knowledge ingestion.
 
-### Phase 3 — authenticated and browser-rendered sources
+### Phase 3 — authenticated sources
 
-Add authenticated connectors and JavaScript rendering in an isolated worker,
-with encrypted credentials, domain and redirect allowlists, controlled egress,
+Add authenticated connectors in an isolated worker, with encrypted credentials,
+domain and redirect allowlists, controlled egress,
 download limits, audit, and explicit handling of MFA/session expiry. This must
 not reuse end-user browser cookies or expose credentials to prompts or tools.

@@ -23,6 +23,7 @@ cryptography
 PyJWT
 python3-saml>=1.16,<2
 Pillow
+playwright>=1.55,<2
 types-Pillow
 pypdf
 PyMuPDF

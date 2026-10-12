@@ -1,6 +1,6 @@
 # Codex handoff — NexoraAI
 
-Last updated: 2026-09-27 UTC
+Last updated: 2026-10-12 UTC
 
 This document replaces a raw chat transcript as the engineering handoff. It
 captures the decisions and evidence needed to continue without storing copied
@@ -15,9 +15,12 @@ logs, credentials, attachments, or repetitive conversational text.
   the repository was established as the NexoraAI product; consult this handoff
   and the current source rather than historical upstream checkpoints.
 - Azure baseline: `8ee1e8a` / `origin/Release-2.2.0`
-- Latest local checkpoint: `436fd69 feat: initialize NexoraAI enterprise AI
-  workspace` on `main`.
-- This checkpoint includes private Chat/Ask document upload, native extraction,
+- Latest local checkpoint: `e557123 feat: add durable agent invocation jobs`
+  on `main`. It contains Agent Invocation API Phase 2 and was not pushed.
+- The current working slice combines Agent Invocation API Phase 3A with the
+  approved public JavaScript browser renderer and its object-store-safe Web
+  Source key migration.
+- Earlier application checkpoints include private Chat/Ask document upload, native extraction,
   temporary retrieval, prompt-intent evidence scope, ACL-checked citations,
   per-Agent image/document policy, request-local Vision routing, local/Azure
   attachment storage, retention cleanup, and the memory-safe local build path.
@@ -71,6 +74,28 @@ Decisions already made with the product owner:
 
 ## Implemented work
 
+### Agent Invocation API — Phase 3A
+
+- The versioned OpenAPI 3.0 contract is stored in
+  `app/backend/agent-invocation-openapi.yaml` and published without
+  authentication at `GET /api/v1/openapi.yaml`.
+- `docs/agent-api-developer-guide.md` provides a five-minute smoke test,
+  endpoint selection guidance, production safety rules, and copyable curl,
+  Python, TypeScript, and C# examples.
+- **Team governance > Agent API access > Developer Guide** provides an
+  in-Portal quick start, endpoint guidance, secret-safe Sync/Background
+  examples, and a direct link to the deployment's OpenAPI contract. Its dialog
+  closes only through the top-right close action.
+- `docs/NexoraAI-Agent-Invocation-API.postman_collection.json` provides
+  secret-free requests and tests for sync, lifecycle SSE, asynchronous jobs,
+  polling, retry, and idempotent replay.
+- Phase 2 plus Phase 3A focused contract validation passes (`30 passed`).
+  The service-free suite excluding `tests/test_app_config.py` and the known
+  workspace PDF fixture test passes (`1056 passed, 1 deselected`).
+
+- Portal TypeScript and the memory-safe production build pass. The rebuilt
+  local application is healthy and serves the OpenAPI contract as
+  `application/yaml`.
 ### Agent Invocation API — Phase 2 core
 
 - Team administrators with **Manage agents** can create, list, rotate and revoke
@@ -219,6 +244,12 @@ Decisions already made with the product owner:
   honors `robots.txt`, accepts HTML only, includes the root page, and enforces
   page/depth/byte/time limits. Production egress controls remain required to
   close DNS-rebinding and proxy-bypass risk.
+- Public JavaScript applications are now supported through **Auto** (recommended),
+  **Standard HTTP**, and **Browser-rendered** fetch modes. Auto starts with the
+  bounded HTTP crawler and falls back only when it detects an application shell.
+  Chromium runs in a fresh cookie-free context, keeps hostname/public-address
+  checks on navigation and subresources, blocks service workers and heavy media,
+  and does not sign in, solve CAPTCHAs, or bypass access controls.
 - Approved Web Sources now uses a server-enforced **Scan & Verify** workflow.
   A scan writes extracted evidence to temporary object storage and stores only
   its review manifest in MongoDB; it does not enter RAG. The reviewer sees page
@@ -241,15 +272,26 @@ Decisions already made with the product owner:
 - Standard scans retain the normal bounded limits. An explicit Extended profile
   raises the default ceiling to 250 pages / 100 MiB but remains hard-bounded;
   depth remains independently selectable from 0 to 2. Phase 2 governed live
-  search and Phase 3 authenticated/browser-rendered sources remain separate
-  roadmap items. See `docs/approved-web-sources.md` and
+  search and Phase 3 authenticated sources remain separate roadmap items. See
+  `docs/approved-web-sources.md` and
   `docs/product-backlog.md`. Focused crawler and route regressions pass
-  (`44 passed`), the frontend production build and TypeScript check pass, Docker Compose
+  (`47 passed`), the frontend production build and TypeScript check pass,
+  Docker Compose
   configuration validates, and the rebuilt app and integration controller are
   healthy. The service-free regression excluding the environment-dependent
   app-config module and workspace PDF-fixture test passes
-  (`1017 passed, 1 deselected`).
+  (`1059 passed, 1 deselected`). An Auto-mode smoke test against
+  `https://www.sangchaimeter.com/` rendered and extracted the root page.
 
+- Web Source object keys now use a reversible compressed URL folder and
+  hash-only page filenames. This keeps long percent-encoded URLs, including
+  Thai paths, below MinIO/filesystem component limits while preserving read,
+  refresh, stale-page cleanup, and deletion compatibility with both previous
+  encoded and legacy folder formats. A real MinIO write/stat/delete smoke test
+  passed with the reported Sangchai Meter URL, and focused Web/Knowledge
+  regression passes (`54 passed`).
+- Agent-oriented authenticated headless browsers such as Moli are deferred to
+  governed Web Phase 3; the current renderer remains public and read-only.
 
 ### Runtime and LLM providers
 
