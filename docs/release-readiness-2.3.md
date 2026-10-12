@@ -4,9 +4,10 @@ This is the evidence and acceptance gate for the planned `2.3.0` release. The
 application must continue to report `2.2.0` until every required production
 gate below passes. Do not treat a successful build alone as release approval.
 
-Candidate branch: `feature/mcp-catalog-navigation`
+Candidate branch: `main`
 
-Candidate checkpoint: `698de34 feat: expand agent catalog and enterprise authentication`
+Candidate checkpoint: current `main` HEAD; record the exact release commit
+after the remaining required gate passes.
 
 ## Completed evidence
 
@@ -15,6 +16,9 @@ Candidate checkpoint: `698de34 feat: expand agent catalog and enterprise authent
 - The local application image rebuilt successfully and imported both
   `python3-saml` and `xmlsec`; the application container became healthy.
 - Focused backup/TLS/SAML regression passed with `19 passed` on 2026-09-15.
+- The product owner completed and accepted public HTTPS deployment testing on
+  2026-10-12. SAML remains disabled by default and is classified as Preview
+  until acceptance with a real identity provider is available.
 - A real backup and destructive restore drill passed on 2026-09-15 in the
   isolated Compose project `nexora-p0-drill`. The drill:
   - used a separate Docker network and project-scoped volumes;
@@ -42,15 +46,21 @@ Candidate checkpoint: `698de34 feat: expand agent catalog and enterprise authent
 
 ### HTTPS ingress
 
-- [ ] Validate the public certificate chain and hostname without `--insecure`.
-- [ ] Confirm HTTP redirects to the exact HTTPS hostname.
-- [ ] Confirm HSTS and the baseline browser security headers are present.
-- [ ] Confirm sign-in, Chat streaming, upload/download, citations, and Draw.io
+- [x] Validate the public certificate chain and hostname without `--insecure`.
+- [x] Confirm HTTP redirects to the exact HTTPS hostname.
+- [x] Confirm HSTS and the baseline browser security headers are present.
+- [x] Confirm sign-in, Chat streaming, upload/download, citations, and Draw.io
       artifacts work through HTTPS.
-- [ ] Confirm MongoDB, MinIO API, Qdrant, Ollama, Integration Controller, and
+- [x] Confirm MongoDB, MinIO API, Qdrant, Ollama, Integration Controller, and
       managed MCP services are not exposed publicly.
 
-### SAML with a real identity provider
+## Deferred post-release acceptance
+
+### SAML Preview with a real identity provider
+
+No suitable real IdP is currently available for acceptance. SAML remains
+disabled by default, is not a `2.3.0` release blocker, and must not be described
+as production-ready until every check below passes.
 
 - [ ] Set `NEXORA_PUBLIC_URL` to the final HTTPS origin before copying SAML
       identifiers.
@@ -66,6 +76,9 @@ Candidate checkpoint: `698de34 feat: expand agent catalog and enterprise authent
       Local break-glass administrator can still sign in.
 
 ## Release decision
+
+The deferred SAML Preview checklist above is excluded from the required gate;
+all Deployment and upgrade checks remain required.
 
 When every required item passes:
 
