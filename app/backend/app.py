@@ -181,6 +181,8 @@ from mongo_table_connecters.agent_invocation_jobs import (
     serialize_agent_invocation_job,
 )
 from mongo_table_connecters.agent_invocation_keys import (
+    ACCESS_TYPE_EXTERNAL,
+    ACCESS_TYPE_INTERNAL,
     AgentInvocationKeyError,
     authenticate_agent_invocation_key,
     create_agent_invocation_key,
@@ -190,6 +192,7 @@ from mongo_table_connecters.agent_invocation_keys import (
     insert_agent_invocation_audit,
     list_agent_invocation_keys,
     mark_agent_invocation_key_used,
+    normalize_agent_invocation_access_type,
     revoke_agent_invocation_key,
     rotate_agent_invocation_key,
     validate_agent_invocation_key_document,
@@ -243,7 +246,15 @@ from mongo_table_connecters.mcp_servers import (
 )
 from mongo_table_connecters.agent_audit import list_agent_audit_events
 from agent_runtime.observability import AuditTrail
-from mongo_table_connecters.data_group import get_data_group_by_id, insert_data_group, delete_data_group_by_id, get_all_data_groups_by_user_id, update_data_group
+from mongo_table_connecters.data_group import (
+    EXPOSURE_EXTERNAL,
+    get_data_group_by_id,
+    insert_data_group,
+    delete_data_group_by_id,
+    get_all_data_groups_by_user_id,
+    update_data_group,
+    update_data_group_publication,
+)
 from mongo_table_connecters.permissions import insert_permission, get_all_permissions, get_permission_by_name
 from mongo_table_connecters.user_permission import get_user_permission_by_user_id, get_user_permission_by_team_id, delete_user_permission_by_id, get_user_permission_by_user_team_id, insert_user_permission, update_user_permission
 from mongo_table_connecters.roles import insert_role, update_role, get_all_roles, get_role_by_id, get_all_roles_by_team, delete_role_by_id
@@ -2919,12 +2930,31 @@ def _team_wide_invocation_data_groups(team: dict[str, Any]) -> list[dict[str, st
     return result
 
 
+def _external_published_invocation_data_groups(
+    team: dict[str, Any],
+) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for item in _team_wide_invocation_data_groups(team):
+        group = get_data_group_by_id(item["_id"])
+        if (
+            group
+            and str(group.get("exposure") or "internal").strip().lower()
+            == EXPOSURE_EXTERNAL
+            and str(group.get("publication_status") or "").strip().lower()
+            == "published"
+        ):
+            result.append(item)
+    return result
+
+
 def _validate_agent_invocation_scope(
     team: dict[str, Any],
     *,
     agent_ids: object,
     data_group_ids: object,
+    access_type: object = ACCESS_TYPE_INTERNAL,
 ) -> tuple[list[str], list[str]]:
+    normalized_access_type = normalize_agent_invocation_access_type(access_type)
     if not isinstance(agent_ids, list) or not agent_ids:
         raise AgentInvocationKeyError(
             "allowed_agent_ids must contain at least one Agent"
@@ -2954,6 +2984,17 @@ def _validate_agent_invocation_scope(
                 status_code=409,
             )
 
+        agent_config = (selected_agent or {}).get("config") or {}
+        agent_tools = agent_config.get("tool_settings") or {}
+        knowledge_mode = str(agent_tools.get("knowledge_search") or "auto").lower()
+        if (
+            normalized_access_type == ACCESS_TYPE_EXTERNAL
+            and knowledge_mode == "disabled"
+        ):
+            raise AgentInvocationKeyError(
+                "External customer Agents must enable Knowledge Search",
+                status_code=409,
+            )
     if not isinstance(data_group_ids, list):
         raise AgentInvocationKeyError("allowed_data_group_ids must be an array")
     normalized_groups = list(
@@ -2963,12 +3004,16 @@ def _validate_agent_invocation_scope(
             if str(item or "").strip()
         )
     )
-    allowed_groups = {
-        item["_id"] for item in _team_wide_invocation_data_groups(team)
-    }
+    eligible_groups = (
+        _external_published_invocation_data_groups(team)
+        if normalized_access_type == ACCESS_TYPE_EXTERNAL
+        else _team_wide_invocation_data_groups(team)
+    )
+    allowed_groups = {item["_id"] for item in eligible_groups}
     if any(item not in allowed_groups for item in normalized_groups):
         raise AgentInvocationKeyError(
-            "API keys may use only Team-wide Data Groups", status_code=403
+            "The selected Knowledge scope is not eligible for this access type",
+            status_code=403,
         )
     return normalized_agents, normalized_groups
 
@@ -3035,15 +3080,21 @@ def _validate_agent_invocation_target(
             status_code=409,
         )
 
-    available_groups = {
-        item["_id"] for item in _team_wide_invocation_data_groups(team)
-    }
+    access_type = normalize_agent_invocation_access_type(
+        key_document.get("access_type")
+    )
+    eligible_groups = (
+        _external_published_invocation_data_groups(team)
+        if access_type == ACCESS_TYPE_EXTERNAL
+        else _team_wide_invocation_data_groups(team)
+    )
+    available_groups = {item["_id"] for item in eligible_groups}
     data_group_ids = [
         str(item) for item in (key_document.get("allowed_data_group_ids") or [])
     ]
     if any(item not in available_groups for item in data_group_ids):
         raise AgentInvocationKeyError(
-            "The API key references a Data Group that is no longer Team-wide",
+            "The API key references Knowledge that is no longer eligible",
             status_code=403,
         )
     return team, agent or {}, data_group_ids
@@ -3055,17 +3106,23 @@ def _agent_invocation_public_response(
     request_id: str,
     agent_id: str,
     conversation_id: str,
+    access_type: object = ACCESS_TYPE_INTERNAL,
 ) -> dict[str, Any]:
     result_context = result.get("context") or {}
+    external_channel = (
+        normalize_agent_invocation_access_type(access_type) == ACCESS_TYPE_EXTERNAL
+    )
     return {
         "id": request_id,
         "object": "agent.invocation",
         "agent_id": agent_id,
         "conversation_id": conversation_id,
         "output": str((result.get("message") or {}).get("content") or ""),
-        "citations": ((result_context.get("data_points") or {}).get("text") or []),
-        "chart": result_context.get("chart"),
-        "diagram": result_context.get("diagram"),
+        "citations": []
+        if external_channel
+        else ((result_context.get("data_points") or {}).get("text") or []),
+        "chart": None if external_channel else result_context.get("chart"),
+        "diagram": None if external_channel else result_context.get("diagram"),
     }
 
 
@@ -3082,6 +3139,9 @@ async def _execute_agent_invocation(
         key_document, agent_id
     )
 
+    access_type = normalize_agent_invocation_access_type(
+        key_document.get("access_type")
+    )
     normalized_conversation_id = ensure_conversation_id(conversation_id)
     service_id = f"service:{key_document['_id']}"
     auth_claims = {
@@ -3089,10 +3149,15 @@ async def _execute_agent_invocation(
         "application_user_id": service_id,
         "auth_provider": "agent_api_key",
         "service_principal_id": str(key_document["_id"]),
+        "agent_api_access_type": access_type,
+        "external_channel": access_type == ACCESS_TYPE_EXTERNAL,
         "team_id": team_id,
         "data_groups_id": data_group_ids,
         "selected_scopes": (
-            ["global"] if key_document.get("allow_global_knowledge") is True else []
+            ["global"]
+            if access_type == ACCESS_TYPE_INTERNAL
+            and key_document.get("allow_global_knowledge") is True
+            else []
         ),
     }
     request_json: dict[str, Any] = {
@@ -3189,6 +3254,9 @@ async def get_team_agent_api_keys(auth_claims: dict[str, Any], team_id: str):
                 "items": list_agent_invocation_keys(team_id),
                 "available_agents": agents,
                 "available_data_groups": _team_wide_invocation_data_groups(team),
+                "available_external_data_groups": (
+                    _external_published_invocation_data_groups(team)
+                ),
             }
         )
     except Exception as error:
@@ -3205,19 +3273,29 @@ async def create_team_agent_api_key(auth_claims: dict[str, Any], team_id: str):
             auth_claims, team_id, permission="Manage agents"
         )
         body = await request.get_json()
+        access_type = normalize_agent_invocation_access_type(
+            (body or {}).get("access_type")
+        )
+        if access_type == ACCESS_TYPE_EXTERNAL:
+            actor = _require_system_permission(
+                auth_claims, "Manage global uploads"
+            )
+        allow_global_knowledge = (
+            (body or {}).get("allow_global_knowledge") is True
+        )
         agent_ids, group_ids = _validate_agent_invocation_scope(
             team,
             agent_ids=(body or {}).get("allowed_agent_ids"),
             data_group_ids=(body or {}).get("allowed_data_group_ids") or [],
+            access_type=access_type,
         )
         item, token = create_agent_invocation_key(
             team_id=team_id,
             name=(body or {}).get("name"),
             allowed_agent_ids=agent_ids,
+            access_type=access_type,
             allowed_data_group_ids=group_ids,
-            allow_global_knowledge=(
-                (body or {}).get("allow_global_knowledge") is True
-            ),
+            allow_global_knowledge=allow_global_knowledge,
             expiry_days=(body or {}).get("expiry_days", 90),
             rate_limit_per_minute=(
                 (body or {}).get("rate_limit_per_minute", 60)
@@ -3231,6 +3309,7 @@ async def create_team_agent_api_key(auth_claims: dict[str, Any], team_id: str):
             agent_id="",
             event_type="api_key_created",
             status="success",
+            access_type=access_type,
         )
         response = jsonify({"item": item, "api_key": token})
         response.status_code = 201
@@ -3267,6 +3346,7 @@ async def rotate_team_agent_api_key(
             agent_id="",
             event_type="api_key_rotated",
             status="success",
+            access_type=current.get("access_type"),
         )
         response = jsonify({"item": item, "api_key": token})
         response.headers["Cache-Control"] = "no-store"
@@ -3300,6 +3380,7 @@ async def revoke_team_agent_api_key(
                 agent_id="",
                 event_type="api_key_revoked",
                 status="success",
+                access_type=current.get("access_type"),
             )
         return jsonify({"result": "revoked" if revoked else "unchanged"})
     except Exception as error:
@@ -3351,6 +3432,7 @@ async def invoke_agent_api(agent_id: str):
             event_type="agent_invoked",
             status="success",
             duration_ms=int((time.monotonic() - started) * 1000),
+            access_type=key_document.get("access_type"),
         )
         response = jsonify(
             _agent_invocation_public_response(
@@ -3358,6 +3440,7 @@ async def invoke_agent_api(agent_id: str):
                 request_id=request_id,
                 agent_id=agent_id,
                 conversation_id=conversation_id,
+                access_type=key_document.get("access_type"),
             )
         )
         response.headers["Cache-Control"] = "no-store"
@@ -3374,6 +3457,7 @@ async def invoke_agent_api(agent_id: str):
                 status="failed",
                 duration_ms=int((time.monotonic() - started) * 1000),
                 error_code=type(error).__name__,
+                access_type=key_document.get("access_type"),
             )
         return error_response(error, "/api/v1/agents/<agent_id>/invoke")
 
@@ -3445,6 +3529,7 @@ async def stream_agent_api(agent_id: str):
                 event_type="agent_stream_completed",
                 status="success",
                 duration_ms=int((time.monotonic() - started) * 1000),
+                access_type=(key_document or {}).get("access_type"),
             )
             yield _agent_invocation_sse(
                 "completed",
@@ -3453,6 +3538,7 @@ async def stream_agent_api(agent_id: str):
                     request_id=request_id,
                     agent_id=agent_id,
                     conversation_id=conversation_id,
+                    access_type=(key_document or {}).get("access_type"),
                 ),
             )
         except asyncio.CancelledError:
@@ -3473,6 +3559,7 @@ async def stream_agent_api(agent_id: str):
                 status="failed",
                 duration_ms=int((time.monotonic() - started) * 1000),
                 error_code=type(error).__name__,
+                access_type=(key_document or {}).get("access_type"),
             )
             current_app.logger.exception(
                 "Streaming Agent invocation failed: id=%s", request_id
@@ -6929,6 +7016,7 @@ async def _run_agent_invocation_job(job_id: str) -> None:
             request_id=str(claimed["_id"]),
             agent_id=str(claimed.get("agent_id") or ""),
             conversation_id=conversation_id,
+            access_type=(key_document or {}).get("access_type"),
         )
         await asyncio.to_thread(
             complete_agent_invocation_job,
@@ -6948,6 +7036,7 @@ async def _run_agent_invocation_job(job_id: str) -> None:
             event_type="agent_job_completed",
             status="success",
             duration_ms=int((time.monotonic() - started) * 1000),
+            access_type=(key_document or {}).get("access_type"),
         )
     except asyncio.CancelledError:
         await _finish_usage_reservation(usage_context, state="released")
@@ -6977,6 +7066,7 @@ async def _run_agent_invocation_job(job_id: str) -> None:
                 status="failed",
                 duration_ms=int((time.monotonic() - started) * 1000),
                 error_code=type(error).__name__,
+                access_type=(key_document or {}).get("access_type"),
             )
         current_app.logger.exception("Agent invocation job failed: id=%s", job_id)
     finally:
@@ -10314,6 +10404,16 @@ async def get_data_group_by_team(auth_claims: dict[str, Any]):
             data_group_info["access_mode"] = str(data_group_info.get("access_mode") or (
                 "team" if not data_group_info.get("user_id") else "selected_users"
             ))
+            data_group_info["exposure"] = str(
+                data_group_info.get("exposure") or "internal"
+            )
+            data_group_info["publication_status"] = str(
+                data_group_info.get("publication_status") or "not_applicable"
+            )
+            data_group_info["publication_version"] = int(
+                data_group_info.get("publication_version") or 0
+            )
+            data_group_info.pop("publication_history", None)
             if data_group_info["user_id"] != []:
                 user_list = []
                 for user in data_group_info["user_id"]:
@@ -10325,6 +10425,95 @@ async def get_data_group_by_team(auth_claims: dict[str, Any]):
         return jsonify({"result": data_group}), 200
     except Exception as error_txt:
         return error_response(error_txt, "/get_data_group_by_team")
+
+
+@bp.patch("/teams/<team_id>/data-groups/<data_group_id>/publication")
+@authenticated
+async def update_data_group_external_publication(
+    auth_claims: dict[str, Any], team_id: str, data_group_id: str
+):
+    try:
+        if not request.is_json:
+            raise AccessControlError("request must be json", status_code=415)
+        body = await request.get_json()
+        exposure = str((body or {}).get("exposure") or "").strip().lower()
+        publication_status = str(
+            (body or {}).get("publication_status") or ""
+        ).strip().lower()
+        if exposure not in {"internal", "external"}:
+            raise AccessControlError(
+                "Unsupported Data Group exposure", status_code=400
+            )
+        if exposure == "external" and publication_status not in {
+            "draft",
+            "published",
+            "retired",
+        }:
+            raise AccessControlError(
+                "External publication status must be draft, published, or retired",
+                status_code=400,
+            )
+        if exposure == "external" and publication_status == "draft":
+            actor, team = _require_team_access(
+                auth_claims,
+                team_id,
+                permission="Manage team data groups",
+            )
+        else:
+            actor = _require_system_permission(
+                auth_claims, "Manage global uploads"
+            )
+            team = get_team_by_id(team_id)
+        if not team or data_group_id not in {
+            str(item) for item in (team.get("data_group_id") or [])
+        }:
+            raise AccessControlError(
+                "Data group does not belong to this team", status_code=404
+            )
+        group = get_data_group_by_id(data_group_id)
+        if not group:
+            raise AccessControlError("Data group not found", status_code=404)
+        member_ids = group.get("user_id") or []
+        access_mode = str(group.get("access_mode") or "").strip().lower()
+        if not access_mode:
+            access_mode = "team" if not member_ids else "selected_users"
+        if exposure == "external" and access_mode != "team":
+            raise AccessControlError(
+                "Only Team-wide Data Groups can be published externally",
+                status_code=409,
+            )
+        updated = update_data_group_publication(
+            data_group_id,
+            exposure=exposure,
+            publication_status=publication_status,
+            actor_id=str(actor.get("_id") or ""),
+        )
+        if not updated:
+            raise AccessControlError(
+                "Publication state was not changed", status_code=409
+            )
+        current = get_data_group_by_id(data_group_id) or {}
+        return jsonify(
+            {
+                "result": {
+                    "_id": data_group_id,
+                    "exposure": str(current.get("exposure") or "internal"),
+                    "publication_status": str(
+                        current.get("publication_status") or "not_applicable"
+                    ),
+                    "publication_version": int(
+                        current.get("publication_version") or 0
+                    ),
+                    "published_at": current.get("published_at"),
+                    "published_by": current.get("published_by"),
+                }
+            }
+        )
+    except Exception as error_txt:
+        return error_response(
+            error_txt,
+            "/teams/<team_id>/data-groups/<data_group_id>/publication",
+        )
 
 
 @bp.post("/edit_data_group")

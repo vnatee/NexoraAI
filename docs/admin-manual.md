@@ -208,6 +208,17 @@ Data Groups are retrieval authorization boundaries.
 Changing Data Group access affects future retrieval authorization. Do not move a
 sensitive document into a broader group merely to make search easier.
 
+For customer-facing channels, a Team data curator may mark an **Entire team**
+Data Group as an **External draft**. A System Administrator must review and
+publish it before an External Customer API key can retrieve it. Publishing
+increments its version and records who published it and when. **Retire** removes
+it from External Customer keys immediately; it does not delete the underlying
+internal Knowledge. Selected-user Data Groups cannot be published externally.
+
+Treat publication as a security approval: confirm that every document is safe
+for the intended customer audience and contains no internal-only pricing,
+credentials, personal data, or operational instructions.
+
 ## 6. Agents
 
 Use **AI workspace → Agents** to search, create, edit, activate, and delete Team
@@ -309,6 +320,21 @@ For MCP Agents configure:
 
 Use **Team governance → Agent API access** to allow a server-side application
 to invoke selected Team Agents. The administrator must have **Manage agents**.
+
+Choose the key type deliberately:
+
+- **Internal Service** is for trusted internal applications. It can use selected
+  Team-wide Data Groups and, when explicitly enabled, Global Knowledge. Agent
+  integrations remain governed by the Agent's normal tool policy.
+- **External Customer** is for a customer-facing website or BFF. Only a System
+  Administrator can create this key type. It can retrieve only explicitly
+  published External Knowledge and cannot use Global Knowledge, Web Search,
+  databases, REST, mail, business documents, messaging, MCP, sub-agents, or
+  chart tools.
+
+Never place an Agent key in browser JavaScript. The customer website must call
+its own server/BFF, which retrieves the key from a secret store and calls
+NexoraAI over HTTPS.
 
 When creating a key, enter a clear application/environment name, select one or
 more active LangGraph Agents, choose only the Team-wide Data Groups that the
