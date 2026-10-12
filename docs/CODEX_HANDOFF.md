@@ -19,12 +19,17 @@ logs, credentials, attachments, or repetitive conversational text.
   indexing` on `main`. It contains Agent Invocation API Phase 3A, the approved
   public JavaScript browser renderer, and the object-store-safe Web Source key
   migration. Presentation checkpoint `0a51360` adds the Banking Applied AI
-  presentation kit. Neither checkpoint was pushed during this handoff.
+  presentation kit. These checkpoints are included in the current `main`
+  history.
 - Closing validation on 2026-10-12 passed the combined focused regression
   (`73 passed`), the service-free backend suite excluding the environment-
   dependent app-config module (`1060 passed, 1 deselected`), TypeScript
   compilation, the memory-safe production frontend build, and Docker Compose
   configuration. The local application remains healthy.
+- The product owner accepted public HTTPS deployment testing on 2026-10-12.
+  Real-IdP SAML acceptance is deferred because no suitable IdP is currently
+  available; SAML remains disabled by default and Preview rather than
+  production-ready until the deferred checklist passes.
 - Earlier application checkpoints include private Chat/Ask document upload, native extraction,
   temporary retrieval, prompt-intent evidence scope, ACL-checked citations,
   per-Agent image/document policy, request-local Vision routing, local/Azure
