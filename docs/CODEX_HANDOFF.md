@@ -15,11 +15,16 @@ logs, credentials, attachments, or repetitive conversational text.
   the repository was established as the NexoraAI product; consult this handoff
   and the current source rather than historical upstream checkpoints.
 - Azure baseline: `8ee1e8a` / `origin/Release-2.2.0`
-- Latest local checkpoint: `e557123 feat: add durable agent invocation jobs`
-  on `main`. It contains Agent Invocation API Phase 2 and was not pushed.
-- The current working slice combines Agent Invocation API Phase 3A with the
-  approved public JavaScript browser renderer and its object-store-safe Web
-  Source key migration.
+- Latest product checkpoint: `30cd09b feat: finalize agent API docs and web
+  indexing` on `main`. It contains Agent Invocation API Phase 3A, the approved
+  public JavaScript browser renderer, and the object-store-safe Web Source key
+  migration. Presentation checkpoint `0a51360` adds the Banking Applied AI
+  presentation kit. Neither checkpoint was pushed during this handoff.
+- Closing validation on 2026-10-12 passed the combined focused regression
+  (`73 passed`), the service-free backend suite excluding the environment-
+  dependent app-config module (`1060 passed, 1 deselected`), TypeScript
+  compilation, the memory-safe production frontend build, and Docker Compose
+  configuration. The local application remains healthy.
 - Earlier application checkpoints include private Chat/Ask document upload, native extraction,
   temporary retrieval, prompt-intent evidence scope, ACL-checked citations,
   per-Agent image/document policy, request-local Vision routing, local/Azure
