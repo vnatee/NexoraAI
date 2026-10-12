@@ -210,7 +210,8 @@ sensitive document into a broader group merely to make search easier.
 
 For customer-facing channels, a Team data curator may mark an **Entire team**
 Data Group as an **External draft**. A System Administrator must review and
-publish it before an External Customer API key can retrieve it. Publishing
+publish it with **Manage external channels** before an External Customer API
+key can retrieve it. Publishing
 increments its version and records who published it and when. **Retire** removes
 it from External Customer keys immediately; it does not delete the underlying
 internal Knowledge. Selected-user Data Groups cannot be published externally.
@@ -326,8 +327,8 @@ Choose the key type deliberately:
 - **Internal Service** is for trusted internal applications. It can use selected
   Team-wide Data Groups and, when explicitly enabled, Global Knowledge. Agent
   integrations remain governed by the Agent's normal tool policy.
-- **External Customer** is for a customer-facing website or BFF. Only a System
-  Administrator can create this key type. It can retrieve only explicitly
+- **External Customer** is for a customer-facing website or BFF. It requires
+  **Manage external channels**. It can retrieve only explicitly
   published External Knowledge and cannot use Global Knowledge, Web Search,
   databases, REST, mail, business documents, messaging, MCP, sub-agents, or
   chart tools.

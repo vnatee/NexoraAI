@@ -30,8 +30,8 @@ Keys have one of two access types:
 - `internal_service` preserves the existing trusted-application behavior and
   may use selected Team-wide Data Groups, optional Global Knowledge, and the
   Agent's policy-allowed integrations.
-- `external_customer` is a fail-closed customer-channel profile. It is created
-  only by a System Administrator, can select only Team-wide Data Groups that
+- `external_customer` is a fail-closed customer-channel profile. Creation
+  requires **Manage external channels** and can select only Data Groups that
   are currently **External / Published**, and never receives Global Knowledge.
   At runtime it exposes only the RAG tool; Web Search, databases, REST, mail,
   business documents, messaging, MCP, sub-agents, and chart tools are disabled.

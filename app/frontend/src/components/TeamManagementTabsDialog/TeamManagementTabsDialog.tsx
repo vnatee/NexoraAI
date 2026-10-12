@@ -148,6 +148,13 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
         sys_permissions: sys_permissions ?? [],
         requiredPermissions: ["Manage agents"]
     });
+    const canManageExternalChannels = hasPermission({
+        is_sys_admin,
+        permissions: managedTeam?.permissions ?? [],
+        sys_permissions: sys_permissions ?? [],
+        requiredPermissions: ["Manage external channels"]
+    });
+
 
     const saveTeamName = async () => {
         const normalizedName = teamNameDraft.trim();
@@ -196,7 +203,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             group: "people",
             scope: "team",
             teamScoped: true,
-            element: <DataGroupManagementPage team={managedTeam} isSystemAdmin={is_sys_admin} />
+            element: <DataGroupManagementPage team={managedTeam} canManageExternalChannels={canManageExternalChannels} />
         },
         {
             id: "agents",
@@ -233,7 +240,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             scope: "team",
             teamScoped: true,
             selfPadded: true,
-            element: <AgentApiAccessPage team={managedTeam} isSystemAdmin={is_sys_admin} />
+            element: <AgentApiAccessPage team={managedTeam} canManageExternalChannels={canManageExternalChannels} />
         },
         {
             id: "teams",

@@ -49,7 +49,7 @@ import { useNotification } from "../../../utill/NotificationProvider";
 
 interface Props {
     team: TeamProfile | null;
-    isSystemAdmin?: boolean;
+    canManageExternalChannels?: boolean;
 }
 
 const EMPTY_OPTIONS: AgentInvocationKeyOptions = {
@@ -83,7 +83,7 @@ function keyStatus(item: AgentInvocationKey): { label: string; color: "success" 
     return { label: "Active", color: "success" };
 }
 
-export function AgentApiAccessPage({ team, isSystemAdmin = false }: Props) {
+export function AgentApiAccessPage({ team, canManageExternalChannels = false }: Props) {
     const { instance } = useMsal();
     const { showNotification } = useNotification();
     const [options, setOptions] = useState<AgentInvocationKeyOptions>(EMPTY_OPTIONS);
@@ -478,7 +478,7 @@ export function AgentApiAccessPage({ team, isSystemAdmin = false }: Props) {
                                 : "For trusted internal server-to-server applications."}
                         >
                             <MenuItem value="internal_service">Internal service</MenuItem>
-                            {isSystemAdmin && (
+                            {canManageExternalChannels && (
                                 <MenuItem value="external_customer">External customer channel</MenuItem>
                             )}
                         </TextField>

@@ -3278,7 +3278,7 @@ async def create_team_agent_api_key(auth_claims: dict[str, Any], team_id: str):
         )
         if access_type == ACCESS_TYPE_EXTERNAL:
             actor = _require_system_permission(
-                auth_claims, "Manage global uploads"
+                auth_claims, "Manage external channels"
             )
         allow_global_knowledge = (
             (body or {}).get("allow_global_knowledge") is True
@@ -10461,7 +10461,7 @@ async def update_data_group_external_publication(
             )
         else:
             actor = _require_system_permission(
-                auth_claims, "Manage global uploads"
+                auth_claims, "Manage external channels"
             )
             team = get_team_by_id(team_id)
         if not team or data_group_id not in {
@@ -10643,14 +10643,29 @@ async def get_roles_by_team(auth_claims: dict[str, Any]):
 
 async def insert_permissions():
     try:
-        sys_permission = ["Manage teams", "Manage users", "Manage global uploads",
-                          "View feedback dashboard", "View system dashboard", "Manage user groups"]
-        team_permission = ["Manage team users", "Manage team data groups", "Manage agents",
-                           "Manage team uploads", "Manage team permissions", "View team dashboard"]
+        sys_permission = [
+            "Manage teams",
+            "Manage users",
+            "Manage global uploads",
+            "Manage external channels",
+            "View feedback dashboard",
+            "View system dashboard",
+            "Manage user groups",
+        ]
+        team_permission = [
+            "Manage team users",
+            "Manage team data groups",
+            "Manage agents",
+            "Manage team uploads",
+            "Manage team permissions",
+            "View team dashboard",
+        ]
         for permis in sys_permission:
-            insert_permission(permis, "System Permissions")
+            if not get_permission_by_name(permis):
+                insert_permission(permis, "System Permissions")
         for permis in team_permission:
-            insert_permission(permis, "Team Permissions")
+            if not get_permission_by_name(permis):
+                insert_permission(permis, "Team Permissions")
         return True
     except Exception as error_txt:
         return False
@@ -12038,9 +12053,7 @@ async def setup_clients():
     web_scan_cleanup_task.add_done_callback(BACKGROUND_TASKS.discard)
     current_app.config[CONFIG_WEB_SOURCE_SCAN_CLEANUP_TASK] = web_scan_cleanup_task
 
-    system_permissions = get_all_permissions()
-    if system_permissions == []:
-        await insert_permissions()
+    await insert_permissions()
     limit_sizes = get_all_limit_size_configs()
     if limit_sizes == []:
         await insert_first_limit_size(524288000, 1073741824, 209715200)
