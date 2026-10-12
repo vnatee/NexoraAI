@@ -196,7 +196,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             group: "people",
             scope: "team",
             teamScoped: true,
-            element: <DataGroupManagementPage team={managedTeam} />
+            element: <DataGroupManagementPage team={managedTeam} isSystemAdmin={is_sys_admin} />
         },
         {
             id: "agents",
@@ -233,7 +233,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             scope: "team",
             teamScoped: true,
             selfPadded: true,
-            element: <AgentApiAccessPage team={managedTeam} />
+            element: <AgentApiAccessPage team={managedTeam} isSystemAdmin={is_sys_admin} />
         },
         {
             id: "teams",

@@ -25,6 +25,20 @@ Personal Knowledge and Data Groups restricted to selected users cannot be
 assigned to an API key. Agent guardrails, server-side tool policy, licensing and
 LLM usage quotas are still enforced for every invocation.
 
+Keys have one of two access types:
+
+- `internal_service` preserves the existing trusted-application behavior and
+  may use selected Team-wide Data Groups, optional Global Knowledge, and the
+  Agent's policy-allowed integrations.
+- `external_customer` is a fail-closed customer-channel profile. It is created
+  only by a System Administrator, can select only Team-wide Data Groups that
+  are currently **External / Published**, and never receives Global Knowledge.
+  At runtime it exposes only the RAG tool; Web Search, databases, REST, mail,
+  business documents, messaging, MCP, sub-agents, and chart tools are disabled.
+
+Retiring a published Data Group removes it from existing External Customer keys
+on their next invocation. Legacy keys are treated as `internal_service`.
+
 The complete key is displayed only after creation or rotation. NexoraAI stores
 a SHA-256 digest, not the plaintext secret. Treat the displayed value as a
 password: copy it into the calling application's secret store and never commit
@@ -38,11 +52,12 @@ A Team administrator with **Manage agents** permission can:
 2. Open **Team governance > Agent API access**.
 3. Select **Create API key**.
 4. Enter a descriptive name, such as `HR portal - production`.
-5. Select the Agents the application may invoke.
-6. Select only the Team-wide Knowledge required by the application.
-7. Optionally allow Global Knowledge.
-8. Set expiry and requests per minute.
-9. Select **Create key**, then copy the secret immediately.
+5. Select **Internal Service** or **External Customer**.
+6. Select the Agents the application may invoke.
+7. Select only the eligible Knowledge required by the application.
+8. For Internal Service only, optionally allow Global Knowledge.
+9. Set expiry and requests per minute.
+10. Select **Create key**, then copy the secret immediately.
 
 If the secret is lost, rotate the key. It cannot be displayed again.
 

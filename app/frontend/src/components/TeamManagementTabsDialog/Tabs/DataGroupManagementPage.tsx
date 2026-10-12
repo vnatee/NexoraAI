@@ -38,6 +38,7 @@ import {
     create_data_group,
     edit_data_group,
     delete_data_group,
+    updateDataGroupPublication,
     get_users_by_team_id,
     DataGroupDisplay,
     TeamProfile,
@@ -50,7 +51,7 @@ import { useNotification } from "../../../utill/NotificationProvider";
 /* =========================================================
    PAGE
 ========================================================= */
-export function DataGroupManagementPage({ team }: { team: TeamProfile | null }) {
+export function DataGroupManagementPage({ team, isSystemAdmin = false }: { team: TeamProfile | null; isSystemAdmin?: boolean }) {
     const { instance } = useMsal();
     const [dataGroups, setDataGroups] = useState<DataGroupDisplay[]>([]);
     const [users, setUsers] = useState<User[]>([]);
@@ -119,6 +120,32 @@ export function DataGroupManagementPage({ team }: { team: TeamProfile | null }) 
 
         loadUsers();
     }, [team, instance]);
+
+
+    const changePublication = async (
+        group: DataGroupDisplay,
+        exposure: "internal" | "external",
+        status: "not_applicable" | "draft" | "published" | "retired"
+    ) => {
+        if (!team?._id) return;
+        const action = status === "published" ? "publish" : status === "retired" ? "retire" : "prepare";
+        if (!window.confirm(`Confirm ${action} for external customer access: ${group.name}?`)) return;
+        try {
+            setSaving(true);
+            const token = await getToken(instance);
+            if (!token) return;
+            await updateDataGroupPublication(team._id, group._id, exposure, status, token);
+            const refreshed = await get_data_group_by_team(team._id, token);
+            setDataGroups(refreshed ?? []);
+            showNotification(`External publication updated: ${status}`, "success");
+        } catch (err) {
+            showNotification(err instanceof Error ? err.message : "Failed to update external publication", "error");
+        } finally {
+            setSaving(false);
+            setActionAnchor(null);
+            setActionGroup(null);
+        }
+    };
 
     const filteredGroups = useMemo(() => dataGroups.filter(d => d.name.toLowerCase().includes(search.toLowerCase())), [dataGroups, search]);
 
@@ -191,6 +218,9 @@ export function DataGroupManagementPage({ team }: { team: TeamProfile | null }) 
                                 <Typography variant="body2" color="text.secondary">
                                     {dg.access_mode === "team" ? "Available to every Team member" : "Available only to selected members"}
                                 </Typography>
+                                {dg.exposure === "external" && (
+                                    <Chip size="small" color={dg.publication_status === "published" ? "primary" : "warning"} label={`External · ${dg.publication_status || "draft"}`} sx={{ mt: 1 }} />
+                                )}
                                 <Box sx={{ flex: 1 }} />
                                 <Chip size="small" variant="outlined" label={`${dg.user_id?.length ?? 0} selected users`} sx={{ mt: 2 }} />
                             </Paper>
@@ -206,6 +236,21 @@ export function DataGroupManagementPage({ team }: { team: TeamProfile | null }) 
                 <MenuItem onClick={() => { if (actionGroup) setAssignGroup(actionGroup); setActionAnchor(null); setActionGroup(null); }}>
                     <GroupAddIcon fontSize="small" sx={{ mr: 1.5 }} /> Manage access
                 </MenuItem>
+                {actionGroup?.access_mode === "team" && actionGroup.exposure !== "external" && (
+                    <MenuItem disabled={saving} onClick={() => void changePublication(actionGroup, "external", "draft")}>
+                        Prepare external draft
+                    </MenuItem>
+                )}
+                {isSystemAdmin && actionGroup?.access_mode === "team" && actionGroup.exposure === "external" && actionGroup.publication_status !== "published" && (
+                    <MenuItem disabled={saving} onClick={() => void changePublication(actionGroup, "external", "published")}>
+                        Publish for external customers
+                    </MenuItem>
+                )}
+                {isSystemAdmin && actionGroup?.publication_status === "published" && (
+                    <MenuItem disabled={saving} onClick={() => void changePublication(actionGroup, "external", "retired")}>
+                        Retire external publication
+                    </MenuItem>
+                )}
                 <MenuItem disabled={!actionGroup || deletingId === actionGroup._id} onClick={() => { if (actionGroup) setDeleteGroup(actionGroup); setActionAnchor(null); setActionGroup(null); }} sx={{ color: "error.main" }}>
                     <DeleteIcon fontSize="small" sx={{ mr: 1.5 }} /> Delete
                 </MenuItem>

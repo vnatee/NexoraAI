@@ -443,3 +443,135 @@ def test_key_scope_rejects_cross_team_agent_and_private_data_group(monkeypatch):
             data_group_ids=["group-1"],
         )
     assert private_group.value.status_code == 403
+
+
+def test_external_key_rejects_global_knowledge_and_rotation_preserves_type(stores):
+    with pytest.raises(agent_invocation_keys.AgentInvocationKeyError, match="Global"):
+        _create(access_type="external_customer", allow_global_knowledge=True)
+
+    current, _token = _create(access_type="external_customer")
+    replacement, _replacement_token = agent_invocation_keys.rotate_agent_invocation_key(
+        current["_id"], actor_id="admin-1", expiry_days=30
+    )
+
+    assert current["access_type"] == "external_customer"
+    assert replacement["access_type"] == "external_customer"
+
+
+def test_external_key_scope_accepts_only_published_external_groups(monkeypatch):
+    monkeypatch.setattr(
+        backend_app,
+        "get_agent_by_id",
+        lambda _agent_id: {
+            "_id": "agent-1",
+            "lifecycle_status": "active",
+            "config": {"runtime": "langgraph"},
+        },
+    )
+    group = {
+        "_id": "group-1",
+        "name": "Customer product knowledge",
+        "access_mode": "team",
+        "user_id": [],
+        "exposure": "external",
+        "publication_status": "published",
+    }
+    monkeypatch.setattr(backend_app, "get_data_group_by_id", lambda _group_id: group)
+    team = {"agent_id": ["agent-1"], "data_group_id": ["group-1"]}
+
+    agents, groups = backend_app._validate_agent_invocation_scope(
+        team,
+        agent_ids=["agent-1"],
+        data_group_ids=["group-1"],
+        access_type="external_customer",
+    )
+    assert agents == ["agent-1"]
+    assert groups == ["group-1"]
+
+    group["publication_status"] = "retired"
+    with pytest.raises(agent_invocation_keys.AgentInvocationKeyError) as retired:
+        backend_app._validate_agent_invocation_scope(
+            team,
+            agent_ids=["agent-1"],
+            data_group_ids=["group-1"],
+            access_type="external_customer",
+        )
+    assert retired.value.status_code == 403
+
+
+def test_external_key_target_fails_closed_after_knowledge_is_retired(monkeypatch):
+    team = {"agent_id": ["agent-1"], "data_group_id": ["group-1"]}
+    group = {
+        "_id": "group-1",
+        "name": "Customer product knowledge",
+        "access_mode": "team",
+        "user_id": [],
+        "exposure": "external",
+        "publication_status": "retired",
+    }
+    monkeypatch.setattr(backend_app, "get_team_by_id", lambda _team_id: team)
+    monkeypatch.setattr(backend_app, "get_data_group_by_id", lambda _group_id: group)
+    monkeypatch.setattr(
+        backend_app,
+        "get_agent_by_id",
+        lambda _agent_id: {"_id": "agent-1", "lifecycle_status": "active"},
+    )
+    monkeypatch.setattr(backend_app, "_use_langgraph_runtime", lambda _agent_id: True)
+
+    with pytest.raises(agent_invocation_keys.AgentInvocationKeyError) as retired:
+        backend_app._validate_agent_invocation_target(
+            {
+                "team_id": "team-1",
+                "access_type": "external_customer",
+                "allowed_agent_ids": ["agent-1"],
+                "allowed_data_group_ids": ["group-1"],
+            },
+            "agent-1",
+        )
+    assert retired.value.status_code == 403
+
+
+def test_external_public_response_hides_internal_citation_metadata():
+    response = backend_app._agent_invocation_public_response(
+        {
+            "message": {"content": "Customer-safe answer"},
+            "context": {
+                "data_points": {"text": [{"path": "internal/team/file.pdf"}]},
+                "chart": {"type": "bar"},
+                "diagram": {"source": "internal"},
+            },
+        },
+        request_id="request-1",
+        agent_id="agent-1",
+        conversation_id="conversation-1",
+        access_type="external_customer",
+    )
+
+    assert response["output"] == "Customer-safe answer"
+    assert response["citations"] == []
+    assert response["chart"] is None
+    assert response["diagram"] is None
+
+
+def test_external_key_rejects_agent_with_knowledge_search_disabled(monkeypatch):
+    monkeypatch.setattr(
+        backend_app,
+        "get_agent_by_id",
+        lambda _agent_id: {
+            "_id": "agent-1",
+            "lifecycle_status": "active",
+            "config": {
+                "runtime": "langgraph",
+                "tool_settings": {"knowledge_search": "disabled"},
+            },
+        },
+    )
+
+    with pytest.raises(agent_invocation_keys.AgentInvocationKeyError) as disabled:
+        backend_app._validate_agent_invocation_scope(
+            {"agent_id": ["agent-1"], "data_group_id": []},
+            agent_ids=["agent-1"],
+            data_group_ids=[],
+            access_type="external_customer",
+        )
+    assert disabled.value.status_code == 409

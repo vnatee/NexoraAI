@@ -16,6 +16,7 @@ import {
     FormControlLabel,
     IconButton,
     Stack,
+    MenuItem,
     Switch,
     TextField,
     Tooltip,
@@ -48,16 +49,19 @@ import { useNotification } from "../../../utill/NotificationProvider";
 
 interface Props {
     team: TeamProfile | null;
+    isSystemAdmin?: boolean;
 }
 
 const EMPTY_OPTIONS: AgentInvocationKeyOptions = {
     items: [],
     available_agents: [],
-    available_data_groups: []
+    available_data_groups: [],
+    available_external_data_groups: []
 };
 
 const DEFAULT_FORM: AgentInvocationKeyCreatePayload = {
     name: "",
+    access_type: "internal_service",
     allowed_agent_ids: [],
     allowed_data_group_ids: [],
     allow_global_knowledge: false,
@@ -79,7 +83,7 @@ function keyStatus(item: AgentInvocationKey): { label: string; color: "success" 
     return { label: "Active", color: "success" };
 }
 
-export function AgentApiAccessPage({ team }: Props) {
+export function AgentApiAccessPage({ team, isSystemAdmin = false }: Props) {
     const { instance } = useMsal();
     const { showNotification } = useNotification();
     const [options, setOptions] = useState<AgentInvocationKeyOptions>(EMPTY_OPTIONS);
@@ -97,9 +101,17 @@ export function AgentApiAccessPage({ team }: Props) {
         [options.available_agents]
     );
     const groupNames = useMemo(
-        () => new Map(options.available_data_groups.map(group => [group._id, group.name])),
-        [options.available_data_groups]
+        () => new Map(
+            [
+                ...options.available_data_groups,
+                ...options.available_external_data_groups
+            ].map(group => [group._id, group.name])
+        ),
+        [options.available_data_groups, options.available_external_data_groups]
     );
+    const availableKnowledgeGroups = form.access_type === "external_customer"
+        ? options.available_external_data_groups
+        : options.available_data_groups;
 
     const load = useCallback(async () => {
         if (!team?._id) return;
@@ -261,7 +273,10 @@ export function AgentApiAccessPage({ team }: Props) {
                                                     </Typography>
                                                 </Box>
                                             </Stack>
-                                            <Chip size="small" label={status.label} color={status.color} />
+                                            <Stack direction="row" spacing={0.5} flexWrap="wrap" justifyContent="flex-end">
+                                                <Chip size="small" variant="outlined" label={item.access_type === "external_customer" ? "External" : "Internal"} />
+                                                <Chip size="small" label={status.label} color={status.color} />
+                                            </Stack>
                                         </Stack>
                                         <Divider />
                                         <Typography variant="body2">
@@ -448,18 +463,44 @@ export function AgentApiAccessPage({ team }: Props) {
                             onChange={(_event, value) => setForm(current => ({ ...current, allowed_agent_ids: value.map(agent => agent._id) }))}
                             renderInput={params => <TextField {...params} label="Allowed Agents" required />}
                         />
+                        <TextField
+                            select
+                            label="Access type"
+                            value={form.access_type}
+                            onChange={event => setForm(current => ({
+                                ...current,
+                                access_type: event.target.value as "internal_service" | "external_customer",
+                                allowed_data_group_ids: [],
+                                allow_global_knowledge: false
+                            }))}
+                            helperText={form.access_type === "external_customer"
+                                ? "For a customer-facing backend. Only External Published Knowledge is eligible."
+                                : "For trusted internal server-to-server applications."}
+                        >
+                            <MenuItem value="internal_service">Internal service</MenuItem>
+                            {isSystemAdmin && (
+                                <MenuItem value="external_customer">External customer channel</MenuItem>
+                            )}
+                        </TextField>
+                        {form.access_type === "external_customer" && (
+                            <Alert severity="warning">
+                                Use this key only from your website backend or BFF. Browser and mobile clients must never receive it.
+                            </Alert>
+                        )}
                         <Autocomplete
                             multiple
-                            options={options.available_data_groups}
+                            options={availableKnowledgeGroups}
                             getOptionLabel={option => option.name}
-                            value={options.available_data_groups.filter(group => form.allowed_data_group_ids.includes(group._id))}
+                            value={availableKnowledgeGroups.filter(group => form.allowed_data_group_ids.includes(group._id))}
                             onChange={(_event, value) => setForm(current => ({ ...current, allowed_data_group_ids: value.map(group => group._id) }))}
-                            renderInput={params => <TextField {...params} label="Team-wide Knowledge (optional)" />}
+                            renderInput={params => <TextField {...params} label={form.access_type === "external_customer" ? "External Published Knowledge (optional)" : "Team-wide Knowledge (optional)"} />}
                         />
-                        <FormControlLabel
-                            control={<Switch checked={form.allow_global_knowledge} onChange={event => setForm(current => ({ ...current, allow_global_knowledge: event.target.checked }))} />}
-                            label="Allow Global Knowledge"
-                        />
+                        {form.access_type === "internal_service" && (
+                            <FormControlLabel
+                                control={<Switch checked={form.allow_global_knowledge} onChange={event => setForm(current => ({ ...current, allow_global_knowledge: event.target.checked }))} />}
+                                label="Allow Global Knowledge"
+                            />
+                        )}
                         <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
                             <TextField
                                 fullWidth

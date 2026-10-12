@@ -405,3 +405,18 @@ Recommended order when these items are scheduled:
    curl/Python/TypeScript/C# examples, Postman collection, and contract tests.
    Next: generated client SDK packages, webhooks, cancellation, true token-delta
    streaming, and optional enterprise gateway integration.
+7. **Implemented (External Channel foundation):** Internal Service and External
+   Customer key profiles, explicitly published Team-wide External Knowledge,
+   draft/published/retired lifecycle with version/audit metadata, fail-closed
+   runtime tool isolation, immediate retirement enforcement, and Portal
+   governance controls.
+
+External Channel follow-up slices:
+
+1. Add dedicated **Manage external channels** permission and approval workflow
+   instead of using the interim System global-upload authority.
+2. Add document-level review status, audience/product metadata, effective and
+   expiry dates, and a safe public citation projection.
+3. Add daily/concurrent/session/end-user limits, abuse controls, and customer-
+   channel analytics without storing raw prompts or responses.
+4. Add SAP Business One read-only integration behind the existing integration,

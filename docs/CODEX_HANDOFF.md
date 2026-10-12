@@ -9,7 +9,9 @@ logs, credentials, attachments, or repetitive conversational text.
 ## Repository state
 
 - Workspace: `/workspaces/NexoraAI`
-- Branch: `main`
+- Branch: `feature/external-agent-access`
+- Remote safety checkpoint: `feature/external-agent-access` at `326b832`
+  before the External Channel foundation changes.
 - Current product-history root: `436fd69 feat: initialize NexoraAI enterprise
   AI workspace`. Earlier upstream commit history was intentionally replaced when
   the repository was established as the NexoraAI product; consult this handoff
@@ -83,6 +85,24 @@ Decisions already made with the product owner:
   behavior, not as a full rewrite.
 
 ## Implemented work
+
+### External customer Agent channel — foundation
+
+- Agent API keys now distinguish `internal_service` from fail-closed
+  `external_customer`; legacy keys remain Internal Service.
+- Team-wide Data Groups support External draft/published/retired states,
+  publication version/audit metadata, and immediate retirement enforcement.
+- External Customer invocation can use only currently published External
+  Knowledge. Global Knowledge and every non-RAG integration/tool are disabled.
+- Team curators can prepare drafts; System Administrators publish/retire and
+  create External Customer keys through the interim global-upload authority.
+- Portal governance and focused tests cover type selection, scope, rotation,
+  publication history, retirement, and server/BFF secret-handling guidance.
+- Focused validation passes `23` tests. The service-free backend suite passes
+  `1067` tests with the known unrelated empty-section failure from a workspace
+  PDF fixture in `test_sentencetextsplitter_list_parse_and_split`. Python
+  compilation, Ruff on the focused files, TypeScript compilation, diff checks,
+  and the memory-safe production frontend build pass.
 
 ### Agent Invocation API — Phase 3A
 

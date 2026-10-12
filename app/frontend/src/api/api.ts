@@ -2131,6 +2131,28 @@ export async function edit_data_group(
     return await dataResponse;
 }
 
+
+export async function updateDataGroupPublication(
+    teamId: string,
+    dataGroupId: string,
+    exposure: "internal" | "external",
+    publicationStatus: "not_applicable" | "draft" | "published" | "retired",
+    idToken: string
+): Promise<void> {
+    const response = await fetch(
+        `/teams/${encodeURIComponent(teamId)}/data-groups/${encodeURIComponent(dataGroupId)}/publication`,
+        {
+            method: "PATCH",
+            headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+            body: JSON.stringify({ exposure, publication_status: publicationStatus })
+        }
+    );
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        throw new Error(result.error || "Unable to update external publication");
+    }
+}
+
 export async function delete_data_group(team_id: string, data_group_id: string, idToken: string): Promise<any> {
     const headers = await getHeaders(idToken);
 

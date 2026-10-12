@@ -725,6 +725,11 @@ export interface DataGroup {
     delete_at?: string;
     user_id: string[];
     access_mode?: "team" | "selected_users";
+    exposure?: "internal" | "external";
+    publication_status?: "not_applicable" | "draft" | "published" | "retired";
+    publication_version?: number;
+    published_at?: string | null;
+    published_by?: string | null;
 }
 
 export interface EffectiveDataGroup {
@@ -752,6 +757,11 @@ export interface DataGroupDisplay {
     delete_at?: string;
     user_id: User[];
     access_mode: "team" | "selected_users";
+    exposure?: "internal" | "external";
+    publication_status?: "not_applicable" | "draft" | "published" | "retired";
+    publication_version?: number;
+    published_at?: string | null;
+    published_by?: string | null;
 }
 
 export interface DataGroupWithView {
@@ -1270,6 +1280,7 @@ export interface AgentInvocationKey {
     _id: string;
     team_id: string;
     name: string;
+    access_type: "internal_service" | "external_customer";
     key_prefix: string;
     allowed_agent_ids: string[];
     allowed_data_group_ids: string[];
@@ -1288,10 +1299,12 @@ export interface AgentInvocationKeyOptions {
     items: AgentInvocationKey[];
     available_agents: Array<{ _id: string; name: string; runtime: string }>;
     available_data_groups: Array<{ _id: string; name: string }>;
+    available_external_data_groups: Array<{ _id: string; name: string }>;
 }
 
 export interface AgentInvocationKeyCreatePayload {
     name: string;
+    access_type: "internal_service" | "external_customer";
     allowed_agent_ids: string[];
     allowed_data_group_ids: string[];
     allow_global_knowledge: boolean;

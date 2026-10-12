@@ -18,6 +18,9 @@ DEFAULT_EXPIRY_DAYS = 90
 MAX_EXPIRY_DAYS = 365
 DEFAULT_RATE_LIMIT_PER_MINUTE = 60
 MAX_RATE_LIMIT_PER_MINUTE = 1000
+ACCESS_TYPE_INTERNAL = "internal_service"
+ACCESS_TYPE_EXTERNAL = "external_customer"
+SUPPORTED_ACCESS_TYPES = {ACCESS_TYPE_INTERNAL, ACCESS_TYPE_EXTERNAL}
 
 database = get_database()
 keys_collection = database["agent_invocation_keys"]
@@ -65,6 +68,15 @@ def _unique_ids(value: object, field: str, *, required: bool = False) -> list[st
     return result
 
 
+def normalize_agent_invocation_access_type(value: object) -> str:
+    normalized = str(value or ACCESS_TYPE_INTERNAL).strip().lower()
+    if normalized not in SUPPORTED_ACCESS_TYPES:
+        raise AgentInvocationKeyError(
+            "access_type must be internal_service or external_customer"
+        )
+    return normalized
+
+
 def ensure_agent_invocation_key_indexes() -> None:
     keys_collection.create_index(
         [("team_id", 1), ("active", 1), ("delete_at", 1)],
@@ -88,6 +100,9 @@ def serialize_agent_invocation_key(document: dict[str, Any]) -> dict[str, Any]:
         "_id": str(document.get("_id") or ""),
         "team_id": str(document.get("team_id") or ""),
         "name": str(document.get("name") or ""),
+        "access_type": normalize_agent_invocation_access_type(
+            document.get("access_type")
+        ),
         "key_prefix": str(document.get("key_prefix") or ""),
         "allowed_agent_ids": list(document.get("allowed_agent_ids") or []),
         "allowed_data_group_ids": list(document.get("allowed_data_group_ids") or []),
@@ -115,9 +130,11 @@ def create_agent_invocation_key(
     expiry_days: int = DEFAULT_EXPIRY_DAYS,
     rate_limit_per_minute: int = DEFAULT_RATE_LIMIT_PER_MINUTE,
     created_by: str,
+    access_type: str = ACCESS_TYPE_INTERNAL,
 ) -> tuple[dict[str, Any], str]:
     normalized_team_id = _bounded_text(team_id, "team_id", 128, required=True)
     normalized_name = _bounded_text(name, "name", 120, required=True)
+    normalized_access_type = normalize_agent_invocation_access_type(access_type)
     agent_ids = _unique_ids(allowed_agent_ids, "allowed_agent_ids", required=True)
     data_group_ids = _unique_ids(allowed_data_group_ids, "allowed_data_group_ids")
     try:
@@ -135,6 +152,10 @@ def create_agent_invocation_key(
         raise AgentInvocationKeyError(
             f"rate_limit_per_minute must be between 1 and {MAX_RATE_LIMIT_PER_MINUTE}"
         )
+    if normalized_access_type == ACCESS_TYPE_EXTERNAL and allow_global_knowledge:
+        raise AgentInvocationKeyError(
+            "External customer API keys cannot access Global Knowledge"
+        )
 
     now = _now()
     key_id = str(uuid.uuid4())
@@ -144,6 +165,7 @@ def create_agent_invocation_key(
         "_id": key_id,
         "team_id": normalized_team_id,
         "name": normalized_name,
+        "access_type": normalized_access_type,
         "key_prefix": public_prefix,
         "token_digest": _token_digest(token),
         "allowed_agent_ids": agent_ids,
@@ -205,6 +227,9 @@ def rotate_agent_invocation_key(
     created, token = create_agent_invocation_key(
         team_id=str(current.get("team_id") or ""),
         name=f"{str(current.get('name') or 'API key')} (rotated)",
+        access_type=normalize_agent_invocation_access_type(
+            current.get("access_type")
+        ),
         allowed_agent_ids=current.get("allowed_agent_ids") or [],
         allowed_data_group_ids=current.get("allowed_data_group_ids") or [],
         allow_global_knowledge=current.get("allow_global_knowledge") is True,
@@ -307,6 +332,7 @@ def insert_agent_invocation_audit(
     status: str,
     duration_ms: int | None = None,
     error_code: str | None = None,
+    access_type: str = ACCESS_TYPE_INTERNAL,
 ) -> None:
     retention_days = max(
         1,
@@ -324,6 +350,7 @@ def insert_agent_invocation_audit(
             "team_id": str(team_id),
             "agent_id": str(agent_id),
             "event_type": str(event_type),
+            "access_type": normalize_agent_invocation_access_type(access_type),
             "status": str(status),
             "duration_ms": duration_ms,
             "error_code": str(error_code or "") or None,
