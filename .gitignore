@@ -156,3 +156,7 @@ data/**/*.md5
 backups/
 
 .DS_Store
+
+# Local patch/merge recovery artifacts
+*.orig
+*.rej
