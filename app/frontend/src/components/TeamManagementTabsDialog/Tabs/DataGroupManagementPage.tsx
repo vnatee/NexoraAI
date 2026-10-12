@@ -51,7 +51,7 @@ import { useNotification } from "../../../utill/NotificationProvider";
 /* =========================================================
    PAGE
 ========================================================= */
-export function DataGroupManagementPage({ team, isSystemAdmin = false }: { team: TeamProfile | null; isSystemAdmin?: boolean }) {
+export function DataGroupManagementPage({ team, canManageExternalChannels = false }: { team: TeamProfile | null; canManageExternalChannels?: boolean }) {
     const { instance } = useMsal();
     const [dataGroups, setDataGroups] = useState<DataGroupDisplay[]>([]);
     const [users, setUsers] = useState<User[]>([]);
@@ -241,12 +241,12 @@ export function DataGroupManagementPage({ team, isSystemAdmin = false }: { team:
                         Prepare external draft
                     </MenuItem>
                 )}
-                {isSystemAdmin && actionGroup?.access_mode === "team" && actionGroup.exposure === "external" && actionGroup.publication_status !== "published" && (
+                {canManageExternalChannels && actionGroup?.access_mode === "team" && actionGroup.exposure === "external" && actionGroup.publication_status !== "published" && (
                     <MenuItem disabled={saving} onClick={() => void changePublication(actionGroup, "external", "published")}>
                         Publish for external customers
                     </MenuItem>
                 )}
-                {isSystemAdmin && actionGroup?.publication_status === "published" && (
+                {canManageExternalChannels && actionGroup?.publication_status === "published" && (
                     <MenuItem disabled={saving} onClick={() => void changePublication(actionGroup, "external", "retired")}>
                         Retire external publication
                     </MenuItem>

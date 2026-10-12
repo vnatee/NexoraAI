@@ -413,8 +413,9 @@ Recommended order when these items are scheduled:
 
 External Channel follow-up slices:
 
-1. Add dedicated **Manage external channels** permission and approval workflow
-   instead of using the interim System global-upload authority.
+1. **Implemented:** dedicated **Manage external channels** permission with
+   idempotent startup migration. Add a configurable multi-person approval
+   workflow when customer governance requires maker-checker separation.
 2. Add document-level review status, audience/product metadata, effective and
    expiry dates, and a safe public citation projection.
 3. Add daily/concurrent/session/end-user limits, abuse controls, and customer-

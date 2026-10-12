@@ -95,10 +95,11 @@ Decisions already made with the product owner:
 - External Customer invocation can use only currently published External
   Knowledge. Global Knowledge and every non-RAG integration/tool are disabled.
 - Team curators can prepare drafts; System Administrators publish/retire and
-  create External Customer keys through the interim global-upload authority.
+  create External Customer keys through the dedicated **Manage external
+  channels** authority.
 - Portal governance and focused tests cover type selection, scope, rotation,
   publication history, retirement, and server/BFF secret-handling guidance.
-- Focused validation passes `23` tests. The service-free backend suite passes
+- Focused validation passes `24` tests. The service-free backend suite passes
   `1067` tests with the known unrelated empty-section failure from a workspace
   PDF fixture in `test_sentencetextsplitter_list_parse_and_split`. Python
   compilation, Ruff on the focused files, TypeScript compilation, diff checks,
