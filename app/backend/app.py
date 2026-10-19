@@ -408,19 +408,12 @@ from azure.identity.aio import (
     ManagedIdentityCredential,
     get_bearer_token_provider,
 )
-from azure.monitor.opentelemetry import configure_azure_monitor
 from azure.search.documents.agent.aio import KnowledgeAgentRetrievalClient
 from azure.search.documents.aio import SearchClient
 from azure.search.documents.indexes.aio import SearchIndexClient
 from azure.storage.blob.aio import ContainerClient
 from azure.storage.filedatalake.aio import FileSystemClient
 from openai import AsyncOpenAI
-from opentelemetry.instrumentation.aiohttp_client import AioHttpClientInstrumentor
-from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
-from opentelemetry.instrumentation.httpx import (
-    HTTPXClientInstrumentor,
-)
-from opentelemetry.instrumentation.openai import OpenAIInstrumentor
 from quart import (
     Blueprint,
     Quart,
@@ -562,7 +555,11 @@ from core.integration_controller import (
     IntegrationControllerClient,
     IntegrationControllerError,
 )
-from core.system_health import build_system_health_snapshot
+from core.observability import configure_application_observability
+from core.system_health import (
+    build_readiness_snapshot,
+    build_system_health_snapshot,
+)
 from core.mcp_auth import EntraClientCredentials
 from core.runtime_settings import EmbeddingProviderSettings, LLMProviderSettings, ModelProvider, RuntimeSettings, parse_model_provider
 from agent_runtime.policy import normalize_tool_policy
@@ -5770,6 +5767,24 @@ async def admin_agent_audit_events(auth_claims: dict[str, Any]):
     except ValueError:
         return jsonify({"error": "hours and limit must be integers"}), 400
     return jsonify({"events": events})
+
+
+@bp.get("/health/live")
+async def health_live():
+    """Process liveness only; no dependency or configuration detail is exposed."""
+
+    return jsonify({"status": "alive"})
+
+
+@bp.get("/health/ready")
+async def health_ready():
+    """Minimal dependency readiness for load balancers and monitoring systems."""
+
+    snapshot = await asyncio.to_thread(
+        build_readiness_snapshot, get_database()
+    )
+    status_code = 200 if snapshot["status"] == "ready" else 503
+    return jsonify(snapshot), status_code
 
 
 @bp.get("/admin/system-health")
@@ -12208,20 +12223,6 @@ def create_app():
     app.register_blueprint(bp)
     app.register_blueprint(chat_history_cosmosdb_bp)
 
-    if os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"):
-        app.logger.info(
-            "APPLICATIONINSIGHTS_CONNECTION_STRING is set, enabling Azure Monitor")
-        configure_azure_monitor()
-        # This tracks HTTP requests made by aiohttp:
-        AioHttpClientInstrumentor().instrument()
-        # This tracks HTTP requests made by httpx:
-        HTTPXClientInstrumentor().instrument()
-        # This tracks OpenAI SDK requests:
-        OpenAIInstrumentor().instrument()
-        # This middleware tracks app route requests:
-        app.asgi_app = OpenTelemetryMiddleware(
-            app.asgi_app)  # type: ignore[assignment]
-
     # Log levels should be one of https://docs.python.org/3/library/logging.html#logging-levels
     # Set root level to WARNING to avoid seeing overly verbose logs from SDKS
     logging.basicConfig(level=logging.WARNING)
@@ -12229,6 +12230,7 @@ def create_app():
     app_level = os.getenv("APP_LOG_LEVEL", "INFO")
     app.logger.setLevel(os.getenv("APP_LOG_LEVEL", app_level))
     logging.getLogger("scripts").setLevel(app_level)
+    configure_application_observability(app)
 
     if allowed_origin := os.getenv("ALLOWED_ORIGIN"):
         allowed_origins = allowed_origin.split(";")

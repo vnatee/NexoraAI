@@ -133,6 +133,19 @@ In **Admin Management → Document Processing & OCR**, configure a Docling
 provider endpoint as `http://docling:5001`. The application and Docling share
 the Compose network; do not expose the Docling port publicly.
 
+## Observability readiness
+
+The base runtime is ready for monitoring but does not install or contact
+Datadog. It starts with `OBSERVABILITY_PROVIDER=none`, emits structured JSON
+application logs, and exposes detail-free `/health/live` and `/health/ready`
+endpoints. OpenTelemetry export can be enabled in a later production change
+window without changing application features.
+
+See [`observability-readiness.md`](observability-readiness.md) for the portable
+contract. When the production monitoring design is approved, follow the
+operator-owned [`datadog-monitoring.md`](datadog-monitoring.md) installation,
+verification, and rollback guide.
+
 ## Stop, upgrade, and preserve data
 
 Stop containers without deleting state:
@@ -191,8 +204,9 @@ optional production overlay; it is not enabled by the base Compose file.
 ## Smoke test
 
 1. Confirm `docker compose ... ps` reports the application and dependencies as
-   healthy and `/config` reports local runtime, MinIO, Qdrant, and the local
-   embedding provider.
+   healthy, `/health/live` returns HTTP 200, `/health/ready` returns HTTP 200,
+   and `/config` reports local runtime, MinIO, Qdrant, and the local embedding
+   provider.
 2. Bootstrap the administrator, remove the token, restart the app, and sign in.
 3. Create a Team and Data Group. Upload distinct Personal, Team, and Global
    documents and wait for **Indexed**.

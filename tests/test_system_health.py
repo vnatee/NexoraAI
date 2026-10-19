@@ -232,3 +232,47 @@ def test_web_search_health_prefers_managed_integrations_over_environment():
     assert result["status"] == "configured"
     assert result["provider"] == "Managed Integration"
     assert "1 enabled managed connection" in result["detail"]
+
+
+def test_readiness_snapshot_is_minimal_and_secret_free():
+    ready = system_health.build_readiness_snapshot(_Database())
+
+    assert ready["status"] == "ready"
+    assert set(ready) == {"status", "checked_at"}
+
+    database = _Database()
+    database.command = lambda _name: (_ for _ in ()).throw(
+        RuntimeError("mongodb://user:secret@host")
+    )
+    unavailable = system_health.build_readiness_snapshot(database)
+
+    assert unavailable["status"] == "not_ready"
+    assert "secret" not in str(unavailable)
+
+
+@pytest.mark.asyncio
+async def test_liveness_route_is_public_and_detail_free(client):
+    response = await client.get("/health/live")
+
+    assert response.status_code == 200
+    assert await response.get_json() == {"status": "alive"}
+
+
+@pytest.mark.asyncio
+async def test_readiness_route_returns_503_without_exposing_details(client, monkeypatch):
+    monkeypatch.setattr(
+        backend_app,
+        "build_readiness_snapshot",
+        lambda _database: {
+            "status": "not_ready",
+            "checked_at": "2026-10-19T00:00:00+00:00",
+        },
+    )
+
+    response = await client.get("/health/ready")
+
+    assert response.status_code == 503
+    assert await response.get_json() == {
+        "status": "not_ready",
+        "checked_at": "2026-10-19T00:00:00+00:00",
+    }
