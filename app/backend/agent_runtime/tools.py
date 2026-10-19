@@ -12,6 +12,12 @@ from pydantic import ConfigDict, Field, create_model
 from agent_runtime.observability import AuditTrail
 from agent_runtime.policy import ToolExecutionPolicy, ToolPolicyViolation
 from core.guardrails import GuardrailPolicy, evaluate_output, sanitize_untrusted_context
+from core.observability import (
+    mark_span_error,
+    mark_span_failed,
+    mark_span_success,
+    tool_execution_span,
+)
 
 ToolHandler = Callable[[dict[str, Any], "ToolRuntimeContext"], Awaitable[Any]]
 
@@ -170,6 +176,34 @@ class ToolRegistry:
         return result
 
     async def execute(self, name: str, arguments: dict[str, Any]) -> str:
+        normalized_name = self.normalize_name(name)
+        spec = self._tools.get(normalized_name)
+        with tool_execution_span(
+            normalized_name,
+            spec.source if spec is not None else None,
+        ) as span:
+            try:
+                result = await self._execute(name, arguments)
+            except Exception as error:
+                mark_span_error(span, error)
+                raise
+            event = next(
+                (
+                    item
+                    for item in reversed(self.execution_log)
+                    if item.get("name") == normalized_name
+                ),
+                None,
+            )
+            if spec is None:
+                mark_span_failed(span, "UnknownTool")
+            elif event and event.get("is_error"):
+                mark_span_failed(span, "ToolExecutionError")
+            else:
+                mark_span_success(span, **{"nexora.tool.output.size": len(result)})
+            return result
+
+    async def _execute(self, name: str, arguments: dict[str, Any]) -> str:
         normalized_name = self.normalize_name(name)
         spec = self._tools.get(normalized_name)
         if spec is None:

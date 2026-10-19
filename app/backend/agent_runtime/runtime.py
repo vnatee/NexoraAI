@@ -16,6 +16,7 @@ from langgraph.graph.message import add_messages
 from openai.types.chat import ChatCompletion
 
 from agent_runtime.tools import ToolRegistry
+from core.observability import agent_run_span, mark_span_error, mark_span_success
 
 
 class AgentState(TypedDict):
@@ -239,6 +240,22 @@ class AgentRuntime:
         return builder.compile()
 
     async def run(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        with agent_run_span(self.tools.audit, len(messages)) as span:
+            try:
+                result = await self._run(messages)
+            except Exception as error:
+                mark_span_error(span, error)
+                raise
+            mark_span_success(
+                span,
+                **{
+                    "gen_ai.response.iterations": int(result.get("iterations") or 0),
+                    "gen_ai.tool.call.count": len(result.get("tool_trace") or []),
+                },
+            )
+            return result
+
+    async def _run(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         started = time.perf_counter()
         if self.tools.audit:
             await self.tools.audit.emit(

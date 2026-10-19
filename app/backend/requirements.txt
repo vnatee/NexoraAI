@@ -12,6 +12,19 @@ python-docx==1.2.0
 openpyxl==3.1.5
 python-pptx==1.0.2
 playwright>=1.55,<2
+opentelemetry-exporter-otlp-proto-http==1.31.1
+googleapis-common-protos==1.75.0
+    # via opentelemetry-exporter-otlp-proto-http
+opentelemetry-exporter-otlp-proto-common==1.31.1
+    # via opentelemetry-exporter-otlp-proto-http
+opentelemetry-proto==1.31.1
+    # via
+    #   opentelemetry-exporter-otlp-proto-common
+    #   opentelemetry-exporter-otlp-proto-http
+protobuf==5.29.6
+    # via
+    #   googleapis-common-protos
+    #   opentelemetry-proto
 aiofiles==24.1.0
     # via
     #   prompty

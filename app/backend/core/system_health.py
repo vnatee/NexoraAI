@@ -285,6 +285,21 @@ def _resource_snapshot() -> dict[str, Any]:
     }
 
 
+def build_readiness_snapshot(database: Any) -> dict[str, str]:
+    """Return a minimal, secret-free readiness result for infrastructure probes."""
+
+    try:
+        database.command("ping")
+    except Exception:
+        status = "not_ready"
+    else:
+        status = "ready"
+    return {
+        "status": status,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 async def build_system_health_snapshot(
     database: Any,
     config: Mapping[str, Any],

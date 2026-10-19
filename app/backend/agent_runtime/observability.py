@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from core.observability import current_trace_identifiers
 from mongo_table_connecters.agent_audit import insert_agent_audit_event
 
 
@@ -56,6 +57,9 @@ class AuditTrail:
             "details": details or {},
             "created_at": datetime.now(timezone.utc),
         }
+        trace_ids = current_trace_identifiers()
+        if trace_ids:
+            event.update(trace_ids)
         self.events.append(event)
         if os.getenv("DISABLE_AGENT_AUDIT_PERSISTENCE", "").lower() != "true":
             try:

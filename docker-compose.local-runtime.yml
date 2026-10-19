@@ -90,6 +90,12 @@ services:
       INTEGRATION_CONTROLLER_URL: http://integration-controller:8080
       INTEGRATION_CONTROLLER_TOKEN: ${INTEGRATION_CONTROLLER_TOKEN:-}
       NEXORA_LICENSE_PUBLIC_KEY_DIR: /etc/nexora/license-public-keys
+      OBSERVABILITY_PROVIDER: ${OBSERVABILITY_PROVIDER:-none}
+      OBSERVABILITY_SERVICE_NAME: ${OBSERVABILITY_SERVICE_NAME:-nexoraai}
+      OBSERVABILITY_ENVIRONMENT: ${OBSERVABILITY_ENVIRONMENT:-production}
+      OBSERVABILITY_SERVICE_VERSION: ${OBSERVABILITY_SERVICE_VERSION:-}
+      OBSERVABILITY_JSON_LOGS: ${OBSERVABILITY_JSON_LOGS:-true}
+      OBSERVABILITY_OTLP_ENDPOINT: ${OBSERVABILITY_OTLP_ENDPOINT:-}
     ports:
       - "${NEXORA_BIND_ADDRESS:-127.0.0.1}:${NEXORA_APP_PORT:-50505}:8000"
     volumes:
@@ -100,7 +106,7 @@ services:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/config', timeout=5)
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=5)
       interval: 15s
       timeout: 8s
       retries: 20
