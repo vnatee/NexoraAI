@@ -54,3 +54,36 @@ def test_ask_prompt_does_not_send_synthetic_few_shot_messages():
     assert "verified fact" in rendered
     for example in SYNTHETIC_RUNTIME_EXAMPLES:
         assert example not in rendered
+
+
+def test_default_answer_prompts_are_product_neutral():
+    manager = PromptyManager()
+    prompt_data = {
+        "override_prompt": "",
+        "injected_prompt": "",
+        "has_temporary_attachments": False,
+        "include_follow_up_questions": True,
+        "past_messages": [],
+        "user_query": "REAL USER QUESTION",
+        "text_sources": ["knowledge.txt: verified fact"],
+        "image_sources": [],
+        "has_user_attachments": False,
+    }
+
+    for prompt_name in (
+        "chat_answer_question.prompty",
+        "ask_answer_question_vision.prompty",
+        "chat_answer_question_vision.prompty",
+    ):
+        messages = manager.render_prompt(
+            manager.load_prompt(prompt_name),
+            prompt_data,
+        )
+        rendered = str(messages).lower()
+        assert "contoso" not in rendered
+        assert "healthcare plan" not in rendered
+        assert "employee handbook" not in rendered
+        assert "annual financial report" not in rendered
+        assert "exclusions for prescriptions" not in rendered
+        assert "which pharmacies" not in rendered
+        assert "over-the-counter medication" not in rendered
