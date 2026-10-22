@@ -31,6 +31,9 @@ OBSERVABILITY_JSON_LOGS=true
 
 # Required only for provider=otlp. Use the complete HTTP trace endpoint.
 OBSERVABILITY_OTLP_ENDPOINT=http://collector:4318/v1/traces
+
+# Optional Datadog Prompt Tracking metadata. Prompt content remains redacted.
+DATADOG_LLMOBS_PROMPT_TRACKING_ENABLED=false
 ```
 
 `auto` preserves the existing Azure behavior: it selects Azure Monitor only
@@ -70,6 +73,13 @@ The observability layer does not add prompts, responses, tool arguments, tool
 outputs, credentials, retrieved Knowledge, attachment content, or actor
 identifiers to spans. The runtime forces OpenTelemetry GenAI message-content
 capture off before instrumentation starts.
+
+For a controlled Datadog Prompt Tracking trial, set
+`DATADOG_LLMOBS_PROMPT_TRACKING_ENABLED=true` and restart the application. The
+`llm.invoke` span then includes `_dd.ml_obs.prompt_tracking` with a stable
+prompt name, a SHA-256-derived version, a fixed structural template, and
+redacted variables. The hash is only a change identifier: raw system prompts,
+user messages, model responses, and real variable values are not exported.
 
 This baseline is sufficient for service maps, latency/error investigation and
 correlation from an Agent audit run into infrastructure traces. A vendor's

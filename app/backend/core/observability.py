@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -29,6 +30,19 @@ class ObservabilitySettings:
 
 
 _instrumentation_started = False
+
+_SAFE_AGENT_PROMPT_TEMPLATE = """Role: {{role}}
+Task: {{task}}
+Context: {{detail_context}}
+Output format: {{output_format}}
+Constraints: {{constraints}}"""
+_SAFE_AGENT_PROMPT_VARIABLES = {
+    "role": "<redacted>",
+    "task": "<redacted>",
+    "detail_context": "<redacted>",
+    "output_format": "<redacted>",
+    "constraints": "<redacted>",
+}
 
 
 def _is_true(value: str | None) -> bool:
@@ -195,6 +209,30 @@ def _set_if_present(span: Span, key: str, value: Any) -> None:
         span.set_attribute(key, value)
 
 
+def datadog_prompt_tracking_attribute(
+    system_prompt: str,
+    environ: Mapping[str, str] | None = None,
+) -> str | None:
+    """Return opt-in Datadog Prompt Tracking metadata without prompt content."""
+
+    settings = os.environ if environ is None else environ
+    if not _is_true(settings.get("DATADOG_LLMOBS_PROMPT_TRACKING_ENABLED")):
+        return None
+    prompt_fingerprint = hashlib.sha256(
+        str(system_prompt or "").encode("utf-8")
+    ).hexdigest()[:12]
+    return json.dumps(
+        {
+            "name": "nexora-agent-system-prompt",
+            "version": f"sha256-{prompt_fingerprint}",
+            "template": _SAFE_AGENT_PROMPT_TEMPLATE,
+            "variables": _SAFE_AGENT_PROMPT_VARIABLES,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 @contextmanager
 def agent_run_span(audit: Any, message_count: int) -> Iterator[Span]:
     tracer = trace.get_tracer("nexoraai.agent_runtime")
@@ -206,6 +244,17 @@ def agent_run_span(audit: Any, message_count: int) -> Iterator[Span]:
             _set_if_present(span, "nexora.team.id", audit.team_id)
             _set_if_present(span, "nexora.run.id", audit.run_id)
             _set_if_present(span, "nexora.parent_run.id", audit.parent_run_id)
+        yield span
+
+
+@contextmanager
+def model_completion_span(system_prompt: str) -> Iterator[Span]:
+    tracer = trace.get_tracer("nexoraai.agent_runtime")
+    with tracer.start_as_current_span("llm.invoke") as span:
+        span.set_attribute("gen_ai.operation.name", "chat")
+        prompt_tracking = datadog_prompt_tracking_attribute(system_prompt)
+        if prompt_tracking is not None:
+            span.set_attribute("_dd.ml_obs.prompt_tracking", prompt_tracking)
         yield span
 
 

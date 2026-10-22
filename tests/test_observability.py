@@ -5,7 +5,11 @@ import logging
 
 import pytest
 
-from core.observability import JsonLogFormatter, load_observability_settings
+from core.observability import (
+    JsonLogFormatter,
+    datadog_prompt_tracking_attribute,
+    load_observability_settings,
+)
 
 
 def test_observability_defaults_to_none_without_azure_connection():
@@ -76,3 +80,31 @@ def test_json_formatter_uses_stable_envelope_and_ignores_arbitrary_extras():
     assert payload["version"] == "2.3.0"
     assert "secret" not in payload
     assert "must-not-leak" not in str(payload)
+
+
+def test_datadog_prompt_tracking_is_opt_in_and_redacts_prompt_content():
+    secret_prompt = "Never disclose customer account 123456"
+
+    assert datadog_prompt_tracking_attribute(secret_prompt, {}) is None
+
+    attribute = datadog_prompt_tracking_attribute(
+        secret_prompt,
+        {"DATADOG_LLMOBS_PROMPT_TRACKING_ENABLED": "true"},
+    )
+    payload = json.loads(attribute)
+
+    assert payload["name"] == "nexora-agent-system-prompt"
+    assert payload["version"].startswith("sha256-")
+    assert "{{role}}" in payload["template"]
+    assert set(payload["variables"].values()) == {"<redacted>"}
+    assert secret_prompt not in attribute
+    assert "123456" not in attribute
+
+
+def test_datadog_prompt_tracking_version_changes_with_prompt():
+    environ = {"DATADOG_LLMOBS_PROMPT_TRACKING_ENABLED": "true"}
+
+    first = json.loads(datadog_prompt_tracking_attribute("prompt one", environ))
+    second = json.loads(datadog_prompt_tracking_attribute("prompt two", environ))
+
+    assert first["version"] != second["version"]

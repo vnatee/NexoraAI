@@ -16,7 +16,12 @@ from langgraph.graph.message import add_messages
 from openai.types.chat import ChatCompletion
 
 from agent_runtime.tools import ToolRegistry
-from core.observability import agent_run_span, mark_span_error, mark_span_success
+from core.observability import (
+    agent_run_span,
+    mark_span_error,
+    mark_span_success,
+    model_completion_span,
+)
 
 
 class AgentState(TypedDict):
@@ -158,11 +163,17 @@ class AgentRuntime:
                 if require_chart
                 else self.tools.openai_tools()
             )
-            completion: ChatCompletion = await self.completion_factory(
-                [_to_openai_message(message) for message in state["messages"]],
-                available_tools,
-                "required" if require_mcp or require_chart else None,
-            )
+            with model_completion_span(self.config.system_prompt) as model_span:
+                try:
+                    completion: ChatCompletion = await self.completion_factory(
+                        [_to_openai_message(message) for message in state["messages"]],
+                        available_tools,
+                        "required" if require_mcp or require_chart else None,
+                    )
+                except Exception as error:
+                    mark_span_error(model_span, error)
+                    raise
+                mark_span_success(model_span)
             response = completion.choices[0].message
             usage = (
                 completion.usage.model_dump(exclude_none=True)
