@@ -198,8 +198,31 @@ export const AnalysisPanel = ({ answer, activeTab, activeCitation, citationHeigh
                 headerButtonProps={isDisabledWebTab ? { disabled: true, style: { color: "grey" } } : undefined}
             >
                 {activeWebUrl ? (
+                    <StackMUI spacing={2} sx={{ p: 2 }}>
+                        <Alert severity="info">
+                            This website does not allow embedded display. Open it in a new browser tab.
+                        </Alert>
+                        <div style={{ color: "#555", overflowWrap: "anywhere" }}>{activeWebUrl}</div>
+                        <a
+                            href={activeWebUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{
+                                alignSelf: "flex-start",
+                                padding: "8px 14px",
+                                backgroundColor: "#1976d2",
+                                color: "white",
+                                borderRadius: 4,
+                                textDecoration: "none"
+                            }}
+                        >
+                            Open in new tab
+                        </a>
+                    </StackMUI>
+                ) : null}
+                {activeWebUrl && false ? (
                     <>
-                        {activeWebUrl.startsWith("http://") ? (
+                        {activeWebUrl!.startsWith("http://") ? (
                             <StackMUI spacing={2} alignItems="center" sx={{ mt: 2 }}>
                                 <div style={{ color: "#555" }}>Web site not supported (HTTPS required)</div>
                                 <button

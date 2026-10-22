@@ -271,6 +271,19 @@ export const Answer = ({
                         rehypePlugins={[rehypeRaw, [rehypeKatex, { strict: false, throwOnError: false }]]}
                         remarkPlugins={[remarkGfm, remarkMath]}
                         components={{
+                            a: ({ node, href, children, ...props }: any) => {
+                                const isExternal = /^https?:\/\//i.test(href ?? "");
+                                return (
+                                    <a
+                                        {...props}
+                                        href={href}
+                                        target={isExternal ? "_blank" : undefined}
+                                        rel={isExternal ? "noopener noreferrer" : undefined}
+                                    >
+                                        {children}
+                                    </a>
+                                );
+                            },
                             table: ({ node, ...props }: any) => (
                                 <TableContainer
                                     component={Paper}
