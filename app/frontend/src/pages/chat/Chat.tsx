@@ -960,6 +960,7 @@ const Chat = () => {
 
         if (isExternal) {
             const nextUrl = normalizeExternalUrl(raw);
+            window.open(nextUrl, "_blank", "noopener,noreferrer");
             const currentUrl = activeWebUrl ? normalizeExternalUrl(activeWebUrl) : undefined;
 
             // ✅ เหมือนเคสไฟล์: ถ้าคลิกลิงก์เดิม และแท็บเดิม → ปิด

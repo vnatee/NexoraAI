@@ -66,11 +66,16 @@ def register_rag_tool(
             for _, citation, text in attachment_evidence
         ]
         serialized_documents = [document.serialize_for_results() for document in documents]
-        for serialized in serialized_documents:
+        for serialized, document in zip(serialized_documents, documents):
             if isinstance(serialized.get("content"), str):
                 serialized["content"] = sanitize_untrusted_context(
                     serialized["content"], GuardrailPolicy()
                 ).text
+            source_url = str(document.storage_url or "").strip()
+            if source_url.startswith(("https://", "http://")):
+                serialized["sourcefile"] = source_url
+                serialized["sourcepage"] = source_url
+                serialized["sourceUrl"] = source_url
         if overrides.get("_requirements_evidence_matrix") is True:
             for serialized, document in zip(serialized_documents, documents):
                 serialized["sourcefile"] = source_display_filename(

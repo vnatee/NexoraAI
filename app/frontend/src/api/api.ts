@@ -591,6 +591,7 @@ export async function getSpeechApi(text: string): Promise<string | null> {
 }
 
 export function getCitationFilePath(citation: string): string {
+    if (/^https?:\/\//i.test(citation)) return citation;
     return `${BACKEND_URI}/content/${citation}`;
 }
 
