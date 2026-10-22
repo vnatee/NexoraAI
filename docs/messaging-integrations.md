@@ -39,4 +39,7 @@ Only official `discord.com` webhook hosts are accepted.
 - A Message Template may contain placeholders such as `{{service}}` and `{{status}}`.
 - With no template, the Agent generates the complete message text.
 - Sending is a write action and is recorded by Agent runtime audit events.
-- This first version is outbound-only. Receiving events, threaded replies, Slack Block Kit, LINE Flex Messages, files and interactive callbacks require inbound webhook handling in a later version.
+- Agent Messaging bindings remain outbound-only. For an inbound LINE text
+  conversation demo, use the separate [LINE Agent Demo Bridge](line-agent-demo.md).
+  Threaded replies, Slack inbound events, LINE Flex Messages, files, and
+  interactive callbacks remain future work.
