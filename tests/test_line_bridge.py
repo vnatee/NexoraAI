@@ -9,11 +9,13 @@ import pytest
 from line_bridge import (
     EphemeralConversationState,
     LineBridgeSettings,
+    MongoConversationState,
     build_agent_input,
     create_app,
     format_agent_answer,
     line_session_id,
     line_source_id,
+    run_line_worker,
     split_line_messages,
     stable_conversation_id,
     verify_line_signature,
@@ -61,6 +63,9 @@ def test_build_agent_input_and_stable_conversation_id():
     assert "User: first question" in rendered
     assert "Assistant: first answer" in rendered
     assert rendered.endswith("Current user message: follow up")
+    bounded = build_agent_input([("user", "answer" * 10_000)], "current")
+    assert len(bounded) <= 32_768
+    assert bounded.endswith("Current user message: current")
     assert stable_conversation_id("U123") == stable_conversation_id("U123")
     assert stable_conversation_id("U123") != stable_conversation_id("U456")
 
@@ -248,3 +253,119 @@ async def test_group_message_can_be_allowed_by_actor_user_id():
     assert await response.get_json() == {"accepted": 1}
     assert fake.invocations[0]["source_id"] == "G123:U-allowed"
     assert fake.pushes[0][0] == "G123"
+
+
+class RecordingEvents:
+    def __init__(self):
+        self.documents = []
+
+    def count_documents(self, query, **kwargs):
+        return 0
+
+    def find_one(self, query, projection=None):
+        return None
+
+
+    def insert_one(self, document):
+        self.documents.append(document)
+
+
+def test_mongodb_queue_encrypts_message_and_line_identifiers(monkeypatch):
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("APP_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    queue = RecordingEvents()
+    state = object.__new__(MongoConversationState)
+    state._settings = settings(storage_backend="mongodb")
+    state._events = queue
+
+    assert state._enqueue_event("event-1", "U123", "U123", "test-message") == "queued"
+
+    document = queue.documents[0]
+    serialized = json.dumps(document, default=str)
+    assert "test-message" not in serialized
+    assert "U123" not in serialized
+    assert document["status"] == "queued"
+    assert document["attempt"] == 0
+
+
+class FakeDurableState:
+    def __init__(self, *, terminal=False):
+        self.event = {
+            "_line_job_id": "job-1",
+            "_line_session_hash": "session-hash",
+            "_line_attempt": 1,
+            "_nexora_event_id": "event-1",
+            "_line_target": "U123",
+            "_line_session_id": "U123",
+            "message": {"type": "text", "text": "Question"},
+        }
+        self.terminal = terminal
+        self.completed = False
+        self.failed = False
+        self.turns = []
+
+    async def claim_event(self):
+        if self.event is None:
+            return None
+        event, self.event = self.event, None
+        return event
+
+    async def get_history(self, source_id):
+        return []
+
+    async def append_turn(self, source_id, user_text, answer):
+        self.turns.append((source_id, user_text, answer))
+
+    async def complete_event(self, event):
+        self.completed = True
+
+    async def fail_event(self, event, error):
+        self.failed = True
+        return self.terminal
+
+
+@pytest.mark.asyncio
+async def test_durable_worker_completes_claimed_event():
+    state = FakeDurableState()
+    fake = FakeClient()
+    task = asyncio.create_task(
+        run_line_worker(settings(worker_poll_seconds=0.01), state, fake)
+    )
+    try:
+        await asyncio.wait_for(_wait_until(lambda: state.completed), timeout=1)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert state.turns == [("U123", "Question", "Agent answer")]
+    assert fake.pushes[0][0] == "U123"
+
+
+class FailingClient(FakeClient):
+    async def invoke_agent(self, **kwargs):
+        raise RuntimeError("simulated failure")
+
+
+async def _wait_until(predicate):
+    while not predicate():
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_durable_worker_dead_letters_and_notifies_after_final_attempt():
+    state = FakeDurableState(terminal=True)
+    fake = FailingClient()
+    task = asyncio.create_task(
+        run_line_worker(settings(worker_poll_seconds=0.01), state, fake)
+    )
+    try:
+        await asyncio.wait_for(_wait_until(lambda: state.failed), timeout=1)
+        await asyncio.wait_for(_wait_until(lambda: bool(fake.pushes)), timeout=1)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert "กรุณาลองใหม่อีกครั้ง" in fake.pushes[0][1]

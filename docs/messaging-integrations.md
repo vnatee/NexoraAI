@@ -40,6 +40,6 @@ Only official `discord.com` webhook hosts are accepted.
 - With no template, the Agent generates the complete message text.
 - Sending is a write action and is recorded by Agent runtime audit events.
 - Agent Messaging bindings remain outbound-only. For an inbound LINE text
-  conversation demo, use the separate [LINE Agent Demo Bridge](line-agent-demo.md).
+  conversation, use the separate [LINE Agent Channel](line-agent-channel.md).
   Threaded replies, Slack inbound events, LINE Flex Messages, files, and
   interactive callbacks remain future work.

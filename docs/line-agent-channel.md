@@ -1,7 +1,7 @@
-# LINE Agent Demo Bridge
+# LINE Agent Channel
 
-The LINE Bridge connects a LINE Official Account to one approved NexoraAI
-Agent without exposing an Agent API key to a browser or mobile client.
+The LINE Agent Channel connects a LINE Official Account to one approved
+NexoraAI Agent without exposing an Agent API key to a browser or mobile client.
 
 ```text
 LINE webhook
@@ -10,9 +10,11 @@ LINE webhook
   -> LINE Push API response
 ```
 
-This bridge is intended for a controlled demonstration. It stores a bounded
-conversation history in process memory only. History and deduplication state are
-lost when the bridge restarts and are not shared across replicas.
+Inbound events are committed to MongoDB before the webhook returns. Message
+content, conversation history, and LINE identifiers are encrypted with
+`APP_DATA_ENCRYPTION_KEY`. Workers use leases, per-conversation locks,
+idempotent Agent jobs, exponential retry, and dead-letter status so queued work
+survives restarts and can be processed safely across multiple replicas.
 
 ## Security model
 
@@ -21,10 +23,11 @@ lost when the bridge restarts and are not shared across replicas.
 - The key can invoke only its selected Agent and published External Knowledge.
 - LINE and NexoraAI credentials are read from deployment environment variables.
 - Raw prompts, responses, tokens, and webhook bodies are not logged.
-- An optional source allowlist can restrict the demonstration to approved LINE
+- An optional source allowlist can restrict access to approved LINE
   users, groups, or rooms.
-- The bridge acknowledges the webhook immediately and runs the Agent in a
-  background job with an idempotency key derived from the LINE event ID.
+- The bridge returns success only after the event is durably queued.
+- Prompt and response history is encrypted at rest and removed by TTL.
+- Agent invocation uses an idempotency key derived from the LINE event ID.
 
 Do not use the existing Agent Messaging binding for inbound conversations. That
 integration is an outbound write tool. The LINE Bridge is the inbound channel
@@ -54,7 +57,7 @@ LINE_BRIDGE_NEXORA_AGENT_ID=replace_with_agent_id
 LINE_BRIDGE_NEXORA_API_KEY=nxai_replace_with_external_customer_key
 ```
 
-For a controlled demo, restrict access to known LINE source IDs:
+For a controlled deployment, restrict access to known LINE source IDs:
 
 ```dotenv
 LINE_BRIDGE_ALLOWED_SOURCE_IDS=U1234567890abcdef,G1234567890abcdef
@@ -66,6 +69,12 @@ who can reach the Official Account should be allowed to invoke the Agent.
 Optional behavior:
 
 ```dotenv
+LINE_BRIDGE_STORAGE_BACKEND=mongodb
+LINE_BRIDGE_WORKER_POLL_SECONDS=1
+LINE_BRIDGE_MAX_ATTEMPTS=5
+LINE_BRIDGE_RETRY_BASE_SECONDS=5
+LINE_BRIDGE_RETENTION_DAYS=7
+LINE_BRIDGE_MAX_PENDING_PER_SOURCE=20
 LINE_BRIDGE_HISTORY_TURNS=4
 LINE_BRIDGE_STATE_TTL_SECONDS=86400
 LINE_BRIDGE_JOB_TIMEOUT_SECONDS=180
@@ -74,8 +83,9 @@ LINE_BRIDGE_SEND_ACK=true
 LINE_BRIDGE_ACK_TEXT=กำลังค้นหาข้อมูล กรุณารอสักครู่...
 ```
 
-Conversation history is process-local and never written to disk. Set
-`LINE_BRIDGE_HISTORY_TURNS=0` for strictly stateless requests.
+Conversation history and pending events are encrypted in MongoDB. Keep
+`APP_DATA_ENCRYPTION_KEY` stable across restarts and replicas. Set
+`LINE_BRIDGE_HISTORY_TURNS=0` for stateless Agent requests.
 
 ## Deploy
 
@@ -119,7 +129,7 @@ https://YOUR-NEXORA-HOST/integrations/line/webhook
 Then:
 
 1. Enable **Use webhook**.
-2. Disable LINE's automatic greeting/response for a clean Agent demo.
+2. Disable LINE's automatic greeting/response for a clean Agent conversation.
 3. Select **Verify**. A correctly configured endpoint returns HTTP 200.
 4. Add the Official Account as a friend.
 5. Send a text question.
@@ -140,7 +150,7 @@ sudo docker compose \
 ```
 
 Expected successful log text contains an opaque event reference and
-`LINE event completed`. It never contains the LINE message or Agent response.
+`LINE event delivered`. It never contains the LINE message or Agent response.
 
 Common failures:
 
@@ -153,15 +163,17 @@ Common failures:
 - **No response for an allowed user**: verify the source ID allowlist and LINE
   push-message permissions.
 
-## Known Demo limitations
+## Supported scope and delivery semantics
 
-- One bridge container should be used because history and event deduplication
-  are process-local.
-- Restarting the container clears conversation context.
-- Only LINE text messages are accepted.
+- Multiple bridge replicas may share the same MongoDB database.
+- Queued events and encrypted conversation context survive container restarts.
+- A per-conversation lease preserves message ordering across workers.
+- Automatic retry uses exponential backoff; exhausted events are retained with
+  `dead_letter` status until their configured TTL expires.
+- Only LINE text messages are currently accepted.
 - Flex Messages, images, files, postbacks, unsend events, and rich menus are not
   interpreted.
-- The Agent API remains stateless; the bridge supplies a bounded previous-turn
-  transcript as conversational context.
-- Production rollout should replace memory state with an encrypted,
-  retention-governed shared store and a durable channel-delivery queue.
+- The Agent API remains stateless; the channel supplies a bounded encrypted
+  previous-turn transcript as conversational context.
+- Delivery is at least once. A rare duplicate LINE Push can occur if LINE
+  accepts a message immediately before the worker loses its database lease.
