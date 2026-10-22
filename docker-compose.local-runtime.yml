@@ -113,6 +113,48 @@ services:
       retries: 20
       start_period: 60s
 
+  line-bridge:
+    image: ${NEXORA_APP_IMAGE:-nexoraai:local}
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    command:
+      - python
+      - -m
+      - hypercorn
+      - --bind
+      - 0.0.0.0:8080
+      - line_bridge:app
+    environment:
+      LINE_CHANNEL_SECRET: ${LINE_CHANNEL_SECRET:-}
+      LINE_CHANNEL_ACCESS_TOKEN: ${LINE_CHANNEL_ACCESS_TOKEN:-}
+      LINE_BRIDGE_NEXORA_BASE_URL: http://app:8000
+      LINE_BRIDGE_NEXORA_AGENT_ID: ${LINE_BRIDGE_NEXORA_AGENT_ID:-}
+      LINE_BRIDGE_NEXORA_API_KEY: ${LINE_BRIDGE_NEXORA_API_KEY:-}
+      LINE_BRIDGE_ALLOWED_SOURCE_IDS: ${LINE_BRIDGE_ALLOWED_SOURCE_IDS:-}
+      LINE_BRIDGE_HISTORY_TURNS: ${LINE_BRIDGE_HISTORY_TURNS:-4}
+      LINE_BRIDGE_STATE_TTL_SECONDS: ${LINE_BRIDGE_STATE_TTL_SECONDS:-86400}
+      LINE_BRIDGE_JOB_TIMEOUT_SECONDS: ${LINE_BRIDGE_JOB_TIMEOUT_SECONDS:-180}
+      LINE_BRIDGE_POLL_INTERVAL_SECONDS: ${LINE_BRIDGE_POLL_INTERVAL_SECONDS:-1}
+      LINE_BRIDGE_SEND_ACK: ${LINE_BRIDGE_SEND_ACK:-true}
+      LINE_BRIDGE_ACK_TEXT: ${LINE_BRIDGE_ACK_TEXT:-กำลังค้นหาข้อมูล กรุณารอสักครู่...}
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=5)
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   integration-controller:
     build:
       context: .
