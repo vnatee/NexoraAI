@@ -9,8 +9,9 @@ type HtmlParsedAnswer = {
 // Function to validate citation format and check if dataPoint starts with possible citation
 function isCitationValid(contextDataPoints: any, citationCandidate: string): boolean {
     const regex = /^(?:[^/#?]+\.[^/\s#?]+|.+\/[^/#?]+(?:\.[^/\s#?]+)?\/?)(?:\?\S*)?(?:#\S*)?$/u;
+    const isExternalUrl = /^https?:\/\//i.test(citationCandidate);
 
-    if (!regex.test(citationCandidate)) {
+    if (!isExternalUrl && !regex.test(citationCandidate)) {
         return false;
     }
 

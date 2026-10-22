@@ -511,6 +511,7 @@ export function Component(): JSX.Element {
         if (isExternal) {
             setActiveCitation(undefined);
             setActiveWebUrl(citationSplit);
+            window.open(citationSplit, "_blank", "noopener,noreferrer");
             setActiveAnalysisPanelTab(AnalysisPanelTabs.WebTab);
         } else {
             setActiveWebUrl(undefined);

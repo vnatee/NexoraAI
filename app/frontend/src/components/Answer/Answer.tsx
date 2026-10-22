@@ -181,6 +181,17 @@ export const Answer = ({
     };
 
     const getCitationLabel = (citation: string) => {
+        const trimmedCitation = citation.trim();
+        if (/^https?:\/\//i.test(trimmedCitation)) {
+            try {
+                const url = new URL(trimmedCitation);
+                const readablePath = decodeURIComponent(url.pathname).replace(/\/$/, "");
+                return readablePath ? `${url.hostname}${readablePath}` : url.hostname;
+            } catch {
+                return trimmedCitation;
+            }
+        }
+
         // citation ตัวอย่าง:
         // 9e2fa6ed-.../n8n week 1 - intro to n8n.pdf#page=13
 

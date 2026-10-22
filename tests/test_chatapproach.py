@@ -6,6 +6,7 @@ from azure.search.documents.agent.aio import KnowledgeAgentRetrievalClient
 from azure.search.documents.aio import SearchClient
 from openai.types.chat import ChatCompletion
 
+from approaches.approach import Document
 from approaches.chatreadretrieveread import ChatReadRetrieveReadApproach
 from approaches.promptmanager import PromptyManager
 
@@ -300,3 +301,24 @@ async def test_agent_retrieval_results(monkeypatch):
     assert results[0].content == "There is a whistleblower policy."
     assert results[0].sourcepage == "Benefit_Options-2.pdf"
     assert results[0].search_agent_query == "whistleblower query"
+
+
+def test_web_sources_use_public_storage_url_for_citation(chat_approach):
+    source_url = "https://docs.datadoghq.com/logs/log_configuration/"
+    documents = [
+        Document(
+            content="Configure log collection",
+            sourcefile="source-hash||urlz=opaque/page-hash.txt",
+            sourcepage="page-hash.txt",
+            storage_url=source_url,
+        )
+    ]
+
+    sources = chat_approach.get_sources_content(
+        documents,
+        use_semantic_captions=False,
+        use_image_citation=False,
+    )
+
+    assert sources == [f"{source_url}: Configure log collection"]
+    assert "urlz=" not in sources[0]

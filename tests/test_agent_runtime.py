@@ -604,3 +604,37 @@ def test_subagent_tools_prevent_cycles_and_stop_at_max_depth():
         max_depth=2,
     )
     assert depth_registry.specs() == []
+
+
+@pytest.mark.asyncio
+async def test_rag_exposes_public_web_url_instead_of_internal_storage_key():
+    source_url = "https://docs.datadoghq.com/logs/log_configuration/"
+    approach = MagicMock()
+    approach.build_filter.return_value = None
+    approach.search = AsyncMock(
+        return_value=[
+            Document(
+                id="web-1",
+                content="Configure log collection",
+                sourcefile="source-hash||urlz=opaque/page-hash.txt",
+                sourcepage="page-hash.txt",
+                storage_url=source_url,
+            )
+        ]
+    )
+    approach.get_sources_content.return_value = [
+        f"{source_url}: Configure log collection"
+    ]
+    registry = ToolRegistry(
+        ToolRuntimeContext(agent_id="agent-1", auth_claims={"oid": "user-1"})
+    )
+    register_rag_tool(registry, approach, {"retrieval_mode": "text"})
+
+    output = json.loads(
+        await registry.execute("search_knowledge", {"query": "log configuration"})
+    )
+
+    assert output["results"][0]["sourcefile"] == source_url
+    assert output["results"][0]["sourcepage"] == source_url
+    assert output["results"][0]["sourceUrl"] == source_url
+    assert "urlz=" not in json.dumps(output)

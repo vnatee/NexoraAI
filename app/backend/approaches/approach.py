@@ -48,6 +48,7 @@ class Document:
     category: Optional[str] = None
     sourcepage: Optional[str] = None
     sourcefile: Optional[str] = None
+    storage_url: Optional[str] = None
     oids: Optional[list[str]] = None
     groups: Optional[list[str]] = None
     captions: Optional[list[QueryCaptionResult]] = None
@@ -62,6 +63,7 @@ class Document:
             "category": self.category,
             "sourcepage": self.sourcepage,
             "sourcefile": self.sourcefile,
+            "storageUrl": self.storage_url,
             "oids": self.oids,
             "groups": self.groups,
             "captions": (
@@ -237,6 +239,7 @@ class Approach(ABC):
                         category=document.get("category"),
                         sourcepage=document.get("sourcepage"),
                         sourcefile=document.get("sourcefile"),
+                        storage_url=document.get("storageUrl"),
                         oids=document.get("oids"),
                         groups=document.get("groups"),
                         captions=cast(list[QueryCaptionResult], document.get("@search.captions")),
@@ -335,6 +338,12 @@ class Approach(ABC):
         def nonewlines(s: str) -> str:
             return s.replace("\n", " ").replace("\r", " ")
 
+        def source_locator(doc: Document) -> str:
+            storage_url = str(doc.storage_url or "").strip()
+            if storage_url.startswith(("https://", "http://")):
+                return storage_url
+            return str(doc.sourcefile).replace(str(doc.sourcefile).split("/")[-1], "") + str(doc.sourcepage)
+
         def format_source(doc: Document, citation: str, content: str) -> str:
             if include_display_filename:
                 filename = source_display_filename(doc.sourcefile or doc.sourcepage)
@@ -344,7 +353,7 @@ class Approach(ABC):
         if use_semantic_captions:
             final_result = []
             for doc in results:
-                source = str(doc.sourcefile).replace(str(doc.sourcefile).split("/")[-1],"") + str(doc.sourcepage)
+                source = source_locator(doc)
                 citation = self.get_citation(source, use_image_citation)
                 content = nonewlines(" . ".join([cast(str, c.text) for c in (doc.captions or [])]))
                 content = sanitize_untrusted_context(content, GuardrailPolicy()).text
@@ -359,7 +368,7 @@ class Approach(ABC):
         else:
             final_result = []
             for doc in results:
-                source = str(doc.sourcefile).replace(str(doc.sourcefile).split("/")[-1],"") + str(doc.sourcepage)
+                source = source_locator(doc)
                 citation = self.get_citation(source, use_image_citation)
                 content = sanitize_untrusted_context(nonewlines(doc.content or ""), GuardrailPolicy()).text
                 final_result.append(format_source(doc, citation, content))
