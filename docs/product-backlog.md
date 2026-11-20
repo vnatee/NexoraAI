@@ -13,6 +13,30 @@ acceptance is deferred post-release; SAML stays disabled by default and Preview
 until it passes. The product version stays at `2.2.0` until all required gates in
 `docs/release-readiness-2.3.md` pass.
 
+## In progress — governed private LLM and AI Gateway
+
+Priority order agreed with the product owner:
+
+1. **P1.1 Generic BYO AI Gateway foundation — implemented, validation in
+   progress.** Deployment-wide Built-in, External, and gated Direct Development
+   modes; OpenAI-compatible routing; encrypted API key/OAuth2/mTLS/custom-CA
+   credentials; model aliases; System Admin UI; health test; metadata-only
+   audit; and fail-closed prevention of direct-provider bypass. See
+   `docs/byo-ai-gateway.md`.
+2. **P1.2 Gateway conformance and vendor profiles.** Add capability discovery,
+   policy/header templates and acceptance tests, beginning with MuleSoft AI
+   Gateway. Preserve InsightSphere Agent, Knowledge, Tool, and Team governance.
+3. **P1.3 Private model control plane.** Package the supported
+   InsightSphere Gateway + GPUStack + vLLM topology, model lifecycle, capacity
+   and GPU health, controlled rollout/rollback, and production runbooks.
+4. **P1.4 Usage and policy reconciliation.** Correlate InsightSphere request
+   metadata with gateway/provider usage, budget and policy decisions without
+   exporting prompt or response content by default.
+5. **P1 security gate.** Run dependency/secret/SAST/container/IaC scans and a
+   focused penetration test after the gateway slices stabilize. Existing ACL,
+   read-only database, tool-policy, guardrail, encrypted-secret and audit
+   contracts remain release blockers.
+
 ## Approved — Chat multimodal, attachments, and evidence workflows
 
 Build a ChatGPT-style composer shared by Chat and Ask. The product owner

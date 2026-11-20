@@ -226,6 +226,13 @@ from mongo_table_connecters.llm_providers import (
     soft_delete_llm_provider,
     update_llm_provider,
 )
+from mongo_table_connecters.ai_gateway_settings import (
+    default_ai_gateway_settings,
+    get_ai_gateway_settings,
+    normalize_ai_gateway_settings,
+    save_ai_gateway_settings,
+    serialize_ai_gateway_settings,
+)
 from mongo_table_connecters.embedding_profiles import (
     ENVIRONMENT_PROFILE_ID,
     activate_embedding_profile,
@@ -546,6 +553,7 @@ from config import (
 from core.authentication import AuthenticationHelper
 from core.knowledge_search import QdrantKnowledgeSearchClient
 from core.model_providers import create_embedding_service, create_llm_client
+from core.ai_gateway import build_external_gateway_profiles, create_external_gateway_client
 from core.llm_vendors import apply_llm_vendor_chat_policy, get_llm_vendor, infer_llm_vendor
 from core.model_profiles import (
     DEFAULT_LLM_PROFILE_ID,
@@ -818,6 +826,11 @@ def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> N
         profile_id = DEFAULT_LLM_PROFILE_ID
 
     overrides = context.setdefault("overrides", {})
+    if profile.managed_provider_id == "ai_gateway" and overrides.get("use_agentic_retrieval"):
+        raise AccessControlError(
+            "Azure agentic retrieval is unavailable while External AI Gateway mode is active",
+            status_code=409,
+        )
     overrides["_llm_client"] = clients[profile_id]
     overrides["_llm_model"] = profile.settings.model
     overrides["_llm_deployment"] = profile.settings.deployment
@@ -1790,17 +1803,74 @@ def _load_managed_profiles(base_profiles: dict[str, LLMProfile]) -> dict[str, LL
     return profiles
 
 
-def _refresh_llm_profile_registry() -> None:
-    runtime_settings: RuntimeSettings = current_app.config[CONFIG_RUNTIME_SETTINGS]
-    profiles = load_llm_profiles(os.environ, runtime_settings.llm)
-    profiles = _load_managed_profiles(profiles)
-    credential = current_app.config[CONFIG_CREDENTIAL]
-    clients = {
+def _load_effective_llm_profiles(
+    base_profiles: dict[str, LLMProfile],
+    gateway_settings: dict[str, Any] | None = None,
+) -> tuple[dict[str, LLMProfile], dict[str, Any]]:
+    """Resolve the only profiles that runtime calls may use.
+
+    External mode intentionally discards every environment and managed-provider
+    route. This is the fail-closed boundary that prevents an Agent configured
+    with an old profile id from bypassing the selected enterprise gateway.
+    """
+    settings = gateway_settings or get_ai_gateway_settings()
+    mode = str(settings.get("mode") or "built_in")
+    if mode == "external":
+        return build_external_gateway_profiles(settings), settings
+    if mode == "direct_development":
+        if os.getenv("ALLOW_DIRECT_AI_PROVIDER_MODE", "").lower() != "true":
+            raise ValueError("Direct provider mode is disabled for this deployment")
+        return dict(base_profiles), settings
+    if mode != "built_in":
+        raise ValueError("Unsupported AI Gateway mode")
+    return _load_managed_profiles(base_profiles), settings
+
+
+def _build_llm_profile_clients(
+    profiles: dict[str, LLMProfile],
+    gateway_settings: dict[str, Any],
+    credential: Any,
+) -> dict[str, AsyncOpenAI]:
+    if str(gateway_settings.get("mode") or "built_in") == "external":
+        gateway_client = create_external_gateway_client(gateway_settings)
+        return {profile_id: gateway_client for profile_id in profiles}
+    return {
         profile_id: create_llm_client(profile.settings, credential)
         for profile_id, profile in profiles.items()
     }
+
+
+async def _close_replaced_llm_clients(clients: list[AsyncOpenAI]) -> None:
+    # Allow in-flight requests that captured the previous registry to finish.
+    await asyncio.sleep(60)
+    for client in clients:
+        try:
+            await client.close()
+        except Exception:
+            logging.warning("Unable to close replaced LLM client", exc_info=True)
+
+
+def _refresh_llm_profile_registry() -> None:
+    runtime_settings: RuntimeSettings = current_app.config[CONFIG_RUNTIME_SETTINGS]
+    base_profiles = load_llm_profiles(os.environ, runtime_settings.llm)
+    profiles, gateway_settings = _load_effective_llm_profiles(base_profiles)
+    credential = current_app.config[CONFIG_CREDENTIAL]
+    clients = _build_llm_profile_clients(profiles, gateway_settings, credential)
+    new_client_ids = {id(client) for client in clients.values()}
+    previous_clients = {
+        id(client): client
+        for client in current_app.config.get(CONFIG_LLM_PROFILE_CLIENTS, {}).values()
+        if id(client) not in new_client_ids
+    }
     current_app.config[CONFIG_LLM_PROFILES] = profiles
     current_app.config[CONFIG_LLM_PROFILE_CLIENTS] = clients
+    current_app.config[CONFIG_OPENAI_CLIENT] = clients[DEFAULT_LLM_PROFILE_ID]
+    if previous_clients:
+        close_task = asyncio.create_task(
+            _close_replaced_llm_clients(list(previous_clients.values()))
+        )
+        BACKGROUND_TASKS.add(close_task)
+        close_task.add_done_callback(BACKGROUND_TASKS.discard)
 
 
 class NamedBytesIO(io.BytesIO):
@@ -5054,6 +5124,117 @@ async def admin_list_llm_providers(auth_claims: dict[str, Any]):
     return jsonify({"providers": [_serialize_llm_provider(item) for item in list_llm_providers()]})
 
 
+@bp.get("/admin/ai-gateway")
+@authenticated
+async def admin_get_ai_gateway(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    return jsonify(serialize_ai_gateway_settings(get_ai_gateway_settings()))
+
+
+@bp.put("/admin/ai-gateway")
+@authenticated
+async def admin_update_ai_gateway(auth_claims: dict[str, Any]):
+    actor = _require_system_admin(auth_claims)
+    actor_id = str(actor.get("_id") or auth_claims.get("application_user_id") or "")
+    existing = get_ai_gateway_settings()
+    try:
+        normalized = normalize_ai_gateway_settings(
+            await request.get_json() or {},
+            existing=existing,
+            allow_insecure_http=os.getenv("AI_GATEWAY_ALLOW_INSECURE_HTTP", "").lower() == "true",
+            allow_direct_development=os.getenv("ALLOW_DIRECT_AI_PROVIDER_MODE", "").lower() == "true",
+        )
+        # Validate certificates, credentials and profile mapping before changing
+        # the persisted routing policy. Connectivity is checked separately.
+        if normalized["mode"] == "external":
+            build_external_gateway_profiles(normalized)
+            validation_client = create_external_gateway_client(normalized)
+            await validation_client.close()
+        saved = save_ai_gateway_settings(normalized, actor_id=actor_id)
+        try:
+            _refresh_llm_profile_registry()
+        except Exception:
+            rollback = normalize_ai_gateway_settings(
+                existing,
+                existing=existing,
+                allow_insecure_http=True,
+                allow_direct_development=True,
+            )
+            save_ai_gateway_settings(rollback, actor_id=actor_id)
+            _refresh_llm_profile_registry()
+            raise
+        insert_integration_lifecycle_event(
+            action="ai_gateway_updated",
+            status="success",
+            connection_id="system",
+            team_id="",
+            actor_id=actor_id,
+            vendor="ai_gateway",
+        )
+        return jsonify(serialize_ai_gateway_settings(saved))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        current_app.logger.warning("AI Gateway update failed: %s", type(error).__name__)
+        insert_integration_lifecycle_event(
+            action="ai_gateway_updated",
+            status="failed",
+            connection_id="system",
+            team_id="",
+            actor_id=actor_id,
+            vendor="ai_gateway",
+            error_type=type(error).__name__,
+        )
+        return jsonify({"error": "AI Gateway settings could not be applied"}), 400
+
+
+@bp.post("/admin/ai-gateway/test")
+@authenticated
+async def admin_test_ai_gateway(auth_claims: dict[str, Any]):
+    actor = _require_system_admin(auth_claims)
+    actor_id = str(actor.get("_id") or auth_claims.get("application_user_id") or "")
+    settings = get_ai_gateway_settings()
+    if settings.get("mode") != "external":
+        return jsonify({"error": "Select and save External AI Gateway mode before testing"}), 409
+    client = None
+    try:
+        profiles = build_external_gateway_profiles(settings)
+        profile = profiles[DEFAULT_LLM_PROFILE_ID]
+        client = create_external_gateway_client(settings)
+        completion_options: dict[str, Any] = {"max_tokens": 3, "temperature": 0}
+        if profile.settings.model in Approach.GPT_REASONING_MODELS:
+            completion_options = {"max_completion_tokens": 16}
+        await client.chat.completions.create(
+            model=profile.settings.model,
+            messages=[{"role": "user", "content": "Reply with OK"}],
+            **completion_options,
+        )
+        insert_integration_lifecycle_event(
+            action="ai_gateway_tested",
+            status="success",
+            connection_id="system",
+            team_id="",
+            actor_id=actor_id,
+            vendor="ai_gateway",
+        )
+        return jsonify({"success": True, "model_id": settings.get("default_model_id")})
+    except Exception as error:
+        current_app.logger.warning("AI Gateway connection test failed: %s", type(error).__name__)
+        insert_integration_lifecycle_event(
+            action="ai_gateway_tested",
+            status="failed",
+            connection_id="system",
+            team_id="",
+            actor_id=actor_id,
+            vendor="ai_gateway",
+            error_type=type(error).__name__,
+        )
+        return jsonify({"error": "AI Gateway connection test failed"}), 400
+    finally:
+        if client is not None:
+            await client.close()
+
+
 @bp.get("/admin/embedding-profiles")
 @authenticated
 async def admin_list_embedding_profiles(auth_claims: dict[str, Any]):
@@ -5247,6 +5428,10 @@ async def admin_delete_llm_provider(auth_claims: dict[str, Any], provider_id: st
 @authenticated
 async def admin_test_llm_provider(auth_claims: dict[str, Any], provider_id: str):
     _require_system_admin(auth_claims)
+    if get_ai_gateway_settings().get("mode") == "external":
+        return jsonify(
+            {"error": "Direct provider tests are blocked while External AI Gateway mode is active"}
+        ), 409
     provider = get_llm_provider(provider_id)
     if not provider:
         return jsonify({"error": "LLM provider not found"}), 404
@@ -11931,17 +12116,23 @@ async def setup_clients():
         runtime_settings.llm.provider.value,
         runtime_settings.embedding.provider.value,
     )
-    llm_profiles = load_llm_profiles(os.environ, runtime_settings.llm)
-    if os.getenv("SKIP_MANAGED_LLM_PROVIDER_LOAD", "").lower() != "true":
-        try:
-            llm_profiles = _load_managed_profiles(llm_profiles)
-        except Exception:
-            current_app.logger.exception("Unable to load managed LLM providers; continuing with environment profiles")
-    openai_client = create_llm_client(runtime_settings.llm, azure_credential)
-    llm_profile_clients = {DEFAULT_LLM_PROFILE_ID: openai_client}
-    for profile_id, profile in llm_profiles.items():
-        if profile_id != DEFAULT_LLM_PROFILE_ID:
-            llm_profile_clients[profile_id] = create_llm_client(profile.settings, azure_credential)
+    base_llm_profiles = load_llm_profiles(os.environ, runtime_settings.llm)
+    skip_managed_routes = os.getenv("SKIP_MANAGED_LLM_PROVIDER_LOAD", "").lower() == "true"
+    gateway_settings = (
+        default_ai_gateway_settings() if skip_managed_routes else get_ai_gateway_settings()
+    )
+    if skip_managed_routes and gateway_settings.get("mode") == "built_in":
+        llm_profiles = base_llm_profiles
+    else:
+        # Do not silently fall back when External mode is configured. Failure to
+        # load or build that route must stop startup rather than bypass policy.
+        llm_profiles, gateway_settings = _load_effective_llm_profiles(
+            base_llm_profiles, gateway_settings
+        )
+    llm_profile_clients = _build_llm_profile_clients(
+        llm_profiles, gateway_settings, azure_credential
+    )
+    openai_client = llm_profile_clients[DEFAULT_LLM_PROFILE_ID]
 
     current_app.config[CONFIG_OPENAI_CLIENT] = openai_client
     current_app.config[CONFIG_RUNTIME_SETTINGS] = runtime_settings

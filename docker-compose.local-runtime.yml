@@ -55,6 +55,8 @@ services:
       LLM_BASE_URL: http://ollama:11434/v1
       LLM_MODEL: ${LLM_MODEL:-qwen3:8b}
       LLM_API_KEY: ollama
+      ALLOW_DIRECT_AI_PROVIDER_MODE: ${ALLOW_DIRECT_AI_PROVIDER_MODE:-false}
+      AI_GATEWAY_ALLOW_INSECURE_HTTP: ${AI_GATEWAY_ALLOW_INSECURE_HTTP:-false}
       USE_USER_UPLOAD: "true"
       USE_LOCAL_PDF_PARSER: "true"
       USE_LOCAL_HTML_PARSER: "true"

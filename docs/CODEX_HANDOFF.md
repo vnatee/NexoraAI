@@ -2263,3 +2263,44 @@ Validation for this slice:
   seven failures are stale expectations in the separately paused Knowledge
   metadata-profile slice (`businessMetadata` and new index field counts), not
   failures in observability readiness
+
+## 2026-11-20: P1.1 Generic BYO AI Gateway
+
+Branch `feature/byo-ai-gateway` adds a deployment-wide, provider-neutral AI
+Gateway policy above the existing managed LLM connections:
+
+- Built-in, External, and deployment-gated Direct Development routing modes
+- OpenAI-compatible external gateway with API key, OAuth 2.0 client
+  credentials, custom CA, and optional mTLS
+- encrypted secrets using the stable `APP_DATA_ENCRYPTION_KEY` contract
+- stable gateway model IDs/aliases with tool and Vision capability metadata
+- System Administrator Portal/API configuration, saved-route connection test,
+  redacted responses, and metadata-only lifecycle audit
+- fail-closed effective profile registry: External mode exposes only gateway
+  profiles, remaps `system` to the gateway default, blocks direct managed-model
+  tests, rejects Azure agentic retrieval whose internal LLM cannot traverse the
+  gateway, and never falls back to a direct provider
+- Legacy and Vision Chat/Ask now honor the same request-local effective client
+  even for the reserved `system` profile
+- startup loads the persisted route before building clients; test-only
+  `SKIP_MANAGED_LLM_PROVIDER_LOAD` uses the Built-in default without requiring
+  MongoDB
+- replaced clients receive a grace period before close so in-flight requests
+  can finish after an administrative route change
+
+Reference: `docs/byo-ai-gateway.md`. P1.2 vendor conformance/templates (starting
+with MuleSoft), P1.3 GPUStack/vLLM packaging, P1.4 usage reconciliation, and the
+post-gateway security scan remain backlog.
+
+Validation:
+
+- focused gateway/provider/model/Vision regression: `38 passed`
+- Python compile and focused Ruff checks: passed
+- TypeScript `npx tsc --noEmit`: passed
+- frontend production build: passed (existing vendor chunk-size warning only)
+- portable Compose schema validation: passed
+- broad service-free run: `1045 passed`, `1 deselected`, `76 failed`; failures
+  are pre-existing stale snapshots expecting no `storageUrl`, paused Knowledge
+  metadata field-count expectations, and related file-strategy snapshots. None
+  involve the gateway/runtime files. `tests/test_app_config.py` remains excluded
+  because its startup variants wait on an unavailable real MongoDB service.

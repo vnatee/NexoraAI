@@ -150,12 +150,15 @@ class RetrieveThenReadVisionApproach(Approach):
             },
         )
 
-        custom_profile = overrides.get("_llm_profile_id") not in (None, "system")
-        llm_client = overrides.get("_llm_client", self.openai_client) if custom_profile else self.openai_client
+        # Always honor the request-local effective route. External Gateway mode
+        # remaps the reserved system profile and must never fall back to the
+        # direct provider client captured during application startup.
+        llm_client = overrides.get("_llm_client", self.openai_client)
         answer_model = (
-            overrides.get("_llm_deployment") or overrides.get("_llm_model")
-            if custom_profile
-            else self.gpt4v_deployment or self.gpt4v_model
+            overrides.get("_llm_deployment")
+            or overrides.get("_llm_model")
+            or self.gpt4v_deployment
+            or self.gpt4v_model
         )
         completion_params = self.apply_chat_completion_policy(
             overrides,

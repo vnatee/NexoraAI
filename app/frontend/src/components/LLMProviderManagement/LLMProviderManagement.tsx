@@ -46,6 +46,7 @@ import {
 } from "../../api";
 import { LLMProviderAdapter, LLMProviderModel, LLMProviderPayload, LLMVendor, ManagedLLMProvider } from "../../api/models";
 import { getToken } from "../../authConfig";
+import { AIGatewayManagement } from "./AIGatewayManagement";
 
 const emptyModel = (): LLMProviderModel => ({
     id: "",
@@ -326,11 +327,13 @@ export function LLMProviderManagement() {
 
     return (
         <Stack spacing={2} sx={{ pt: 1 }}>
+            <AIGatewayManagement onChanged={() => void loadProviders()} />
+
             <Box display="flex" justifyContent="space-between" alignItems="center">
                 <Box>
                     <Typography variant="h6">LLM Providers</Typography>
                     <Typography variant="body2" color="text.secondary">
-                        Manage provider connections and models available to agents. Secrets are never shown after saving.
+                        Manage built-in provider connections. External Gateway mode keeps these records stored but blocks runtime use and direct connection tests. Secrets are never shown after saving.
                     </Typography>
                 </Box>
                 <Button variant="contained" startIcon={<AddIcon />} onClick={openCreate}>

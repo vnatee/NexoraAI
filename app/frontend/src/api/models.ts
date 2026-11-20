@@ -245,6 +245,66 @@ export type LLMProviderPayload = Omit<ManagedLLMProvider, "_id" | "vendor_label"
     clear_api_key?: boolean;
 };
 
+export type AIGatewayMode = "built_in" | "external" | "direct_development";
+export type AIGatewayAuthType = "none" | "api_key" | "oauth2_client_credentials";
+
+export type AIGatewayModel = {
+    id: string;
+    label: string;
+    model: string;
+    supports_tools: boolean;
+    supports_vision: boolean;
+};
+
+export type AIGatewaySettings = {
+    mode: AIGatewayMode;
+    name: string;
+    base_url: string;
+    auth_type: AIGatewayAuthType;
+    token_url: string;
+    client_id: string;
+    oauth_scope: string;
+    oauth_audience: string;
+    oauth_client_auth_method: "client_secret_post" | "client_secret_basic";
+    mtls_enabled: boolean;
+    models: AIGatewayModel[];
+    default_model_id: string;
+    timeout_seconds: number;
+    has_api_key: boolean;
+    has_client_secret: boolean;
+    has_ca_certificate: boolean;
+    has_client_certificate: boolean;
+    has_client_private_key: boolean;
+    direct_provider_access_blocked: boolean;
+    direct_development_allowed: boolean;
+    insecure_http_allowed: boolean;
+    updated_at?: string | null;
+};
+
+export type AIGatewaySettingsPayload = Omit<
+    AIGatewaySettings,
+    | "has_api_key"
+    | "has_client_secret"
+    | "has_ca_certificate"
+    | "has_client_certificate"
+    | "has_client_private_key"
+    | "direct_provider_access_blocked"
+    | "direct_development_allowed"
+    | "insecure_http_allowed"
+    | "updated_at"
+> & {
+    api_key?: string;
+    client_secret?: string;
+    ca_certificate?: string;
+    client_certificate?: string;
+    client_private_key?: string;
+    clear_api_key?: boolean;
+    clear_client_secret?: boolean;
+    clear_ca_certificate?: boolean;
+    clear_client_certificate?: boolean;
+    clear_client_private_key?: boolean;
+};
+
 export type EmbeddingProviderAdapter = "azure_openai" | "openai" | "openai_compatible";
 
 export type ManagedEmbeddingProfile = {

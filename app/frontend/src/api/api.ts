@@ -14,6 +14,8 @@ import {
     GroupPrompt,
     FeedbackPayload,
     AgentConfig,
+    AIGatewaySettings,
+    AIGatewaySettingsPayload,
     LLMProviderPayload,
     ManagedLLMProvider,
     EmbeddingProfilePayload,
@@ -425,6 +427,31 @@ export async function listLLMProvidersApi(idToken: string): Promise<ManagedLLMPr
     const response = await fetch("/admin/llm-providers", { headers: await getHeaders(idToken) });
     const data = await parseProviderAdminResponse(response);
     return data.providers;
+}
+
+export async function getAIGatewaySettingsApi(idToken: string): Promise<AIGatewaySettings> {
+    const response = await fetch("/admin/ai-gateway", { headers: await getHeaders(idToken) });
+    return parseProviderAdminResponse(response);
+}
+
+export async function updateAIGatewaySettingsApi(
+    payload: AIGatewaySettingsPayload,
+    idToken: string
+): Promise<AIGatewaySettings> {
+    const response = await fetch("/admin/ai-gateway", {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function testAIGatewayApi(idToken: string): Promise<{ success: boolean; model_id: string }> {
+    const response = await fetch("/admin/ai-gateway/test", {
+        method: "POST",
+        headers: await getHeaders(idToken)
+    });
+    return parseProviderAdminResponse(response);
 }
 
 export async function createLLMProviderApi(payload: LLMProviderPayload, idToken: string): Promise<ManagedLLMProvider> {

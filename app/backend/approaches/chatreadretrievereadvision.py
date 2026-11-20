@@ -125,12 +125,15 @@ class ChatReadRetrieveReadVisionApproach(ChatApproach):
             query_params["tools"] = tools
         query_params = self.apply_chat_completion_policy(overrides, query_params)
 
-        custom_profile = overrides.get("_llm_profile_id") not in (None, "system")
-        llm_client = overrides.get("_llm_client", self.openai_client) if custom_profile else self.openai_client
+        # The request-local effective route also applies to the system profile.
+        # External AI Gateway mode deliberately remaps that reserved profile;
+        # falling back to the startup client here would bypass gateway policy.
+        llm_client = overrides.get("_llm_client", self.openai_client)
         query_model = (
-            overrides.get("_llm_deployment") or overrides.get("_llm_model")
-            if custom_profile
-            else self.chatgpt_deployment or self.chatgpt_model
+            overrides.get("_llm_deployment")
+            or overrides.get("_llm_model")
+            or self.chatgpt_deployment
+            or self.chatgpt_model
         )
 
         # STEP 1: Generate an optimized keyword search query based on the chat history and the last question
@@ -240,9 +243,10 @@ class ChatReadRetrieveReadVisionApproach(ChatApproach):
         )
 
         answer_model = (
-            overrides.get("_llm_deployment") or overrides.get("_llm_model")
-            if custom_profile
-            else self.gpt4v_deployment or self.gpt4v_model
+            overrides.get("_llm_deployment")
+            or overrides.get("_llm_model")
+            or self.gpt4v_deployment
+            or self.gpt4v_model
         )
         answer_params = self.apply_chat_completion_policy(
             overrides,
