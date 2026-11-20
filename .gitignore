@@ -160,3 +160,22 @@ backups/
 # Local patch/merge recovery artifacts
 *.orig
 *.rej
+
+# Private customer-facing deliverables and their content generators.
+# Keep these artifacts outside Git because presentations, proposals,
+# questionnaires, and customer-specific source material are not publishable.
+/docs/presentations/
+/docs/proposals/
+/docs/questionnaires/
+/customer-deliverables/
+/private-customer-data/
+/scripts/generate_*deck*.py
+/scripts/generate_*proposal*.py
+/scripts/generate_*questionnaire*.py
+
+# Customer-specific source documents previously used for private demos.
+/data/20250321-g-able-or2024-en_2.pdf
+/data/A@S COE Resourcing Best Practice Guide 1.pptx
+/data/IMTH_PAYG_*.xlsx
+/data/TOR_RPA_Audit_*.pdf
+/data/kfc1.png
