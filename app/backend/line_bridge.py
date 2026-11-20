@@ -19,11 +19,20 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 from quart import Quart, jsonify, request
 
+from core.guardrails import GuardrailPolicy, evaluate_input, evaluate_output
 from core.provider_secrets import decrypt_secret, encrypt_secret
 
 LOGGER = logging.getLogger("nexora.line_bridge")
 LINE_API_BASE_URL = "https://api.line.me"
 MAX_WEBHOOK_BYTES = 1_048_576
+LINE_POLICY_REJECTION_MESSAGE = (
+    "ไม่สามารถดำเนินการคำขอนี้ได้ เนื่องจากขัดต่อนโยบายความปลอดภัยของระบบ"
+)
+LINE_HISTORY_RESET_MESSAGE = "ล้างประวัติการสนทนาของคุณเรียบร้อยแล้ว"
+
+
+class LineRequestRejectedError(RuntimeError):
+    """A safe, deterministic rejection that must not be retried."""
 
 
 def _as_bool(value: str | None, default: bool = False) -> bool:
@@ -163,6 +172,11 @@ class EphemeralConversationState:
             turns.append((user_text, answer))
             del turns[: max(0, len(turns) - self._settings.history_turns)]
             self._last_access[source_id] = now
+
+    async def clear_history(self, source_id: str) -> None:
+        async with self._lock:
+            self._history.pop(source_id, None)
+            self._last_access.pop(source_id, None)
 
     def _purge(self, now: float) -> None:
         cutoff = now - self._settings.state_ttl_seconds
@@ -425,6 +439,12 @@ class MongoConversationState:
             return
         await asyncio.to_thread(self._append_turn, source_id, user_text, answer)
 
+    async def clear_history(self, source_id: str) -> None:
+        await asyncio.to_thread(
+            self._conversations.delete_one,
+            {"_id": _protected_digest(source_id)},
+        )
+
     def _append_turn(self, source_id: str, user_text: str, answer: str) -> None:
         turns = self._get_history(source_id)
         turns.append((user_text, answer))
@@ -555,8 +575,20 @@ def build_agent_input(
     fixed_size = len("\n".join(header + footer))
     budget = max(0, maximum - fixed_size - 1)
     selected: list[str] = []
+    history_policy = GuardrailPolicy()
     for user_text, answer in reversed(history):
-        block = f"User: {user_text}\nAssistant: {answer}"
+        user_result = evaluate_input(
+            [{"role": "user", "content": user_text}], history_policy
+        )
+        if user_result.findings:
+            continue
+        answer_result = evaluate_output(answer, history_policy)
+        safe_answer = (
+            "[Previous assistant response removed by safety policy]"
+            if answer_result.blocked
+            else answer_result.text
+        )
+        block = f"User: {user_text}\nAssistant: {safe_answer}"
         needed = len(block) + (1 if selected else 0)
         if needed > budget:
             if not selected and budget > 100:
@@ -608,6 +640,7 @@ def split_line_messages(text: str, limit: int = 4_900, maximum: int = 5) -> list
     while remaining and len(messages) < maximum:
         if len(remaining) <= limit:
             messages.append(remaining)
+            remaining = ""
             break
         split_at = remaining.rfind("\n", 0, limit)
         if split_at < limit // 2:
@@ -714,6 +747,9 @@ class LineNexoraClient:
                         )
 
         if job.get("status") != "succeeded" or not isinstance(job.get("result"), dict):
+            error = job.get("error") if isinstance(job.get("error"), dict) else {}
+            if str(error.get("code") or "") == "GuardrailViolation":
+                raise LineRequestRejectedError(LINE_POLICY_REJECTION_MESSAGE)
             raise RuntimeError("Nexora Agent job did not succeed")
         return job["result"]
 
@@ -735,6 +771,10 @@ async def execute_line_event(
     target, session_id, event_id, text = _event_coordinates(event)
     if not target or not session_id or not event_id or not text:
         raise ValueError("LINE event is missing required fields")
+    if text.casefold() == "/reset":
+        await state.clear_history(session_id)
+        await client.push_text(target, LINE_HISTORY_RESET_MESSAGE)
+        return
     history = await state.get_history(session_id)
     result = await client.invoke_agent(
         source_id=session_id,
@@ -778,11 +818,13 @@ async def process_line_event(
             type(error).__name__,
         )
         target, _, _, _ = _event_coordinates(event)
+        response_text = (
+            str(error)
+            if isinstance(error, LineRequestRejectedError)
+            else "ขออภัย ระบบไม่สามารถประมวลผลคำถามได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง"
+        )
         try:
-            await client.push_text(
-                target,
-                "ขออภัย ระบบไม่สามารถประมวลผลคำถามได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง",
-            )
+            await client.push_text(target, response_text)
         except Exception:
             LOGGER.warning("Unable to send LINE failure response event=%s", event_reference)
 
@@ -804,6 +846,12 @@ async def run_line_worker(
                 await execute_line_event(event, state, client)
                 await state.complete_event(event)
                 LOGGER.info("LINE event delivered event=%s", event_reference)
+            except LineRequestRejectedError as error:
+                await state.complete_event(event)
+                target, _, _, _ = _event_coordinates(event)
+                with contextlib.suppress(Exception):
+                    await client.push_text(target, str(error))
+                LOGGER.info("LINE event rejected by policy event=%s", event_reference)
             except Exception as error:
                 terminal = await state.fail_event(event, error)
                 LOGGER.warning(

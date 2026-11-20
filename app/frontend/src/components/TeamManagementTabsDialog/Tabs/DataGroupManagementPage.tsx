@@ -48,6 +48,14 @@ import {
 import { getToken } from "../../../authConfig";
 import { useNotification } from "../../../utill/NotificationProvider";
 
+type PublicationStatus = "not_applicable" | "draft" | "published" | "retired";
+
+type PublicationChange = {
+    group: DataGroupDisplay;
+    exposure: "internal" | "external";
+    status: PublicationStatus;
+};
+
 /* =========================================================
    PAGE
 ========================================================= */
@@ -63,6 +71,7 @@ export function DataGroupManagementPage({ team, canManageExternalChannels = fals
     const [viewGroup, setViewGroup] = useState<DataGroupDisplay | null>(null);
     const [assignGroup, setAssignGroup] = useState<DataGroupDisplay | null>(null);
     const [deleteGroup, setDeleteGroup] = useState<DataGroupDisplay | null>(null);
+    const [publicationChange, setPublicationChange] = useState<PublicationChange | null>(null);
     const [actionAnchor, setActionAnchor] = useState<HTMLElement | null>(null);
     const [actionGroup, setActionGroup] = useState<DataGroupDisplay | null>(null);
     const [usersLoading, setUsersLoading] = useState(false);
@@ -125,11 +134,9 @@ export function DataGroupManagementPage({ team, canManageExternalChannels = fals
     const changePublication = async (
         group: DataGroupDisplay,
         exposure: "internal" | "external",
-        status: "not_applicable" | "draft" | "published" | "retired"
+        status: PublicationStatus
     ) => {
         if (!team?._id) return;
-        const action = status === "published" ? "publish" : status === "retired" ? "retire" : "prepare";
-        if (!window.confirm(`Confirm ${action} for external customer access: ${group.name}?`)) return;
         try {
             setSaving(true);
             const token = await getToken(instance);
@@ -142,9 +149,16 @@ export function DataGroupManagementPage({ team, canManageExternalChannels = fals
             showNotification(err instanceof Error ? err.message : "Failed to update external publication", "error");
         } finally {
             setSaving(false);
+            setPublicationChange(null);
             setActionAnchor(null);
             setActionGroup(null);
         }
+    };
+
+    const requestPublicationChange = (change: PublicationChange) => {
+        setPublicationChange(change);
+        setActionAnchor(null);
+        setActionGroup(null);
     };
 
     const filteredGroups = useMemo(() => dataGroups.filter(d => d.name.toLowerCase().includes(search.toLowerCase())), [dataGroups, search]);
@@ -237,17 +251,17 @@ export function DataGroupManagementPage({ team, canManageExternalChannels = fals
                     <GroupAddIcon fontSize="small" sx={{ mr: 1.5 }} /> Manage access
                 </MenuItem>
                 {actionGroup?.access_mode === "team" && actionGroup.exposure !== "external" && (
-                    <MenuItem disabled={saving} onClick={() => void changePublication(actionGroup, "external", "draft")}>
+                    <MenuItem disabled={saving} onClick={() => requestPublicationChange({ group: actionGroup, exposure: "external", status: "draft" })}>
                         Prepare external draft
                     </MenuItem>
                 )}
                 {canManageExternalChannels && actionGroup?.access_mode === "team" && actionGroup.exposure === "external" && actionGroup.publication_status !== "published" && (
-                    <MenuItem disabled={saving} onClick={() => void changePublication(actionGroup, "external", "published")}>
+                    <MenuItem disabled={saving} onClick={() => requestPublicationChange({ group: actionGroup, exposure: "external", status: "published" })}>
                         Publish for external customers
                     </MenuItem>
                 )}
                 {canManageExternalChannels && actionGroup?.publication_status === "published" && (
-                    <MenuItem disabled={saving} onClick={() => void changePublication(actionGroup, "external", "retired")}>
+                    <MenuItem disabled={saving} onClick={() => requestPublicationChange({ group: actionGroup, exposure: "external", status: "retired" })}>
                         Retire external publication
                     </MenuItem>
                 )}
@@ -317,6 +331,16 @@ export function DataGroupManagementPage({ team, canManageExternalChannels = fals
                     } finally {
                         setSaving(false);
                     }
+                }}
+            />
+
+            <PublicationConfirmationDialog
+                change={publicationChange}
+                loading={saving}
+                onCancel={() => setPublicationChange(null)}
+                onConfirm={async () => {
+                    if (!publicationChange) return;
+                    await changePublication(publicationChange.group, publicationChange.exposure, publicationChange.status);
                 }}
             />
 
@@ -678,6 +702,67 @@ function AssignUserDialog({
                     onClick={() => onConfirm({ name: name.trim(), access_mode: accessMode, users_id: accessMode === "team" ? [] : selectedIds })}
                 >
                     {loading ? "Saving..." : "Save"}
+                </Button>
+            </DialogActions>
+        </Dialog>
+    );
+}
+
+function PublicationConfirmationDialog({
+    change,
+    loading,
+    onCancel,
+    onConfirm
+}: {
+    change: PublicationChange | null;
+    loading: boolean;
+    onCancel: () => void;
+    onConfirm: () => Promise<void>;
+}) {
+    if (!change) return null;
+
+    const content =
+        change.status === "published"
+            ? {
+                  title: "Publish for External Customers",
+                  action: "Publish",
+                  severity: "warning" as const,
+                  message: "This data group will become available immediately to External Customer API keys that include it."
+              }
+            : change.status === "retired"
+              ? {
+                    title: "Retire External Publication",
+                    action: "Retire",
+                    severity: "warning" as const,
+                    message: "Existing External Customer API keys will lose access immediately. Internal knowledge is not deleted."
+                }
+              : {
+                    title: "Prepare External Draft",
+                    action: "Prepare Draft",
+                    severity: "info" as const,
+                    message: "This marks the data group for external review. It remains unavailable to customers until published."
+                };
+
+    return (
+        <Dialog open onClose={loading ? undefined : onCancel} maxWidth="xs" fullWidth>
+            <DialogTitle>{content.title}</DialogTitle>
+            <DialogContent dividers>
+                <Stack spacing={2}>
+                    <Typography>
+                        Data Group: <strong>{change.group.name}</strong>
+                    </Typography>
+                    <Alert severity={content.severity}>{content.message}</Alert>
+                </Stack>
+            </DialogContent>
+            <DialogActions>
+                <Button onClick={onCancel} disabled={loading}>Cancel</Button>
+                <Button
+                    color={change.status === "retired" ? "error" : "primary"}
+                    variant="contained"
+                    disabled={loading}
+                    onClick={() => void onConfirm()}
+                >
+                    {loading ? "Saving..." : content.action}
                 </Button>
             </DialogActions>
         </Dialog>

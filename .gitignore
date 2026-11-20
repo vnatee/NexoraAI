@@ -179,3 +179,9 @@ backups/
 /data/IMTH_PAYG_*.xlsx
 /data/TOR_RPA_Audit_*.pdf
 /data/kfc1.png
+
+# Regenerable synthetic demo outputs. Keep the generators, schema, and data
+# dictionary in Git; keep generated datasets and bulk import payloads local.
+/docs/demo/banking_it_operations/*.csv
+/docs/demo/banking_it_operations/*.sqlite
+/docs/demo/banking_it_operations/azure_sql/02_import_data.sql

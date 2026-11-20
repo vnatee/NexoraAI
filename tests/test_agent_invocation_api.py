@@ -137,6 +137,28 @@ def test_revoked_and_expired_keys_are_rejected(stores):
         agent_invocation_keys.authenticate_agent_invocation_key(expired_token)
 
 
+def test_revoked_key_can_be_archived_without_erasing_audit_state(stores):
+    keys, _limits, _audits = stores
+    item, token = _create()
+
+    assert not agent_invocation_keys.archive_agent_invocation_key(
+        item["_id"], actor_id="admin-1"
+    )
+    assert agent_invocation_keys.revoke_agent_invocation_key(
+        item["_id"], actor_id="admin-1"
+    )
+    assert agent_invocation_keys.archive_agent_invocation_key(
+        item["_id"], actor_id="admin-1"
+    )
+
+    assert agent_invocation_keys.list_agent_invocation_keys("team-1") == []
+    stored = keys.documents[item["_id"]]
+    assert stored["delete_at"] is not None
+    assert stored["deleted_by"] == "admin-1"
+    with pytest.raises(agent_invocation_keys.AgentInvocationKeyError, match="Invalid"):
+        agent_invocation_keys.authenticate_agent_invocation_key(token)
+
+
 def test_rotate_revokes_old_key_and_preserves_scope(stores):
     _keys, _limits, _audits = stores
     current, old_token = _create()

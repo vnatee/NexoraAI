@@ -120,6 +120,23 @@ _INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
+    (
+        "admin_mode_override",
+        re.compile(
+            r"\b(?:switch|change|enter|enable)\s+(?:to\s+|into\s+)?(?:system\s+)?"
+            r"admin(?:istrator)?\s+mode\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "disable_security_controls",
+        re.compile(
+            r"\b(?:disable|bypass|turn\s+off|remove)\s+(?:all\s+|your\s+|the\s+)?"
+            r"(?:security\s+(?:restrictions?|controls?)|guardrails?|"
+            r"safety\s+(?:rules?|restrictions?)|access\s+controls?)\b",
+            re.IGNORECASE,
+        ),
+    ),
 )
 
 _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -194,6 +211,14 @@ _PII_REQUEST_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"\b(?:show|reveal|give|find|tell|provide|what\s+is|list)\b.{0,80}"
             r"\b(?:social\s+security(?:\s+number)?|ssn|national\s+id|passport\s+number|"
             r"credit\s+card\s+number|bank\s+account|password|api\s+key)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "request_credentials_en",
+        re.compile(
+            r"\b(?:show|reveal|give|find|tell|provide|list)\b.{0,80}"
+            r"\b(?:passwords?|api\s*keys?|access\s+tokens?|client\s+secrets?|credentials?)\b",
             re.IGNORECASE,
         ),
     ),

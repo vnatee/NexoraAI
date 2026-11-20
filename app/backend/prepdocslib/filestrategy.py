@@ -58,6 +58,18 @@ async def parse_file(
     sections = [
         Section(split_page, content=file, category=category) for split_page in processor.splitter.split_pages(pages)
     ]
+    business_metadata = dict((routing_context or {}).get("business_metadata") or {})
+    business_metadata_text = str((routing_context or {}).get("business_metadata_text") or "")
+    for section in sections:
+        section.split_page.metadata.update(
+            {
+                "metadata_profile_id": str((routing_context or {}).get("metadata_profile_id") or ""),
+                "metadata_profile_name": str((routing_context or {}).get("metadata_profile_name") or ""),
+                "metadata_profile_version": int((routing_context or {}).get("metadata_profile_version") or 0),
+                "business_metadata": business_metadata,
+                "business_metadata_text": business_metadata_text,
+            }
+        )
     return ParsedFile(
         sections=sections,
         used_document_intelligence=is_docintel,

@@ -773,6 +773,27 @@ export interface DataGroupWithView {
     users: User[];
 }
 
+
+export type KnowledgeMetadataFieldType = "text" | "keyword" | "number" | "date" | "boolean" | "enum";
+
+export interface KnowledgeMetadataField {
+    key: string;
+    label: string;
+    type: KnowledgeMetadataFieldType;
+    required: boolean;
+    options: string[];
+}
+
+export interface KnowledgeMetadataProfile {
+    _id: string;
+    team_id: string;
+    name: string;
+    description: string;
+    template_key: string;
+    version: number;
+    fields: KnowledgeMetadataField[];
+}
+
 export interface AgentConf {
     temperature?: number;
     seed?: number | null;

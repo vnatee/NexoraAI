@@ -184,6 +184,7 @@ from mongo_table_connecters.agent_invocation_keys import (
     ACCESS_TYPE_EXTERNAL,
     ACCESS_TYPE_INTERNAL,
     AgentInvocationKeyError,
+    archive_agent_invocation_key,
     authenticate_agent_invocation_key,
     create_agent_invocation_key,
     enforce_agent_invocation_rate_limit,
@@ -196,6 +197,15 @@ from mongo_table_connecters.agent_invocation_keys import (
     revoke_agent_invocation_key,
     rotate_agent_invocation_key,
     validate_agent_invocation_key_document,
+)
+from mongo_table_connecters.knowledge_metadata_profiles import (
+    MetadataProfileError,
+    ensure_indexes as ensure_knowledge_metadata_profile_indexes,
+    ensure_product_knowledge_profile,
+    get_metadata_profile,
+    list_metadata_profiles,
+    normalize_document_metadata,
+    profile_projection,
 )
 from mongo_table_connecters.agent_catalog import (
     ensure_agent_catalog_indexes,
@@ -3383,6 +3393,40 @@ async def revoke_team_agent_api_key(
     except Exception as error:
         return error_response(error, "/teams/<team_id>/agent-api-keys/<key_id>")
 
+
+@bp.post("/teams/<team_id>/agent-api-keys/<key_id>/archive")
+@authenticated
+async def archive_team_agent_api_key(
+    auth_claims: dict[str, Any], team_id: str, key_id: str
+):
+    try:
+        actor, _team = _require_team_access(
+            auth_claims, team_id, permission="Manage agents"
+        )
+        current = get_agent_invocation_key(key_id)
+        if not current or str(current.get("team_id") or "") != team_id:
+            raise AgentInvocationKeyError("API key not found", status_code=404)
+        if current.get("active") is True or current.get("revoked_at") is None:
+            raise AgentInvocationKeyError("Revoke the API key before removing it", status_code=409)
+        archived = archive_agent_invocation_key(
+            key_id, actor_id=str(actor.get("_id") or "")
+        )
+        if not archived:
+            raise AgentInvocationKeyError("API key could not be removed", status_code=409)
+        insert_agent_invocation_audit(
+            request_id=str(uuid.uuid4()),
+            key_id=key_id,
+            team_id=team_id,
+            agent_id="",
+            event_type="api_key_archived",
+            status="success",
+            access_type=current.get("access_type"),
+        )
+        return jsonify({"result": "archived"})
+    except Exception as error:
+        return error_response(
+            error, "/teams/<team_id>/agent-api-keys/<key_id>/archive"
+        )
 
 @bp.get("/api/v1/openapi.yaml")
 async def get_agent_invocation_openapi():
@@ -7672,6 +7716,64 @@ async def teams_upload(auth_claims: dict[str, Any]):
         return jsonify({"error": "data_groups_id must be a JSON array"}), 400
     if not isinstance(data_groups_list, list) or not all(isinstance(item, str) for item in data_groups_list):
         return jsonify({"error": "data_groups_id must be a JSON array of IDs"}), 400
+    _, team = _require_team_access(
+        auth_claims,
+        str(team_id or ""),
+        permission="Manage team uploads",
+    )
+    team_group_ids = {str(value) for value in (team.get("data_group_id") or [])}
+    if not data_groups_list or any(value not in team_group_ids for value in data_groups_list):
+        raise AccessControlError(
+            "Select Data Groups that belong to the active Team",
+            status_code=400,
+        )
+
+    metadata_profile_id = str(request_form.get("metadata_profile_id") or "").strip()
+    raw_document_metadata = str(request_form.get("document_metadata") or "{}")
+    try:
+        document_metadata = json.loads(raw_document_metadata)
+    except json.JSONDecodeError as error:
+        raise AccessControlError(
+            "document_metadata must be valid JSON", status_code=400
+        ) from error
+    metadata_profile = None
+    normalized_metadata: dict[str, Any] = {}
+    metadata_text = ""
+    if metadata_profile_id:
+        metadata_profile = get_metadata_profile(metadata_profile_id)
+        if (
+            not metadata_profile
+            or str(metadata_profile.get("team_id") or "") != str(team_id or "")
+        ):
+            raise AccessControlError("Metadata profile not found", status_code=404)
+        try:
+            normalized_metadata, metadata_text, _metadata_pairs = (
+                normalize_document_metadata(metadata_profile, document_metadata)
+            )
+        except MetadataProfileError as error:
+            raise AccessControlError(str(error), status_code=400) from error
+    elif document_metadata:
+        raise AccessControlError(
+            "Select a metadata profile before supplying metadata",
+            status_code=400,
+        )
+
+    selected_groups = [
+        get_data_group_by_id(data_group_id) for data_group_id in data_groups_list
+    ]
+    has_external_group = any(
+        str((group or {}).get("exposure") or "internal") == "external"
+        for group in selected_groups
+    )
+    if has_external_group and not metadata_profile:
+        raise AccessControlError(
+            "External Knowledge requires a metadata profile",
+            status_code=400,
+        )
+    audience = "external" if has_external_group else "internal"
+    metadata_text = " | ".join(
+        value for value in [f"Audience: {audience}", metadata_text] if value
+    )
     data_groups_tag = "/".join(data_groups_list)
     user_name = str(auth_claims["preferred_username"])
     explicit_profile_id = str(request_form.get("processing_profile_id") or "").strip()
@@ -7689,6 +7791,11 @@ async def teams_upload(auth_claims: dict[str, Any]):
             "team_id": str(team_id or ""),
             "user_id": str(user_oid),
             "explicit_profile_id": explicit_profile_id,
+            "metadata_profile_id": str((metadata_profile or {}).get("_id") or ""),
+            "metadata_profile_name": str((metadata_profile or {}).get("name") or ""),
+            "metadata_profile_version": int((metadata_profile or {}).get("version") or 0),
+            "business_metadata": normalized_metadata,
+            "business_metadata_text": metadata_text,
         }
         try:
             route = _resolve_upload_route(file.filename, routing_context)
@@ -7708,6 +7815,11 @@ async def teams_upload(auth_claims: dict[str, Any]):
             scope="team",
             team_id=str(team_id or ""),
             data_group_ids=data_groups_list,
+            metadata_profile_id=str((metadata_profile or {}).get("_id") or ""),
+            metadata_profile_name=str((metadata_profile or {}).get("name") or ""),
+            metadata_profile_version=int((metadata_profile or {}).get("version") or 0),
+            business_metadata=normalized_metadata,
+            business_metadata_text=metadata_text,
             filename=file.filename,
             storage_path=blob_path,
             file_size=size,
@@ -10372,6 +10484,39 @@ async def edit_agent_catalog_item(auth_claims: dict[str, Any], catalog_item_id: 
         return error_response(error_txt, f"/agent-catalog/{catalog_item_id}")
 
 
+@bp.get("/teams/<team_id>/metadata-profiles")
+@authenticated
+async def get_team_metadata_profiles(auth_claims: dict[str, Any], team_id: str):
+    try:
+        _require_team_access(auth_claims, team_id)
+        profiles = [
+            profile_projection(profile)
+            for profile in list_metadata_profiles(team_id)
+        ]
+        return jsonify({"items": profiles})
+    except Exception as error:
+        return error_response(error, "/teams/<team_id>/metadata-profiles")
+
+
+@bp.post("/teams/<team_id>/metadata-profiles/product-knowledge")
+@authenticated
+async def create_product_metadata_profile(
+    auth_claims: dict[str, Any], team_id: str
+):
+    try:
+        actor, _team = _require_team_access(
+            auth_claims, team_id, permission="Manage team data groups"
+        )
+        profile = ensure_product_knowledge_profile(
+            team_id, str(actor.get("_id") or "")
+        )
+        return jsonify({"item": profile_projection(profile)}), 201
+    except Exception as error:
+        return error_response(
+            error, "/teams/<team_id>/metadata-profiles/product-knowledge"
+        )
+
+
 @bp.post("/create_data_group")
 @authenticated
 async def create_data_group(auth_claims: dict[str, Any]):
@@ -11501,6 +11646,7 @@ async def setup_clients():
         ensure_agent_indexes()
         ensure_agent_invocation_key_indexes()
         ensure_agent_invocation_job_indexes()
+        ensure_knowledge_metadata_profile_indexes()
 
     # Use the current user identity for keyless authentication to Azure services.
     # This assumes you use 'azd auth login' locally, and managed identity when deployed on Azure.

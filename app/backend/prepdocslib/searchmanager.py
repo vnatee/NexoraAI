@@ -59,6 +59,36 @@ def processing_metadata_document(split_page: SplitPage) -> dict[str, str | float
         fields["processingConfidence"] = float(metadata["confidence"])
     return fields
 
+def business_metadata_fields() -> list[SimpleField]:
+    return [
+        SimpleField(name="metadataProfileId", type=SearchFieldDataType.String, filterable=True, facetable=True),
+        SimpleField(name="metadataProfileVersion", type=SearchFieldDataType.Int32, filterable=True),
+        SearchableField(name="businessMetadataText", type=SearchFieldDataType.String),
+        SimpleField(
+            name="businessMetadata",
+            type=SearchFieldDataType.Collection(SearchFieldDataType.String),
+            filterable=True,
+        ),
+    ]
+
+
+def business_metadata_document(split_page: SplitPage) -> dict[str, object]:
+    metadata = split_page.metadata
+    fields: dict[str, object] = {}
+    if metadata.get("metadata_profile_id"):
+        fields["metadataProfileId"] = str(metadata["metadata_profile_id"])
+        fields["metadataProfileVersion"] = int(metadata.get("metadata_profile_version") or 1)
+    if metadata.get("business_metadata_text"):
+        fields["businessMetadataText"] = str(metadata["business_metadata_text"])
+    business_metadata = metadata.get("business_metadata")
+    if isinstance(business_metadata, dict):
+        fields["businessMetadata"] = [
+            f"{key}={str(value).lower() if isinstance(value, bool) else value}"
+            for key, value in sorted(business_metadata.items())
+        ]
+    return fields
+
+
 
 class Section:
     """
@@ -254,6 +284,7 @@ class SearchManager:
                         facetable=False,
                     ),
                     *processing_metadata_fields(),
+                    *business_metadata_fields(),
                 ]
                 if self.use_acls:
                     fields.append(
@@ -332,6 +363,7 @@ class SearchManager:
                 additive_fields = [
                     SimpleField(name="storageUrl", type="Edm.String", filterable=True, facetable=False),
                     *processing_metadata_fields(),
+                    *business_metadata_fields(),
                 ]
                 existing_field_names = {field.name for field in existing_index.fields}
                 missing_fields = [field for field in additive_fields if field.name not in existing_field_names]
@@ -486,6 +518,7 @@ class SearchManager:
                         ),
                         "sourcefile": section.content.filename(),
                         **processing_metadata_document(section.split_page),
+                        **business_metadata_document(section.split_page),
                         **section.content.acls,
                     }
                     for section_index, section in enumerate(batch)
@@ -533,6 +566,7 @@ class SearchManager:
                         ),
                         "sourcefile": f"{folder}{section.content.filename()}",
                         **processing_metadata_document(section.split_page),
+                        **business_metadata_document(section.split_page),
                         **section.content.acls,
                     }
                     for section_index, section in enumerate(batch)

@@ -225,10 +225,6 @@ complete for this checkpoint.
 - Policy outcomes: allow, block, redact, warn, retry, or route for human review.
 - Evaluation: policy test sets, false-positive/false-negative targets, and bypass testing.
 
-## Proposed — Agent invocation API
-
-Expose selected agents for programmatic invocation by approved external systems.
-
 ## Authentication federation — follow-up backlog
 
 Generic OIDC now supports multiple confidential providers, authorization code
@@ -281,6 +277,113 @@ Prioritized follow-up work:
 9. Public/vendor marketplace, commercial listings, billing, and support/SLA
    metadata. These remain out of scope until package trust and licensing are
    complete.
+
+## Proposed — Agent Skills and secure Skill import
+
+Add reusable Skills as a governed layer below Agents. A Skill contains bounded
+instructions, references, templates, examples, and declared capability
+requirements. It is not an identity, permission set, credential container, or
+automatically active Agent. The first compatibility target is the portable
+subset of Claude-style `SKILL.md` packages, normalized into a provider-neutral
+InsightSphere Skill manifest.
+
+### Required governance model
+
+- Support System-owned and Team-owned Skills with Draft, In review, Published,
+  Deprecated, and Retired lifecycle states, immutable published versions, and
+  metadata-only lifecycle audit.
+- Separate import/publish/review authorities. Importing a package must never
+  grant a Team permission, create an integration, expose Knowledge, or activate
+  an Agent.
+- Record publisher/provenance, source type, package SHA-256, compatible schema,
+  declared license, requested capabilities, dependencies, and version history.
+  Add signature verification for signed packages without treating an unsigned
+  package as trusted.
+- Preserve Team isolation. Catalog browse responses expose safe metadata only;
+  complete Skill instructions and files remain server-side and are available
+  only to authorized reviewers and runtime assembly.
+- Retirement prevents new bindings. Emergency revocation, installed-version
+  notification, in-flight behavior, rollback, and retention require an
+  explicit policy consistent with Agent Catalog governance.
+
+### Import and review pipeline
+
+1. Accept a bounded local package upload first; repository URL import follows
+   only through an allowlisted, SSRF-protected fetcher. Reject absolute paths,
+   traversal, symlinks, device files, archive bombs, unsupported encodings,
+   excessive file counts/sizes, and duplicate ambiguous manifests.
+2. Parse `SKILL.md` and declared references without executing scripts, loading
+   remote resources, resolving credentials, or following instructions inside
+   imported content.
+3. Normalize the package into a versioned manifest and show a review preview:
+   purpose, instructions, included files, requested tools/network/filesystem,
+   required integrations/Knowledge, unsupported features, and compatibility
+   warnings.
+4. Pass imported files through the production malware-scanning boundary before
+   they can enter review or publication. Keep packages quarantined until every
+   validation succeeds.
+5. Require an authorized reviewer to approve and publish the exact reviewed
+   digest. Any content or manifest change creates a new Draft version and
+   invalidates the previous approval.
+
+### Agent usage
+
+- Attach one or more published Skill versions to an existing Team Agent. Agent
+  save and runtime independently revalidate Team ownership, publication state,
+  compatibility, and license entitlement.
+- Provide **Create Agent draft from Skill** as a convenience workflow only. It
+  may suggest Role, Task, context, and output format, but a manager must still
+  choose the model, Team, Knowledge scope, integrations, tool policy,
+  Guardrails, and attachment policy before activation.
+- Assemble Skill instructions below the platform security contract and Agent
+  policy. A Skill cannot replace system instructions, reduce inherited
+  Guardrails, expand an API key/Data Group scope, or register an undeclared
+  tool.
+- Resolve multiple Skills deterministically, report conflicts before save, pin
+  the selected versions, and require explicit review for upgrades. Do not
+  silently mutate installed Agents when a Skill is republished.
+- Expose safe dependency and compatibility status in Agent Management and the
+  Catalog without exposing Skill source, credentials, prompts, or tool output.
+
+### Executable content boundary
+
+Phase 1 is instruction/reference/template-only. Imported scripts are retained
+as disabled review artifacts and are never executed during import, preview,
+publication, installation, or ordinary prompt assembly.
+
+Executable Skills are a later phase and require a separate isolated runner:
+ephemeral filesystem, non-root identity, read-only package mount, no host or
+Docker socket, deny-by-default network, allowlisted tools, bounded CPU/memory/
+time/output, explicit secret handles rather than secret values in model
+context, argument/result validation, approval for write actions, and
+metadata-only audit. Failure must not fall back to unrestricted local
+execution.
+
+### Delivery order
+
+1. Canonical Skill manifest, Claude-compatible `SKILL.md` parser, bounded
+   upload, quarantine, static validation, and dependency preview.
+2. Internal Skill Catalog, versioning, approval/publish/retire workflow, Team
+   ownership, RBAC, provenance, digest/signature status, and audit.
+3. Published Skill binding to Agents plus **Create Agent draft from Skill**,
+   deterministic composition, conflict detection, version pinning, upgrade
+   diff, rollback, and runtime revalidation.
+4. Signed export/import for disconnected installations and controlled
+   allowlisted repository import.
+5. Optional sandboxed executable Skills after threat modeling and production
+   malware-scanner acceptance; external Skill marketplace discovery remains a
+   separate later decision.
+
+Security acceptance must cover malicious `SKILL.md` prompt injection,
+cross-Team package/binding attempts, hidden files and archive attacks,
+dependency substitution, signature/digest mismatch, retired versions,
+credential references, unauthorized tool/network requests, Guardrail
+weakening, runtime package tampering, and audit records containing no imported
+secrets, raw user prompts, or tool results.
+
+## Proposed — Agent invocation API
+
+Expose selected agents for programmatic invocation by approved external systems.
 
 Initial discussion scope:
 

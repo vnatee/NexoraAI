@@ -12,6 +12,31 @@ def _tokens():
     }
 
 
+def test_agent_api_usage_summary_accepts_langgraph_dictionary_context():
+    result = save_tokens_usage.summarize_turn_for_ask(
+        {
+            "message": {"role": "assistant", "content": "Safe answer"},
+            "context": {
+                "thoughts": [
+                    {
+                        "title": "LangGraph agent runtime",
+                        "description": {"iterations": 2, "tools": []},
+                    }
+                ]
+            },
+        }
+    )
+
+    assert result == {
+        "tokens_prompt_sum": 0,
+        "tokens_completion_sum": 0,
+        "tokens_reasoning_sum": 0,
+        "tokens_total_sum": 0,
+        "model_calls": [],
+        "files": [],
+    }
+
+
 def test_insert_user_usage_supports_request_without_team(monkeypatch):
     collection = MagicMock()
     monkeypatch.setattr(save_tokens_usage, "usage_collection", collection)

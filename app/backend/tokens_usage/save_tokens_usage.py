@@ -111,9 +111,11 @@ def summarize_turn(data_str: str):
     }
     return result
 
-def summarize_turn_for_ask(data_str: str):
+def summarize_turn_for_ask(data_str: object):
     per_stage_all = []
-    gpt_response_text = data_str['message']['content']
+    payload = data_str if isinstance(data_str, dict) else {}
+    message = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+    gpt_response_text = str(message.get("content") or "")
     matches = re.findall(r"\[([^\[\]]+)\]", gpt_response_text)
     seen = set()
     unique = []
@@ -124,17 +126,25 @@ def summarize_turn_for_ask(data_str: str):
         if final_m not in seen and is_citation_valid(final_m):
             unique.append(final_m)
             seen.add(final_m)
-    tokens = None
-    for th in data_str["context"].thoughts:
-        if th.props:
-            if 'token_usage' in th.props:
-                tokens = th.props['token_usage']
-                break
+    tokens = {}
+    context = payload.get("context")
+    if isinstance(context, dict):
+        thoughts = context.get("thoughts") or []
+    else:
+        thoughts = getattr(context, "thoughts", ()) or ()
+    for thought in thoughts:
+        if isinstance(thought, dict):
+            props = thought.get("props") or thought.get("description") or {}
+        else:
+            props = getattr(thought, "props", None) or {}
+        if isinstance(props, dict) and isinstance(props.get("token_usage"), dict):
+            tokens = props["token_usage"]
+            break
     result = {
-        "tokens_prompt_sum": int(tokens.prompt_tokens),
-        "tokens_completion_sum": int(tokens.completion_tokens),
-        "tokens_reasoning_sum": int(tokens.reasoning_tokens),
-        "tokens_total_sum": int(tokens.total_tokens),
+        "tokens_prompt_sum": int(tokens.get("prompt_tokens") or 0),
+        "tokens_completion_sum": int(tokens.get("completion_tokens") or 0),
+        "tokens_reasoning_sum": int(tokens.get("reasoning_tokens") or 0),
+        "tokens_total_sum": int(tokens.get("total_tokens") or 0),
         "model_calls": per_stage_all,
         "files": unique
     }

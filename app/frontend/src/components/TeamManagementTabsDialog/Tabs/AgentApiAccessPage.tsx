@@ -30,9 +30,11 @@ import BlockOutlinedIcon from "@mui/icons-material/BlockOutlined";
 import CloseIcon from "@mui/icons-material/Close";
 import HelpOutlineOutlinedIcon from "@mui/icons-material/HelpOutlineOutlined";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import { useMsal } from "@azure/msal-react";
 
 import {
+    archiveAgentInvocationKey,
     createAgentInvocationKey,
     getAgentInvocationKeys,
     revokeAgentInvocationKey,
@@ -51,6 +53,11 @@ interface Props {
     team: TeamProfile | null;
     canManageExternalChannels?: boolean;
 }
+
+type KeyAction = {
+    type: "rotate" | "revoke" | "archive";
+    item: AgentInvocationKey;
+};
 
 const EMPTY_OPTIONS: AgentInvocationKeyOptions = {
     items: [],
@@ -94,6 +101,7 @@ export function AgentApiAccessPage({ team, canManageExternalChannels = false }: 
     const [secretOpen, setSecretOpen] = useState(false);
     const [secret, setSecret] = useState("");
     const [secretAgentId, setSecretAgentId] = useState("");
+    const [keyAction, setKeyAction] = useState<KeyAction | null>(null);
     const [form, setForm] = useState<AgentInvocationKeyCreatePayload>(DEFAULT_FORM);
 
     const agentNames = useMemo(
@@ -157,7 +165,7 @@ export function AgentApiAccessPage({ team, canManageExternalChannels = false }: 
     };
 
     const rotate = async (item: AgentInvocationKey) => {
-        if (!team?._id || !window.confirm(`Rotate "${item.name}"? The current key will stop working immediately.`)) return;
+        if (!team?._id) return;
         setSaving(true);
         try {
             const token = await getToken(instance);
@@ -170,11 +178,12 @@ export function AgentApiAccessPage({ team, canManageExternalChannels = false }: 
             showNotification(error instanceof Error ? error.message : "Unable to rotate Agent API key", "error");
         } finally {
             setSaving(false);
+            setKeyAction(null);
         }
     };
 
     const revoke = async (item: AgentInvocationKey) => {
-        if (!team?._id || !window.confirm(`Revoke "${item.name}"? Applications using it will lose access immediately.`)) return;
+        if (!team?._id) return;
         setSaving(true);
         try {
             const token = await getToken(instance);
@@ -186,6 +195,24 @@ export function AgentApiAccessPage({ team, canManageExternalChannels = false }: 
             showNotification(error instanceof Error ? error.message : "Unable to revoke Agent API key", "error");
         } finally {
             setSaving(false);
+            setKeyAction(null);
+        }
+    };
+
+    const archive = async (item: AgentInvocationKey) => {
+        if (!team?._id) return;
+        setSaving(true);
+        try {
+            const token = await getToken(instance);
+            if (!token) return;
+            await archiveAgentInvocationKey(team._id, item._id, token);
+            await load();
+            showNotification("Agent API key removed from the list", "success");
+        } catch (error) {
+            showNotification(error instanceof Error ? error.message : "Unable to remove Agent API key", "error");
+        } finally {
+            setSaving(false);
+            setKeyAction(null);
         }
     };
 
@@ -294,15 +321,25 @@ export function AgentApiAccessPage({ team, canManageExternalChannels = false }: 
                                         <Typography variant="body2" color="text.secondary">
                                             Last used: {formatDate(item.last_used_at)}
                                         </Typography>
-                                        {item.active && !item.revoked_at && (
+                                        {item.active && !item.revoked_at ? (
                                             <Stack direction="row" spacing={1}>
-                                                <Button size="small" startIcon={<AutorenewOutlinedIcon />} onClick={() => void rotate(item)} disabled={saving}>
+                                                <Button size="small" startIcon={<AutorenewOutlinedIcon />} onClick={() => setKeyAction({ type: "rotate", item })} disabled={saving}>
                                                     Rotate
                                                 </Button>
-                                                <Button size="small" color="error" startIcon={<BlockOutlinedIcon />} onClick={() => void revoke(item)} disabled={saving}>
+                                                <Button size="small" color="error" startIcon={<BlockOutlinedIcon />} onClick={() => setKeyAction({ type: "revoke", item })} disabled={saving}>
                                                     Revoke
                                                 </Button>
                                             </Stack>
+                                        ) : (
+                                            <Button
+                                                size="small"
+                                                color="error"
+                                                startIcon={<DeleteOutlineIcon />}
+                                                onClick={() => setKeyAction({ type: "archive", item })}
+                                                disabled={saving}
+                                            >
+                                                Remove from list
+                                            </Button>
                                         )}
                                     </Stack>
                                 </CardContent>
@@ -311,6 +348,47 @@ export function AgentApiAccessPage({ team, canManageExternalChannels = false }: 
                     })}
                 </Box>
             )}
+
+            <Dialog open={Boolean(keyAction)} onClose={saving ? undefined : () => setKeyAction(null)} fullWidth maxWidth="xs">
+                <DialogTitle>
+                    {keyAction?.type === "rotate" ? "Rotate API key" : keyAction?.type === "revoke" ? "Revoke API key" : "Remove API key from list"}
+                </DialogTitle>
+                <DialogContent dividers>
+                    <Stack spacing={2}>
+                        <Typography>
+                            Key: <strong>{keyAction?.item.name}</strong>
+                        </Typography>
+                        <Alert severity={keyAction?.type === "rotate" ? "warning" : "error"}>
+                            {keyAction?.type === "rotate"
+                                ? "The current key will stop working immediately and a replacement secret will be shown once."
+                                : keyAction?.type === "revoke"
+                                  ? "Applications using this key will lose access immediately. This action cannot be undone."
+                                  : "The revoked key will be hidden from this page. Its audit history will be retained."}
+                        </Alert>
+                        {keyAction?.type === "archive" && (
+                            <Typography variant="body2" color="text.secondary">
+                                Removing the item does not erase security audit events.
+                            </Typography>
+                        )}
+                    </Stack>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setKeyAction(null)} disabled={saving}>Cancel</Button>
+                    <Button
+                        color={keyAction?.type === "rotate" ? "primary" : "error"}
+                        variant="contained"
+                        disabled={saving || !keyAction}
+                        onClick={async () => {
+                            if (!keyAction) return;
+                            if (keyAction.type === "rotate") await rotate(keyAction.item);
+                            else if (keyAction.type === "revoke") await revoke(keyAction.item);
+                            else await archive(keyAction.item);
+                        }}
+                    >
+                        {saving ? "Working..." : keyAction?.type === "rotate" ? "Rotate" : keyAction?.type === "revoke" ? "Revoke" : "Remove"}
+                    </Button>
+                </DialogActions>
+            </Dialog>
 
             <Dialog open={guideOpen} fullWidth maxWidth="lg" disableEscapeKeyDown>
                 <DialogTitle sx={{ pr: 7 }}>

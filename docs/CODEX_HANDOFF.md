@@ -2196,3 +2196,70 @@ secrets, and metadata-only lifecycle audit. Do not add Azure write/provisioning
 tools until an architecture-schema, IaC What-If, and explicit approval workflow
 have been designed.
 ```
+
+## 2026-10-12: External Knowledge Set 3 — hybrid metadata profiles
+
+Implemented a provider-neutral hybrid metadata foundation for Team Knowledge:
+
+- immutable/server-derived security context: Team, Data Groups, exposure/publication context and `Audience`
+- reusable Team-scoped Product Knowledge profile with a pinned version
+- normalized business values validated server-side and stored on the ingestion job
+- External Data Group uploads now require a metadata profile
+- metadata profile/version, searchable display text and normalized `key=value` pairs flow into Azure AI Search and Qdrant payloads
+- Qdrant lexical fallback also considers `businessMetadataText`
+- Team Knowledge upload UI can provision/select Product Knowledge v1 and renders its fields dynamically
+
+Security contract: metadata remains descriptive and never grants ACL access or publishes an External Data Group. Team upload now also verifies `Manage team uploads` and server-side Data Group ownership.
+
+Current Product Knowledge fields: product family/model, brand, document type, language, document version, lifecycle status, effective date and search keywords.
+
+Design decision: use a hybrid model rather than fixed-only or free-form-only metadata. Keep core security fields fixed; add future versioned customer profiles through the same typed field model. The current UI intentionally provisions only the governed Product Knowledge template; a general profile designer/approval workflow is follow-up work.
+
+Reference: `docs/knowledge-metadata-profiles.md`.
+
+Validation:
+
+- focused metadata + ingestion tests: `12 passed`
+- Python compile: passed
+- TypeScript `npx tsc --noEmit`: passed
+- frontend production build: passed
+- Docker local-runtime rebuild: passed; app HTTP and container health are healthy
+- broad service-free command reached `223 passed` before it was interrupted because an existing app-startup test attempted a real unavailable MongoDB connection and waited on repeated connection timeouts; no test failure was observed
+
+## 2026-10-19: Provider-neutral observability readiness
+
+Datadog installation is deliberately deferred. The portable runtime now starts
+with `OBSERVABILITY_PROVIDER=none`, JSON logs enabled, and no Datadog Agent,
+API key, socket mount, vendor SDK, or outbound telemetry dependency.
+
+Implemented readiness surfaces:
+
+- detail-free public `/health/live` and MongoDB-backed `/health/ready`
+- provider-neutral OpenTelemetry selection: `none`, `otlp`,
+  `azure_monitor`, and backward-compatible `auto`
+- content-free `agent.run` and `tool.execute` spans plus existing HTTP,
+  outbound HTTP and OpenAI-compatible instrumentation
+- trace/span correlation on metadata-only Agent Audit records
+- JSON log envelopes with service/environment/version and active trace IDs
+- portable Compose health check moved from `/config` to `/health/live`
+
+The observability layer forces GenAI message-content capture off and does not add
+prompts, responses, tool arguments/output, credentials, Knowledge, attachments
+or actor identifiers to telemetry. `docs/observability-readiness.md` defines
+the runtime contract. `docs/datadog-monitoring.md` is the deferred installation,
+verification and rollback guide for a private Docker host/on-prem-style VM.
+
+The Knowledge metadata-profile slice is paused by product-owner decision and
+remains backlog. Do not expand it until its user workflow is revisited.
+
+Validation for this slice:
+
+- focused observability/system-health/Agent-runtime tests: `32 passed`
+- Python compile and focused Ruff checks: passed
+- TypeScript `npx tsc --noEmit`: passed
+- frontend production build: passed (existing vendor chunk-size warning only)
+- portable Compose configuration and production application image build: passed
+- broader service-free suite: `1075 passed`, `1 deselected`, `7 failed`; all
+  seven failures are stale expectations in the separately paused Knowledge
+  metadata-profile slice (`businessMetadata` and new index field counts), not
+  failures in observability readiness

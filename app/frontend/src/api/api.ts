@@ -49,6 +49,7 @@ import {
     AgentInvocationKeyCreatePayload,
     AgentInvocationKeyCreatedResponse
 } from "./models";
+import type { KnowledgeMetadataProfile } from "./models";
 import { useLogin, getToken, isUsingAppServicesLogin } from "../authConfig";
 
 export async function getHeaders(idToken: string | undefined): Promise<Record<string, string>> {
@@ -2046,6 +2047,34 @@ export async function update_agent_catalog(
     return response.json();
 }
 
+
+export async function getKnowledgeMetadataProfiles(
+    teamId: string,
+    idToken: string
+): Promise<KnowledgeMetadataProfile[]> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/teams/${encodeURIComponent(teamId)}/metadata-profiles`, { headers });
+    if (!response.ok) throw new Error(`get metadata profiles failed: ${response.statusText}`);
+    const body = await response.json();
+    if (body.items) return body.items;
+    return body.profiles ?? [];
+}
+
+export async function createProductKnowledgeMetadataProfile(
+    teamId: string,
+    idToken: string
+): Promise<KnowledgeMetadataProfile> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/teams/${encodeURIComponent(teamId)}/metadata-profiles/product-knowledge`, {
+        method: "POST",
+        headers
+    });
+    if (!response.ok) throw new Error(`create metadata profile failed: ${response.statusText}`);
+    const body = await response.json();
+    if (body.item) return body.item;
+    return body.profile;
+}
+
 export async function get_data_group_by_team(team_id: string, idToken: string): Promise<any> {
     const headers = await getHeaders(idToken);
 
@@ -3083,6 +3112,19 @@ export async function rotateAgentInvocationKey(
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || "Unable to rotate Agent API key");
     return result;
+}
+
+export async function archiveAgentInvocationKey(
+    teamId: string,
+    keyId: string,
+    idToken: string
+): Promise<void> {
+    const response = await fetch(
+        `/teams/${encodeURIComponent(teamId)}/agent-api-keys/${encodeURIComponent(keyId)}/archive`,
+        { method: "POST", headers: await getHeaders(idToken) }
+    );
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || "Unable to remove Agent API key");
 }
 
 export async function revokeAgentInvocationKey(

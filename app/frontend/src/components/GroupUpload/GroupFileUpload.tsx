@@ -7,6 +7,9 @@ import FolderOpenIcon from "@mui/icons-material/FolderOpen";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import CancelIcon from "@mui/icons-material/Cancel";
 import { deleteTeamUploadedFileApi, listUploadedteamFilesApi, limit_size, uploadTeamFileApi, get_data_group_by_team } from "../../api/api";
+import MenuItem from "@mui/material/MenuItem";
+import { createProductKnowledgeMetadataProfile, getKnowledgeMetadataProfiles } from "../../api/api";
+import type { KnowledgeMetadataProfile } from "../../api/models";
 import { getToken, getUsername } from "../../authConfig";
 import { useMsal } from "@azure/msal-react";
 import Autocomplete from "@mui/material/Autocomplete";
@@ -20,6 +23,7 @@ interface DataGroup {
     _id: string;
     name: string;
     user_id?: string[];
+    exposure?: "internal" | "external";
 }
 
 interface FileRow {
@@ -72,6 +76,13 @@ export const GroupFileUpload: React.FC = () => {
     const [loadedTeamId, setLoadedTeamId] = useState<string | null>(null);
     const [processingProfileId, setProcessingProfileId] = useState("");
     const [jobRefreshKey, setJobRefreshKey] = useState(0);
+    const [metadataProfiles, setMetadataProfiles] = useState<KnowledgeMetadataProfile[]>([]);
+    const [selectedMetadataProfileId, setSelectedMetadataProfileId] = useState("");
+    const [documentMetadata, setDocumentMetadata] = useState<Record<string, string>>({});
+    const [loadingMetadataProfiles, setLoadingMetadataProfiles] = useState(false);
+    const [creatingMetadataProfile, setCreatingMetadataProfile] = useState(false);
+    const selectedMetadataProfile =
+        metadataProfiles.find(profile => profile._id === selectedMetadataProfileId) ?? null;
 
     const generateRowsForGrid = (node: { files: FileRow[]; folders: Record<string, FileTreeNode> }, depth = 0): FileRow[] => {
         let rows: FileRow[] = [];
@@ -344,6 +355,25 @@ export const GroupFileUpload: React.FC = () => {
             return;
         }
 
+        const includesExternalDataGroup = dataGroups.some(
+            group => selectedDataGroupIds.includes(group._id) && group.exposure === "external"
+        );
+        if (includesExternalDataGroup && !selectedMetadataProfile) {
+            setMessage("External Knowledge requires a metadata profile.");
+            setOpenError(true);
+            return;
+        }
+        if (selectedMetadataProfile) {
+            const missingField = selectedMetadataProfile.fields.find(
+                field => field.required && !String(documentMetadata[field.key] ?? "").trim()
+            );
+            if (missingField) {
+                setMessage(`${missingField.label} is required by the metadata profile.`);
+                setOpenError(true);
+                return;
+            }
+        }
+
         setUploading(true);
         try {
             const token = await getToken(client);
@@ -357,6 +387,20 @@ export const GroupFileUpload: React.FC = () => {
                 // uploadTeamFileApi(formData, selectedDataGroupIds, team_id, token);
             }
             if (processingProfileId) formData.append("processing_profile_id", processingProfileId);
+            if (selectedMetadataProfile) {
+                const normalizedMetadata = Object.fromEntries(
+                    selectedMetadataProfile.fields
+                        .filter(field => String(documentMetadata[field.key] ?? "").trim())
+                        .map(field => [
+                            field.key,
+                            field.type === "boolean"
+                                ? documentMetadata[field.key] === "true"
+                                : documentMetadata[field.key]
+                        ])
+                );
+                formData.append("metadata_profile_id", selectedMetadataProfile._id);
+                formData.append("document_metadata", JSON.stringify(normalizedMetadata));
+            }
 
             await uploadTeamFileApi(formData, selectedDataGroupIds, team_id, token);
             setJobRefreshKey(value => value + 1);
@@ -706,6 +750,55 @@ export const GroupFileUpload: React.FC = () => {
         loadDataGroups();
     }, [client, teamId]);
 
+
+    useEffect(() => {
+        let active = true;
+        const loadMetadataProfiles = async () => {
+            if (!teamId) {
+                setMetadataProfiles([]);
+                setSelectedMetadataProfileId("");
+                return;
+            }
+            setLoadingMetadataProfiles(true);
+            try {
+                const token = await getToken(client);
+                if (!token) return;
+                const profiles = await getKnowledgeMetadataProfiles(teamId, token);
+                if (active) setMetadataProfiles(profiles);
+            } catch (error) {
+                console.error("load metadata profiles failed:", error);
+                if (active) setMetadataProfiles([]);
+            } finally {
+                if (active) setLoadingMetadataProfiles(false);
+            }
+        };
+        loadMetadataProfiles();
+        return () => {
+            active = false;
+        };
+    }, [client, teamId]);
+
+    const handleCreateProductMetadataProfile = async () => {
+        if (!teamId) return;
+        setCreatingMetadataProfile(true);
+        try {
+            const token = await getToken(client);
+            if (!token) throw new Error("No authentication token");
+            const profile = await createProductKnowledgeMetadataProfile(teamId, token);
+            setMetadataProfiles(current => [profile, ...current.filter(item => item._id !== profile._id)]);
+            setSelectedMetadataProfileId(profile._id);
+            setDocumentMetadata({});
+            setMessage("Product Knowledge metadata profile is ready.");
+            setOpenSuccess(true);
+        } catch (error) {
+            console.error(error);
+            setMessage(error instanceof Error ? error.message : "Could not create metadata profile");
+            setOpenError(true);
+        } finally {
+            setCreatingMetadataProfile(false);
+        }
+    };
+
     return (
         <Box>
             {!teamId && (
@@ -823,6 +916,83 @@ export const GroupFileUpload: React.FC = () => {
                 <DocumentProcessingUploadSelector value={processingProfileId} onChange={setProcessingProfileId} />
             </Box>
             <Box sx={{ mb: 2 }}>
+            <Box sx={{ mb: 2, p: 2, border: "1px solid", borderColor: "divider", borderRadius: 1 }}>
+                <Box display="flex" justifyContent="space-between" alignItems="flex-start" gap={2} mb={1.5}>
+                    <Box>
+                        <Typography variant="subtitle2">Knowledge metadata profile</Typography>
+                        <Typography variant="body2" color="text.secondary">
+                            Business metadata is reusable and searchable. Team, Data Group and Audience are derived
+                            by the server and cannot be overridden. External Knowledge requires a profile.
+                        </Typography>
+                    </Box>
+                    {metadataProfiles.length === 0 && (
+                        <Button2
+                            variant="outlined"
+                            size="small"
+                            onClick={handleCreateProductMetadataProfile}
+                            disabled={!teamId || creatingMetadataProfile}
+                        >
+                            {creatingMetadataProfile ? "Creating..." : "Create Product Knowledge profile"}
+                        </Button2>
+                    )}
+                </Box>
+                <TextField
+                    select
+                    fullWidth
+                    size="small"
+                    label="Metadata profile"
+                    value={selectedMetadataProfileId}
+                    onChange={event => {
+                        setSelectedMetadataProfileId(event.target.value);
+                        setDocumentMetadata({});
+                    }}
+                    disabled={!teamId || loadingMetadataProfiles}
+                >
+                    <MenuItem value="">None (internal Knowledge only)</MenuItem>
+                    {metadataProfiles.map(profile => (
+                        <MenuItem key={profile._id} value={profile._id}>
+                            {profile.name} · v{profile.version}
+                        </MenuItem>
+                    ))}
+                </TextField>
+                {selectedMetadataProfile && (
+                    <Box
+                        sx={{
+                            display: "grid",
+                            gridTemplateColumns: { xs: "1fr", md: "repeat(2, minmax(0, 1fr))" },
+                            gap: 1.5,
+                            mt: 2
+                        }}
+                    >
+                        {selectedMetadataProfile.fields.map(field => {
+                            const isSelect = field.type === "enum" || field.type === "boolean";
+                            const options = field.type === "boolean" ? ["true", "false"] : field.options;
+                            return (
+                                <TextField
+                                    key={field.key}
+                                    select={isSelect}
+                                    size="small"
+                                    label={`${field.label}${field.required ? " *" : ""}`}
+                                    type={isSelect ? undefined : field.type === "number" ? "number" : field.type === "date" ? "date" : "text"}
+                                    value={documentMetadata[field.key] ?? ""}
+                                    onChange={event =>
+                                        setDocumentMetadata(current => ({ ...current, [field.key]: event.target.value }))
+                                    }
+                                    InputLabelProps={field.type === "date" ? { shrink: true } : undefined}
+                                >
+                                    {isSelect && <MenuItem value="">Select...</MenuItem>}
+                                    {isSelect && options.map(option => (
+                                        <MenuItem key={option} value={option}>
+                                            {option}
+                                        </MenuItem>
+                                    ))}
+                                </TextField>
+                            );
+                        })}
+                    </Box>
+                )}
+            </Box>
+
                 <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
                     Select Data Group
                 </Typography>

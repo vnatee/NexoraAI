@@ -214,6 +214,27 @@ def revoke_agent_invocation_key(key_id: str, *, actor_id: str) -> bool:
     return bool(result.modified_count)
 
 
+def archive_agent_invocation_key(key_id: str, *, actor_id: str) -> bool:
+    """Hide a revoked key from management lists while retaining its audit record."""
+    now = _now()
+    result = keys_collection.update_one(
+        {
+            "_id": str(key_id or ""),
+            "delete_at": None,
+            "active": False,
+            "revoked_at": {"$ne": None},
+        },
+        {
+            "$set": {
+                "delete_at": now,
+                "deleted_by": str(actor_id or ""),
+                "updated_at": now,
+            }
+        },
+    )
+    return bool(result.modified_count)
+
+
 def rotate_agent_invocation_key(
     key_id: str, *, actor_id: str, expiry_days: int = DEFAULT_EXPIRY_DAYS
 ) -> tuple[dict[str, Any], str]:

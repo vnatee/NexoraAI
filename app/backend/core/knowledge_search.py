@@ -252,6 +252,9 @@ class QdrantKnowledgeSearchClient:
             terms = {term for term in re.findall(r"\w+", query_text.lower()) if term}
             for document in documents:
                 content_terms = set(re.findall(r"\w+", str(document.get("content") or "").lower()))
+                content_terms.update(
+                    re.findall(r"\w+", str(document.get("businessMetadataText") or "").lower())
+                )
                 document["@search.score"] = len(terms & content_terms) / max(len(terms), 1)
             documents.sort(key=lambda item: float(item.get("@search.score") or 0), reverse=True)
         return QdrantSearchResults(documents[:top], len(documents))
