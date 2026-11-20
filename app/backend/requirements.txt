@@ -201,7 +201,7 @@ microsoft-kiota-serialization-text==1.9.3
     # via msgraph-sdk
 minio==7.2.20
     # via -r requirements.in
-msal==1.30.0
+msal==1.39.0
     # via
     #   -r requirements.in
     #   azure-identity
