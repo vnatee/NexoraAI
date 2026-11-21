@@ -13,6 +13,7 @@ from mongo_table_connecters.mongo_connector import get_database
 
 SETTINGS_ID = "system"
 MODES = {"built_in", "external", "direct_development"}
+GATEWAY_ADAPTERS = {"generic_openai", "mulesoft"}
 AUTH_TYPES = {
     "none",
     "api_key",
@@ -32,6 +33,7 @@ def default_ai_gateway_settings() -> dict[str, Any]:
         "_id": SETTINGS_ID,
         "mode": "built_in",
         "name": "",
+        "gateway_adapter": "generic_openai",
         "base_url": "",
         "auth_type": "none",
         "api_key_ciphertext": None,
@@ -146,6 +148,18 @@ def normalize_ai_gateway_settings(
         raise ValueError("Direct provider mode is disabled for this deployment")
 
     name = str(data.get("name", old.get("name") or "")).strip()[:100]
+    adapter_default = (
+        "mulesoft"
+        if str(old.get("auth_type") or "") == "mulesoft_client_id_enforcement"
+        else "generic_openai"
+    )
+    gateway_adapter = str(
+        data.get("gateway_adapter")
+        or old.get("gateway_adapter")
+        or adapter_default
+    ).strip().lower()
+    if gateway_adapter not in GATEWAY_ADAPTERS:
+        raise ValueError("Gateway adapter must be generic_openai or mulesoft")
     base_url_source = data.get("base_url", old.get("base_url") or "")
     base_url = str(base_url_source or "").strip().rstrip("/")
     auth_type = (
@@ -268,6 +282,7 @@ def normalize_ai_gateway_settings(
     return {
         "mode": mode,
         "name": name,
+        "gateway_adapter": gateway_adapter,
         "base_url": base_url,
         "auth_type": auth_type,
         "api_key_ciphertext": api_key_ciphertext,
@@ -304,6 +319,14 @@ def serialize_ai_gateway_settings(document: dict[str, Any]) -> dict[str, Any]:
     return {
         "mode": mode,
         "name": str(document.get("name") or ""),
+        "gateway_adapter": str(
+            document.get("gateway_adapter")
+            or (
+                "mulesoft"
+                if document.get("auth_type") == "mulesoft_client_id_enforcement"
+                else "generic_openai"
+            )
+        ),
         "base_url": str(document.get("base_url") or ""),
         "auth_type": str(document.get("auth_type") or "none"),
         "token_url": str(document.get("token_url") or ""),

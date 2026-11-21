@@ -2315,3 +2315,22 @@ keeps it redacted from administration responses. Focused gateway validation is
 production build, rebuilt local Compose runtime, and live/ready health checks
 pass. A real customer gateway test remains manual because credentials are not
 stored in the repository.
+
+## 2026-11-21: P1.2 Gateway conformance and MuleSoft profile
+
+P1.2 adds a persisted Generic OpenAI-compatible/MuleSoft gateway template and
+an administrator-run conformance report for the saved default route. The
+bounded probes require Gateway authentication, Chat Completions and streaming;
+Tool calling and Vision become required only when the model declares those
+capabilities. Reports contain pass/fail/skipped, a safe error category, HTTP
+status and allowlisted correlation IDs. They never include upstream response
+bodies, prompts, completions, credential headers or secrets. The lightweight
+Test route now returns the same bounded diagnostics rather than a generic
+failure message.
+
+Focused Gateway validation passes `20` tests. Python compilation, focused Ruff,
+TypeScript compilation, the memory-safe production build and rebuilt local
+Compose runtime pass. Live conformance against the currently configured
+MuleSoft endpoint correctly reports `authentication_failed`, HTTP 401 and only
+the allowlisted MuleSoft/APIM correlation IDs; MuleSoft-to-Azure OpenAI
+credential/endpoint remediation remains external acceptance work.

@@ -17,15 +17,17 @@ until it passes. The product version stays at `2.2.0` until all required gates i
 
 Priority order agreed with the product owner:
 
-1. **P1.1 Generic BYO AI Gateway foundation — implemented, validation in
-   progress.** Deployment-wide Built-in, External, and gated Direct Development
+1. **P1.1 Generic BYO AI Gateway foundation — implemented.** Deployment-wide
+   Built-in, External, and gated Direct Development
    modes; OpenAI-compatible routing; encrypted API key/OAuth2/mTLS/custom-CA
    credentials; model aliases; System Admin UI; health test; metadata-only
    audit; and fail-closed prevention of direct-provider bypass. See
    `docs/byo-ai-gateway.md`.
-2. **P1.2 Gateway conformance and vendor profiles.** Add capability discovery,
-   policy/header templates and acceptance tests, beginning with MuleSoft AI
-   Gateway. Preserve InsightSphere Agent, Knowledge, Tool, and Team governance.
+2. **P1.2 Gateway conformance and MuleSoft profile — implemented; real-gateway
+   acceptance pending.** MuleSoft template and Client ID Enforcement headers;
+   safe HTTP/correlation diagnostics; and bounded Chat, streaming, Tool, and
+   Vision conformance checks. Preserve InsightSphere Agent, Knowledge, Tool,
+   and Team governance.
 3. **P1.3 Private model control plane.** Package the supported
    InsightSphere Gateway + GPUStack + vLLM topology, model lifecycle, capacity
    and GPU health, controlled rollout/rollback, and production runbooks.

@@ -27,8 +27,10 @@ or another managed provider.
 Open **System administration > LLM Providers > Enterprise AI Gateway** and:
 
 1. Select **External AI Gateway**.
-2. Enter the OpenAI-compatible HTTPS base URL.
-3. Select authentication:
+2. Select a Gateway Template. The MuleSoft template selects Client ID
+   Enforcement defaults; the generic template keeps vendor-neutral settings.
+3. Enter the OpenAI-compatible HTTPS base URL.
+4. Select authentication:
    - API key;
    - OAuth 2.0 client credentials, using `client_secret_post` or
      `client_secret_basic`, with optional scope and audience; or
@@ -36,11 +38,13 @@ Open **System administration > LLM Providers > Enterprise AI Gateway** and:
      and the gateway-routing `ClientId` header without requesting an OAuth
      access token; or
    - gateway/network-managed authentication.
-4. Add a custom CA when the gateway uses an enterprise/private trust chain.
-5. Optionally enable mTLS and add the client certificate and private key.
-6. Add stable model IDs and map each one to the model alias expected by the
+5. Add a custom CA when the gateway uses an enterprise/private trust chain.
+6. Optionally enable mTLS and add the client certificate and private key.
+7. Add stable model IDs and map each one to the model alias expected by the
    gateway. Mark tool-calling and Vision support accurately.
-7. Choose the deployment default, save, and use **Test Saved Route**.
+8. Choose the deployment default and save.
+9. Use **Test Saved Route** for a lightweight request, then **Run Conformance**
+   before production use.
 
 API keys, OAuth client secrets, CA material, client certificates, and private
 keys are encrypted with the existing Fernet application-secret contract. The
@@ -72,6 +76,21 @@ Credential-bearing URLs are rejected. Connection-test responses and lifecycle
 audit records contain status, actor, route, model ID, and exception type only;
 they do not contain credentials, prompts, responses, or upstream error bodies.
 
+## Conformance report
+
+**Run Conformance** performs bounded requests against the saved default route:
+
+- gateway authentication and Chat Completions are always required;
+- streaming is always required because Portal Chat streams responses;
+- tool calling is required only when the configured model declares Tool
+  support;
+- Vision is required only when the configured model declares Vision support.
+
+The report returns pass/fail/skipped, safe error categories, HTTP status, and
+allowlisted upstream correlation IDs. It never returns response bodies,
+prompts, completions, credential headers, or secrets. A failed required check
+marks the route **Not ready** but does not route around the configured gateway.
+
 ## Gateway compatibility
 
 P1.1 requires the standard OpenAI Chat Completions shape. The generic layer can
@@ -79,13 +98,13 @@ therefore sit in front of MuleSoft AI Chain Gateway, Azure API Management,
 Kong, LiteLLM, Portkey, an internal gateway, GPUStack/vLLM, or another product
 that exposes a compatible endpoint.
 
-MuleSoft Client ID Enforcement is the first vendor-specific authentication
-adapter. Configure the base URL only through the version segment (for example,
+MuleSoft Client ID Enforcement and its Portal template are the first
+vendor-specific adapter. Configure the base URL only through the version segment (for example,
 `https://gateway.example/smart-model/v1`); the OpenAI client appends
 `/chat/completions`. Other vendor policy templates, configurable header
-mappings, catalog import, usage reconciliation, and conformance probes remain
-follow-up adapters. They must not weaken the central Agent/Data/Tool
-authorization enforced inside InsightSphere.
+mappings, catalog import, and usage reconciliation remain follow-up adapters.
+They must not weaken the central Agent/Data/Tool authorization enforced inside
+InsightSphere.
 
 ## Recovery
 

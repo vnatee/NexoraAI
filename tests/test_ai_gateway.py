@@ -5,9 +5,12 @@ from cryptography.fernet import Fernet
 from quart import Quart
 
 import app
+import core.ai_gateway as ai_gateway
 from core.ai_gateway import (
     MuleSoftClientIdEnforcementAuth,
     build_external_gateway_profiles,
+    gateway_error_diagnostic,
+    run_gateway_conformance,
 )
 from core.model_profiles import DEFAULT_LLM_PROFILE_ID, LLMProfile
 from core.provider_secrets import decrypt_secret
@@ -39,6 +42,10 @@ def _payload(**updates):
         "timeout_seconds": 45,
     }
     value.update(updates)
+    return value
+
+
+async def _async_value(value):
     return value
 
 
@@ -133,6 +140,25 @@ def test_external_gateway_mulesoft_credentials_are_encrypted_and_required(monkey
     assert "client_secret_ciphertext" not in public
 
 
+def test_mulesoft_adapter_is_persisted_and_legacy_auth_is_inferred(monkeypatch):
+    monkeypatch.setenv("APP_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    normalized = normalize_ai_gateway_settings(
+        _payload(
+            gateway_adapter="mulesoft",
+            auth_type="mulesoft_client_id_enforcement",
+            api_key="",
+            client_id="client-1",
+            client_secret="mulesoft-secret",
+        )
+    )
+    assert normalized["gateway_adapter"] == "mulesoft"
+    assert serialize_ai_gateway_settings(normalized)["gateway_adapter"] == "mulesoft"
+
+    legacy = dict(normalized)
+    legacy.pop("gateway_adapter")
+    assert serialize_ai_gateway_settings(legacy)["gateway_adapter"] == "mulesoft"
+
+
 def test_mulesoft_auth_applies_expected_headers_without_bearer_placeholder():
     import httpx
 
@@ -152,6 +178,93 @@ def test_mulesoft_auth_applies_expected_headers_without_bearer_placeholder():
     assert authenticated.headers["client_id"] == "client-1"
     assert authenticated.headers["client_secret"] == "mulesoft-secret"
     assert authenticated.headers["ClientId"] == "client-1"
+
+
+def test_gateway_diagnostic_exposes_only_safe_status_and_correlation_metadata():
+    class UpstreamError(Exception):
+        status_code = 401
+        response = SimpleNamespace(
+            status_code=401,
+            headers={
+                "x-correlation-id": "correlation-1",
+                "apim-request-id": "apim-1",
+                "authorization": "secret-value",
+            },
+            text="secret upstream detail",
+        )
+
+    diagnostic = gateway_error_diagnostic(UpstreamError("secret exception detail"))
+
+    assert diagnostic == {
+        "code": "authentication_failed",
+        "http_status": 401,
+        "correlation_ids": {
+            "x-correlation-id": "correlation-1",
+            "apim-request-id": "apim-1",
+        },
+        "error_type": "UpstreamError",
+    }
+    assert "secret" not in str(diagnostic)
+
+
+@pytest.mark.asyncio
+async def test_gateway_conformance_passes_chat_stream_and_declared_tools(monkeypatch):
+    monkeypatch.setenv("APP_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    settings = normalize_ai_gateway_settings(_payload())
+
+    class Stream:
+        def __init__(self):
+            self.sent = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            return SimpleNamespace()
+
+        async def close(self):
+            return None
+
+    class Completions:
+        async def create(self, **kwargs):
+            if kwargs.get("stream"):
+                return Stream()
+            if kwargs.get("tools"):
+                tool_call = SimpleNamespace(
+                    function=SimpleNamespace(name="gateway_probe")
+                )
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=SimpleNamespace(tool_calls=[tool_call])
+                        )
+                    ]
+                )
+            return SimpleNamespace(choices=[])
+
+    class GatewayClient:
+        chat = SimpleNamespace(completions=Completions())
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(
+        ai_gateway, "create_external_gateway_client", lambda _settings: GatewayClient()
+    )
+
+    report = await run_gateway_conformance(settings)
+
+    assert report["ready"] is True
+    assert {item["name"]: item["status"] for item in report["checks"]} == {
+        "gateway_authentication": "passed",
+        "chat_completion": "passed",
+        "streaming": "passed",
+        "tool_calling": "passed",
+        "vision": "skipped",
+    }
 
 
 def test_direct_development_mode_requires_explicit_deployment_flag():
@@ -277,9 +390,51 @@ async def test_gateway_connection_failure_is_generic_and_audited(client, monkeyp
     body = await response.get_json()
 
     assert response.status_code == 400
-    assert body == {"error": "AI Gateway connection test failed"}
+    assert body["diagnostic"]["code"] == "openai_compatibility_failed"
+    assert "openai_compatibility_failed" in body["error"]
     assert "secret upstream detail" not in str(body)
     assert events[0]["error_type"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_gateway_conformance_route_returns_safe_report_and_audits(client, monkeypatch):
+    report = {
+        "ready": False,
+        "adapter": "mulesoft",
+        "model_id": "general",
+        "model_alias": "enterprise/general",
+        "checks": [
+            {
+                "name": "gateway_authentication",
+                "status": "failed",
+                "required": True,
+                "code": "authentication_failed",
+                "http_status": 401,
+                "correlation_ids": {"x-correlation-id": "correlation-1"},
+            }
+        ],
+    }
+    events = []
+    monkeypatch.setattr(
+        app, "_require_system_admin", lambda _claims: {"_id": "admin-1"}
+    )
+    monkeypatch.setattr(
+        app,
+        "get_ai_gateway_settings",
+        lambda: {"mode": "external", "gateway_adapter": "mulesoft"},
+    )
+    monkeypatch.setattr(app, "run_gateway_conformance", lambda _settings: _async_value(report))
+    monkeypatch.setattr(
+        app, "insert_integration_lifecycle_event", lambda **event: events.append(event)
+    )
+
+    response = await client.post("/admin/ai-gateway/conformance")
+
+    assert response.status_code == 200
+    assert await response.get_json() == report
+    assert events[0]["action"] == "ai_gateway_conformance"
+    assert events[0]["status"] == "failed"
+    assert events[0]["error_type"] == "authentication_failed"
 
 
 @pytest.mark.asyncio

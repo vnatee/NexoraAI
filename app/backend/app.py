@@ -553,7 +553,13 @@ from config import (
 from core.authentication import AuthenticationHelper
 from core.knowledge_search import QdrantKnowledgeSearchClient
 from core.model_providers import create_embedding_service, create_llm_client
-from core.ai_gateway import build_external_gateway_profiles, create_external_gateway_client
+from core.ai_gateway import (
+    build_external_gateway_profiles,
+    create_external_gateway_client,
+    gateway_diagnostic_message,
+    gateway_error_diagnostic,
+    run_gateway_conformance,
+)
 from core.llm_vendors import apply_llm_vendor_chat_policy, get_llm_vendor, infer_llm_vendor
 from core.model_profiles import (
     DEFAULT_LLM_PROFILE_ID,
@@ -5219,6 +5225,7 @@ async def admin_test_ai_gateway(auth_claims: dict[str, Any]):
         )
         return jsonify({"success": True, "model_id": settings.get("default_model_id")})
     except Exception as error:
+        diagnostic = gateway_error_diagnostic(error)
         current_app.logger.warning("AI Gateway connection test failed: %s", type(error).__name__)
         insert_integration_lifecycle_event(
             action="ai_gateway_tested",
@@ -5229,10 +5236,67 @@ async def admin_test_ai_gateway(auth_claims: dict[str, Any]):
             vendor="ai_gateway",
             error_type=type(error).__name__,
         )
-        return jsonify({"error": "AI Gateway connection test failed"}), 400
+        return jsonify(
+            {
+                "error": gateway_diagnostic_message(diagnostic),
+                "diagnostic": diagnostic,
+            }
+        ), 400
     finally:
         if client is not None:
             await client.close()
+
+
+@bp.post("/admin/ai-gateway/conformance")
+@authenticated
+async def admin_conformance_ai_gateway(auth_claims: dict[str, Any]):
+    actor = _require_system_admin(auth_claims)
+    actor_id = str(actor.get("_id") or auth_claims.get("application_user_id") or "")
+    settings = get_ai_gateway_settings()
+    if settings.get("mode") != "external":
+        return jsonify(
+            {"error": "Select and save External AI Gateway mode before testing"}
+        ), 409
+    try:
+        report = await run_gateway_conformance(settings)
+        failed_required = next(
+            (
+                item
+                for item in report["checks"]
+                if item.get("required") is True and item.get("status") != "passed"
+            ),
+            None,
+        )
+        insert_integration_lifecycle_event(
+            action="ai_gateway_conformance",
+            status="success" if report["ready"] else "failed",
+            connection_id="system",
+            team_id="",
+            actor_id=actor_id,
+            vendor=str(settings.get("gateway_adapter") or "ai_gateway"),
+            error_type=str((failed_required or {}).get("code") or ""),
+        )
+        return jsonify(report)
+    except Exception as error:
+        diagnostic = gateway_error_diagnostic(error)
+        current_app.logger.warning(
+            "AI Gateway conformance check failed: %s", type(error).__name__
+        )
+        insert_integration_lifecycle_event(
+            action="ai_gateway_conformance",
+            status="failed",
+            connection_id="system",
+            team_id="",
+            actor_id=actor_id,
+            vendor=str(settings.get("gateway_adapter") or "ai_gateway"),
+            error_type=type(error).__name__,
+        )
+        return jsonify(
+            {
+                "error": gateway_diagnostic_message(diagnostic),
+                "diagnostic": diagnostic,
+            }
+        ), 400
 
 
 @bp.get("/admin/embedding-profiles")

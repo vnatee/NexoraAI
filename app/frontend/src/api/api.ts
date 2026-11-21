@@ -14,6 +14,7 @@ import {
     GroupPrompt,
     FeedbackPayload,
     AgentConfig,
+    AIGatewayConformanceReport,
     AIGatewaySettings,
     AIGatewaySettingsPayload,
     LLMProviderPayload,
@@ -448,6 +449,14 @@ export async function updateAIGatewaySettingsApi(
 
 export async function testAIGatewayApi(idToken: string): Promise<{ success: boolean; model_id: string }> {
     const response = await fetch("/admin/ai-gateway/test", {
+        method: "POST",
+        headers: await getHeaders(idToken)
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function runAIGatewayConformanceApi(idToken: string): Promise<AIGatewayConformanceReport> {
+    const response = await fetch("/admin/ai-gateway/conformance", {
         method: "POST",
         headers: await getHeaders(idToken)
     });

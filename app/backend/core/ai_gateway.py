@@ -17,6 +17,19 @@ from core.model_profiles import DEFAULT_LLM_PROFILE_ID, LLMProfile
 from core.provider_secrets import decrypt_secret
 from core.runtime_settings import LLMProviderSettings, ModelProvider
 
+_CORRELATION_HEADERS = (
+    "x-correlation-id",
+    "apim-request-id",
+    "x-request-id",
+    "x-amzn-requestid",
+    "traceparent",
+)
+_VISION_PROBE_IMAGE = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2"
+    "nAAAAABJRU5ErkJggg=="
+)
+
 
 class OAuth2ClientCredentialsAuth(httpx.Auth):
     """Small async OAuth2 client-credentials cache for gateway requests."""
@@ -111,6 +124,66 @@ class MuleSoftClientIdEnforcementAuth(httpx.Auth):
         request.headers["client_secret"] = self.client_secret
         request.headers["ClientId"] = self.client_id
         yield request
+
+
+def gateway_error_diagnostic(error: Exception) -> dict[str, Any]:
+    """Return bounded, credential-free metadata for an upstream failure."""
+
+    response = getattr(error, "response", None)
+    status_code = getattr(error, "status_code", None)
+    if status_code is None and response is not None:
+        status_code = getattr(response, "status_code", None)
+    try:
+        status_code = int(status_code) if status_code is not None else None
+    except (TypeError, ValueError):
+        status_code = None
+
+    if status_code in {401, 403}:
+        code = "authentication_failed"
+    elif status_code == 404:
+        code = "route_or_model_not_found"
+    elif status_code == 408:
+        code = "upstream_timeout"
+    elif status_code == 429:
+        code = "rate_limited"
+    elif status_code is not None and status_code >= 500:
+        code = "upstream_unavailable"
+    elif isinstance(error, (httpx.TimeoutException, asyncio.TimeoutError)):
+        code = "upstream_timeout"
+    elif isinstance(error, httpx.TransportError):
+        code = "transport_failed"
+    else:
+        code = "openai_compatibility_failed"
+
+    headers = getattr(response, "headers", {}) if response is not None else {}
+    correlation_ids: dict[str, str] = {}
+    for name in _CORRELATION_HEADERS:
+        value = str(headers.get(name) or "").strip()
+        if value:
+            correlation_ids[name] = value[:200]
+    return {
+        "code": code,
+        "http_status": status_code,
+        "correlation_ids": correlation_ids,
+        "error_type": type(error).__name__,
+    }
+
+
+def gateway_diagnostic_message(diagnostic: dict[str, Any]) -> str:
+    """Create a safe operator message without including an upstream body."""
+
+    status = diagnostic.get("http_status")
+    code = str(diagnostic.get("code") or "gateway_failed")
+    message = f"AI Gateway check failed ({code})"
+    if status is not None:
+        message += f" with HTTP {status}"
+    correlation_ids = diagnostic.get("correlation_ids") or {}
+    if correlation_ids:
+        references = ", ".join(
+            f"{name}={value}" for name, value in correlation_ids.items()
+        )
+        message += f". Correlation: {references}"
+    return message
 
 
 def _ssl_context(settings: dict[str, Any]) -> ssl.SSLContext:
@@ -233,3 +306,224 @@ def create_external_gateway_client(settings: dict[str, Any]) -> AsyncOpenAI:
         api_key=api_key,
         http_client=http_client,
     )
+
+
+def _check(
+    name: str,
+    *,
+    status: str,
+    required: bool,
+    diagnostic: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "name": name,
+        "status": status,
+        "required": required,
+    }
+    if diagnostic:
+        result.update(
+            {
+                "code": diagnostic.get("code"),
+                "http_status": diagnostic.get("http_status"),
+                "correlation_ids": diagnostic.get("correlation_ids") or {},
+                "error_type": diagnostic.get("error_type"),
+            }
+        )
+    return result
+
+
+def _gateway_adapter(settings: dict[str, Any]) -> str:
+    return str(
+        settings.get("gateway_adapter")
+        or (
+            "mulesoft"
+            if settings.get("auth_type") == "mulesoft_client_id_enforcement"
+            else "generic_openai"
+        )
+    )
+
+
+async def run_gateway_conformance(settings: dict[str, Any]) -> dict[str, Any]:
+    """Run bounded OpenAI-compatible probes against the saved gateway route."""
+
+    profiles = build_external_gateway_profiles(settings)
+    profile = profiles[DEFAULT_LLM_PROFILE_ID]
+    model = profile.settings.model
+    client = create_external_gateway_client(settings)
+    checks: list[dict[str, Any]] = []
+    try:
+        try:
+            await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": "Reply with OK"}],
+                max_tokens=8,
+            )
+            checks.append(
+                _check("gateway_authentication", status="passed", required=True)
+            )
+            checks.append(_check("chat_completion", status="passed", required=True))
+        except Exception as error:
+            diagnostic = gateway_error_diagnostic(error)
+            auth_status = (
+                "failed"
+                if diagnostic["code"] == "authentication_failed"
+                else "inconclusive"
+            )
+            checks.append(
+                _check(
+                    "gateway_authentication",
+                    status=auth_status,
+                    required=True,
+                    diagnostic=diagnostic,
+                )
+            )
+            checks.append(
+                _check(
+                    "chat_completion",
+                    status="failed",
+                    required=True,
+                    diagnostic=diagnostic,
+                )
+            )
+            checks.extend(
+                [
+                    _check("streaming", status="skipped", required=True),
+                    _check(
+                        "tool_calling",
+                        status="skipped",
+                        required=profile.supports_tools,
+                    ),
+                    _check(
+                        "vision",
+                        status="skipped",
+                        required=profile.supports_vision,
+                    ),
+                ]
+            )
+            return {
+                "ready": False,
+                "adapter": _gateway_adapter(settings),
+                "model_id": settings.get("default_model_id"),
+                "model_alias": model,
+                "checks": checks,
+            }
+
+        try:
+            stream = await client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": "Reply with OK"}],
+                max_tokens=8,
+                stream=True,
+            )
+            received_chunk = False
+            async for _chunk in stream:
+                received_chunk = True
+                break
+            await stream.close()
+            if not received_chunk:
+                raise ValueError("Gateway stream returned no chunks")
+            checks.append(_check("streaming", status="passed", required=True))
+        except Exception as error:
+            checks.append(
+                _check(
+                    "streaming",
+                    status="failed",
+                    required=True,
+                    diagnostic=gateway_error_diagnostic(error),
+                )
+            )
+
+        if profile.supports_tools:
+            try:
+                completion = await client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": "Call gateway_probe with value OK.",
+                        }
+                    ],
+                    tools=[
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "gateway_probe",
+                                "description": "Return the conformance probe value.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {"value": {"type": "string"}},
+                                    "required": ["value"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                        }
+                    ],
+                    tool_choice={
+                        "type": "function",
+                        "function": {"name": "gateway_probe"},
+                    },
+                    max_tokens=32,
+                )
+                tool_calls = completion.choices[0].message.tool_calls
+                if not tool_calls or tool_calls[0].function.name != "gateway_probe":
+                    raise ValueError("Gateway did not return the requested tool call")
+                checks.append(
+                    _check("tool_calling", status="passed", required=True)
+                )
+            except Exception as error:
+                checks.append(
+                    _check(
+                        "tool_calling",
+                        status="failed",
+                        required=True,
+                        diagnostic=gateway_error_diagnostic(error),
+                    )
+                )
+        else:
+            checks.append(_check("tool_calling", status="skipped", required=False))
+
+        if profile.supports_vision:
+            try:
+                await client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Reply with OK."},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {"url": _VISION_PROBE_IMAGE},
+                                },
+                            ],
+                        }
+                    ],
+                    max_tokens=8,
+                )
+                checks.append(_check("vision", status="passed", required=True))
+            except Exception as error:
+                checks.append(
+                    _check(
+                        "vision",
+                        status="failed",
+                        required=True,
+                        diagnostic=gateway_error_diagnostic(error),
+                    )
+                )
+        else:
+            checks.append(_check("vision", status="skipped", required=False))
+
+        ready = all(
+            item["status"] == "passed"
+            for item in checks
+            if item.get("required") is True
+        )
+        return {
+            "ready": ready,
+            "adapter": _gateway_adapter(settings),
+            "model_id": settings.get("default_model_id"),
+            "model_alias": model,
+            "checks": checks,
+        }
+    finally:
+        await client.close()

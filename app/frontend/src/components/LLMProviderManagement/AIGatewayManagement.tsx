@@ -19,9 +19,15 @@ import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import SaveIcon from "@mui/icons-material/Save";
 import { useMsal } from "@azure/msal-react";
 
-import { getAIGatewaySettingsApi, testAIGatewayApi, updateAIGatewaySettingsApi } from "../../api";
+import {
+    getAIGatewaySettingsApi,
+    runAIGatewayConformanceApi,
+    testAIGatewayApi,
+    updateAIGatewaySettingsApi
+} from "../../api";
 import {
     AIGatewayAuthType,
+    AIGatewayConformanceReport,
     AIGatewayModel,
     AIGatewaySettings,
     AIGatewaySettingsPayload
@@ -47,6 +53,7 @@ const emptyModel = (): AIGatewayModel => ({
 const emptySettings = (): GatewayForm => ({
     mode: "built_in",
     name: "",
+    gateway_adapter: "generic_openai",
     base_url: "",
     auth_type: "none",
     token_url: "",
@@ -112,6 +119,8 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [testing, setTesting] = useState(false);
+    const [runningConformance, setRunningConformance] = useState(false);
+    const [conformance, setConformance] = useState<AIGatewayConformanceReport | null>(null);
     const [notice, setNotice] = useState<{ severity: "success" | "warning" | "error"; text: string } | null>(null);
 
     const load = async () => {
@@ -138,6 +147,18 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
         }));
     };
 
+    const selectGatewayAdapter = (adapter: GatewayForm["gateway_adapter"]) => {
+        setForm(current => ({
+            ...current,
+            gateway_adapter: adapter,
+            name: current.name || (adapter === "mulesoft" ? "MuleSoft AI Gateway" : "Enterprise AI Gateway"),
+            auth_type: adapter === "mulesoft"
+                ? "mulesoft_client_id_enforcement"
+                : current.auth_type === "mulesoft_client_id_enforcement" ? "none" : current.auth_type
+        }));
+        setConformance(null);
+    };
+
     const save = async () => {
         const validationError = validateExternalForm(form);
         if (validationError) {
@@ -151,6 +172,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
             const payload: AIGatewaySettingsPayload = {
                 mode: form.mode,
                 name: form.name,
+                gateway_adapter: form.gateway_adapter,
                 base_url: form.base_url,
                 auth_type: form.auth_type,
                 token_url: form.token_url,
@@ -170,6 +192,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
             };
             const saved = await updateAIGatewaySettingsApi(payload, token);
             setForm(toForm(saved));
+            setConformance(null);
             window.dispatchEvent(new Event("nexora:llm-profiles-changed"));
             onChanged?.();
             setNotice({ severity: "success", text: "AI Gateway routing policy saved" });
@@ -191,6 +214,27 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
             setNotice({ severity: "error", text: error instanceof Error ? error.message : "Gateway connection failed" });
         } finally {
             setTesting(false);
+        }
+    };
+
+    const runConformance = async () => {
+        setRunningConformance(true);
+        setConformance(null);
+        try {
+            const token = await getToken(instance);
+            if (!token) throw new Error("No authentication token");
+            const report = await runAIGatewayConformanceApi(token);
+            setConformance(report);
+            setNotice({
+                severity: report.ready ? "success" : "warning",
+                text: report.ready
+                    ? "Gateway passed all required conformance checks"
+                    : "Gateway is not ready; review the failed checks below"
+            });
+        } catch (error) {
+            setNotice({ severity: "error", text: error instanceof Error ? error.message : "Gateway conformance check failed" });
+        } finally {
+            setRunningConformance(false);
         }
     };
 
@@ -237,6 +281,16 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                         <Alert severity="warning">
                             Saving External mode immediately replaces all effective LLM routes. If the gateway is unavailable, requests fail instead of bypassing it.
                         </Alert>
+                        <TextField
+                            select
+                            label="Gateway Template"
+                            value={form.gateway_adapter}
+                            onChange={event => selectGatewayAdapter(event.target.value as GatewayForm["gateway_adapter"])}
+                            helperText="Templates set safe vendor defaults without changing InsightSphere Agent, Data, or Tool authorization."
+                        >
+                            <MenuItem value="generic_openai">Generic OpenAI-compatible Gateway</MenuItem>
+                            <MenuItem value="mulesoft">MuleSoft AI Gateway</MenuItem>
+                        </TextField>
                         <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
                             <TextField fullWidth required label="Gateway Name" value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} />
                             <TextField
@@ -398,18 +452,86 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                     </>
                 )}
 
+                {conformance && (
+                    <Paper variant="outlined" sx={{ p: 2 }}>
+                        <Stack spacing={1.25}>
+                            <Box display="flex" justifyContent="space-between" alignItems="center" gap={1}>
+                                <Box>
+                                    <Typography fontWeight={600}>Gateway Conformance</Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                        {conformance.adapter} · {conformance.model_alias}
+                                    </Typography>
+                                </Box>
+                                <Chip
+                                    color={conformance.ready ? "success" : "warning"}
+                                    label={conformance.ready ? "Ready" : "Not ready"}
+                                />
+                            </Box>
+                            {conformance.checks.map(check => {
+                                const references = Object.entries(check.correlation_ids || {})
+                                    .map(([name, value]) => `${name}=${value}`)
+                                    .join(", ");
+                                return (
+                                    <Box
+                                        key={check.name}
+                                        display="flex"
+                                        justifyContent="space-between"
+                                        alignItems="flex-start"
+                                        gap={2}
+                                        sx={{ py: 1, borderTop: 1, borderColor: "divider" }}
+                                    >
+                                        <Box>
+                                            <Typography variant="body2" fontWeight={600}>
+                                                {check.name.replaceAll("_", " ")}
+                                                {check.required ? " · required" : " · optional"}
+                                            </Typography>
+                                            {(check.code || check.http_status || references) && (
+                                                <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+                                                    {[check.code, check.http_status ? `HTTP ${check.http_status}` : "", references]
+                                                        .filter(Boolean)
+                                                        .join(" · ")}
+                                                </Typography>
+                                            )}
+                                        </Box>
+                                        <Chip
+                                            size="small"
+                                            color={check.status === "passed" ? "success" : check.status === "skipped" ? "default" : "error"}
+                                            label={check.status}
+                                        />
+                                    </Box>
+                                );
+                            })}
+                        </Stack>
+                    </Paper>
+                )}
+
                 {notice && <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.text}</Alert>}
 
-                <Stack direction="row" justifyContent="flex-end" spacing={1}>
+                <Stack direction="row" justifyContent="flex-end" spacing={1} flexWrap="wrap" useFlexGap>
                     {external && (
-                        <Button variant="outlined" startIcon={testing ? <CircularProgress size={16} /> : <PlayArrowIcon />} disabled={testing || saving} onClick={() => void test()}>
-                            Test Saved Route
-                        </Button>
+                        <>
+                            <Button
+                                variant="outlined"
+                                startIcon={testing ? <CircularProgress size={16} /> : <PlayArrowIcon />}
+                                disabled={testing || saving || runningConformance}
+                                onClick={() => void test()}
+                            >
+                                Test Saved Route
+                            </Button>
+                            <Button
+                                variant="outlined"
+                                startIcon={runningConformance ? <CircularProgress size={16} /> : <PlayArrowIcon />}
+                                disabled={testing || saving || runningConformance}
+                                onClick={() => void runConformance()}
+                            >
+                                Run Conformance
+                            </Button>
+                        </>
                     )}
                     <Button
                         variant="contained"
                         startIcon={saving ? <CircularProgress color="inherit" size={16} /> : <SaveIcon />}
-                        disabled={saving || testing}
+                        disabled={saving || testing || runningConformance}
                         onClick={() => void save()}
                     >
                         Save Routing Policy
