@@ -40,8 +40,14 @@ Open **System administration > LLM Providers > Enterprise AI Gateway** and:
    - gateway/network-managed authentication.
 5. Add a custom CA when the gateway uses an enterprise/private trust chain.
 6. Optionally enable mTLS and add the client certificate and private key.
-7. Add stable model IDs and map each one to the model alias expected by the
-   gateway. Mark tool-calling and Vision support accurately.
+7. Add stable Route IDs. For each route choose:
+   - **Model-Based** and map it to the model alias expected by the gateway; or
+   - **Semantic** (MuleSoft only), where the Semantic Model Proxy selects the
+     target model from request content and InsightSphere omits the upstream
+     `model` field.
+   A route can override the shared Base URL when Model-Based and Semantic
+   proxies use different MuleSoft paths. Mark Tool Calling and Vision support
+   accurately.
 8. Choose the deployment default and save.
 9. Use **Test Saved Route** for a lightweight request, then **Run Conformance**
    before production use.
@@ -62,7 +68,7 @@ With External mode active:
 
 - the reserved `system` profile maps to the configured default gateway model;
 - additional profiles use `gateway:<model-id>`;
-- every effective profile shares the governed gateway transport;
+- every effective profile uses the governed client for its configured route;
 - old managed-provider profile IDs fall back to gateway `system`, never to the
   previously selected direct provider;
 - Azure AI Search agentic retrieval is rejected while External mode is active
@@ -78,13 +84,15 @@ they do not contain credentials, prompts, responses, or upstream error bodies.
 
 ## Conformance report
 
-**Run Conformance** performs bounded requests against the saved default route:
+**Run Conformance** performs bounded requests against the selected saved route:
 
 - gateway authentication and Chat Completions are always required;
 - streaming is always required because Portal Chat streams responses;
 - tool calling is required only when the configured model declares Tool
   support;
 - Vision is required only when the configured model declares Vision support.
+- Semantic routes additionally require a successful model-less Semantic Proxy
+  request. The report may show the model selected by the upstream response.
 
 The report returns pass/fail/skipped, safe error categories, HTTP status, and
 allowlisted upstream correlation IDs. It never returns response bodies,
@@ -101,7 +109,14 @@ that exposes a compatible endpoint.
 MuleSoft Client ID Enforcement and its Portal template are the first
 vendor-specific adapter. Configure the base URL only through the version segment (for example,
 `https://gateway.example/smart-model/v1`); the OpenAI client appends
-`/chat/completions`. Other vendor policy templates, configurable header
+`/chat/completions`. A Model-Based route sends its configured `model`. A
+Semantic route uses a stable internal virtual alias but removes `model` from
+the outbound Chat Completions JSON, allowing the MuleSoft Semantic Model Proxy
+to route by prompt topics. Configure separate per-route Base URLs when both
+proxy strategies are used. Gateway authentication and certificate settings are
+currently shared across those routes; use MuleSoft proxies protected by the
+same client application, or configure separate deployments when credentials
+differ. Other vendor policy templates, configurable header
 mappings, catalog import, and usage reconciliation remain follow-up adapters.
 They must not weaken the central Agent/Data/Tool authorization enforced inside
 InsightSphere.

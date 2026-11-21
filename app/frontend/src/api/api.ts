@@ -455,10 +455,11 @@ export async function testAIGatewayApi(idToken: string): Promise<{ success: bool
     return parseProviderAdminResponse(response);
 }
 
-export async function runAIGatewayConformanceApi(idToken: string): Promise<AIGatewayConformanceReport> {
+export async function runAIGatewayConformanceApi(idToken: string, modelId?: string): Promise<AIGatewayConformanceReport> {
     const response = await fetch("/admin/ai-gateway/conformance", {
         method: "POST",
-        headers: await getHeaders(idToken)
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: modelId || undefined })
     });
     return parseProviderAdminResponse(response);
 }

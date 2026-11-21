@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import ssl
 import tempfile
@@ -29,6 +30,43 @@ _VISION_PROBE_IMAGE = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2"
     "nAAAAABJRU5ErkJggg=="
 )
+
+
+def _semantic_request(request: httpx.Request) -> httpx.Request:
+    """Remove caller model selection for a MuleSoft semantic Model Proxy."""
+
+    if not request.url.path.rstrip("/").endswith("/chat/completions"):
+        return request
+    try:
+        payload = json.loads(request.content)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return request
+    if not isinstance(payload, dict) or "model" not in payload:
+        return request
+    payload.pop("model", None)
+    headers = dict(request.headers)
+    headers.pop("content-length", None)
+    headers.pop("transfer-encoding", None)
+    return httpx.Request(
+        method=request.method,
+        url=request.url,
+        headers=headers,
+        content=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        extensions=request.extensions,
+    )
+
+
+class SemanticRoutingTransport(httpx.AsyncBaseTransport):
+    """HTTP transport that leaves model selection to MuleSoft Semantic Routing."""
+
+    def __init__(self, transport: httpx.AsyncBaseTransport) -> None:
+        self._transport = transport
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return await self._transport.handle_async_request(_semantic_request(request))
+
+    async def aclose(self) -> None:
+        await self._transport.aclose()
 
 
 class OAuth2ClientCredentialsAuth(httpx.Auth):
@@ -228,7 +266,7 @@ def gateway_model_settings(
         deployment=None,
         api_version="",
         endpoint=None,
-        base_url=str(settings["base_url"]),
+        base_url=str(model.get("base_url") or settings["base_url"]),
         api_key=decrypt_secret(settings.get("api_key_ciphertext")),
         organization=None,
     )
@@ -267,7 +305,9 @@ def build_external_gateway_profiles(settings: dict[str, Any]) -> dict[str, LLMPr
     return profiles
 
 
-def create_external_gateway_client(settings: dict[str, Any]) -> AsyncOpenAI:
+def create_external_gateway_client(
+    settings: dict[str, Any], model: dict[str, Any] | None = None
+) -> AsyncOpenAI:
     ssl_context = _ssl_context(settings)
     auth_type = str(settings.get("auth_type") or "none")
     auth: httpx.Auth | None = GatewayManagedAuth() if auth_type == "none" else None
@@ -296,16 +336,38 @@ def create_external_gateway_client(settings: dict[str, Any]) -> AsyncOpenAI:
             )
             or "",
         )
+    route = model or {}
+    base_transport: httpx.AsyncBaseTransport = httpx.AsyncHTTPTransport(
+        verify=ssl_context
+    )
+    transport = (
+        SemanticRoutingTransport(base_transport)
+        if route.get("routing_strategy") == "semantic"
+        else base_transport
+    )
     http_client = httpx.AsyncClient(
         auth=auth,
-        verify=ssl_context,
+        transport=transport,
         timeout=int(settings.get("timeout_seconds") or 60),
     )
     return AsyncOpenAI(
-        base_url=str(settings["base_url"]),
+        base_url=str(route.get("base_url") or settings["base_url"]),
         api_key=api_key,
         http_client=http_client,
     )
+
+
+def gateway_model_by_id(
+    settings: dict[str, Any], model_id: str | None
+) -> dict[str, Any]:
+    selected_id = str(model_id or settings.get("default_model_id") or "")
+    model = next(
+        (item for item in settings.get("models") or [] if item.get("id") == selected_id),
+        None,
+    )
+    if model is None:
+        raise ValueError("External AI Gateway route is unavailable")
+    return model
 
 
 def _check(
@@ -343,17 +405,27 @@ def _gateway_adapter(settings: dict[str, Any]) -> str:
     )
 
 
-async def run_gateway_conformance(settings: dict[str, Any]) -> dict[str, Any]:
+async def run_gateway_conformance(
+    settings: dict[str, Any], model_id: str | None = None
+) -> dict[str, Any]:
     """Run bounded OpenAI-compatible probes against the saved gateway route."""
 
     profiles = build_external_gateway_profiles(settings)
-    profile = profiles[DEFAULT_LLM_PROFILE_ID]
+    route = gateway_model_by_id(settings, model_id)
+    profile_id = (
+        DEFAULT_LLM_PROFILE_ID
+        if route.get("id") == settings.get("default_model_id")
+        else f"gateway:{route['id']}"
+    )
+    profile = profiles[profile_id]
     model = profile.settings.model
-    client = create_external_gateway_client(settings)
+    routing_strategy = str(route.get("routing_strategy") or "model_based")
+    client = create_external_gateway_client(settings, route)
     checks: list[dict[str, Any]] = []
+    selected_model = ""
     try:
         try:
-            await client.chat.completions.create(
+            completion = await client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": "Reply with OK"}],
                 max_tokens=8,
@@ -362,6 +434,11 @@ async def run_gateway_conformance(settings: dict[str, Any]) -> dict[str, Any]:
                 _check("gateway_authentication", status="passed", required=True)
             )
             checks.append(_check("chat_completion", status="passed", required=True))
+            selected_model = str(getattr(completion, "model", "") or "")[:255]
+            if routing_strategy == "semantic":
+                checks.append(
+                    _check("semantic_routing", status="passed", required=True)
+                )
         except Exception as error:
             diagnostic = gateway_error_diagnostic(error)
             auth_status = (
@@ -377,6 +454,15 @@ async def run_gateway_conformance(settings: dict[str, Any]) -> dict[str, Any]:
                     diagnostic=diagnostic,
                 )
             )
+            if routing_strategy == "semantic":
+                checks.append(
+                    _check(
+                        "semantic_routing",
+                        status="failed",
+                        required=True,
+                        diagnostic=diagnostic,
+                    )
+                )
             checks.append(
                 _check(
                     "chat_completion",
@@ -403,8 +489,10 @@ async def run_gateway_conformance(settings: dict[str, Any]) -> dict[str, Any]:
             return {
                 "ready": False,
                 "adapter": _gateway_adapter(settings),
-                "model_id": settings.get("default_model_id"),
+                "model_id": route.get("id"),
                 "model_alias": model,
+                "routing_strategy": routing_strategy,
+                "selected_model": selected_model,
                 "checks": checks,
             }
 
@@ -521,8 +609,10 @@ async def run_gateway_conformance(settings: dict[str, Any]) -> dict[str, Any]:
         return {
             "ready": ready,
             "adapter": _gateway_adapter(settings),
-            "model_id": settings.get("default_model_id"),
+            "model_id": route.get("id"),
             "model_alias": model,
+            "routing_strategy": routing_strategy,
+            "selected_model": selected_model,
             "checks": checks,
         }
     finally:

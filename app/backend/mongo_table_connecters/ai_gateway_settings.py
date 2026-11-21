@@ -21,6 +21,7 @@ AUTH_TYPES = {
     "mulesoft_client_id_enforcement",
 }
 OAUTH_CLIENT_AUTH_METHODS = {"client_secret_post", "client_secret_basic"}
+ROUTING_STRATEGIES = {"model_based", "semantic"}
 _MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
@@ -96,32 +97,57 @@ def _validated_url(value: object, field: str, *, allow_http: bool) -> str:
     return normalized
 
 
-def _normalize_models(value: object) -> list[dict[str, Any]]:
+def _normalize_models(
+    value: object,
+    *,
+    gateway_adapter: str,
+    allow_insecure_http: bool,
+) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not value:
-        raise ValueError("External AI Gateway requires at least one model alias")
+        raise ValueError("External AI Gateway requires at least one route")
     if len(value) > 50:
-        raise ValueError("External AI Gateway supports at most 50 model aliases")
+        raise ValueError("External AI Gateway supports at most 50 routes")
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in value:
         if not isinstance(item, dict):
-            raise ValueError("Each gateway model alias must be an object")
+            raise ValueError("Each gateway route must be an object")
         model_id = str(item.get("id") or "").strip()
         model_alias = str(item.get("model") or "").strip()
+        routing_strategy = str(
+            item.get("routing_strategy") or "model_based"
+        ).strip().lower()
         if not _MODEL_ID.fullmatch(model_id):
             raise ValueError(
                 "Gateway model id must use letters, numbers, dots, underscores, or hyphens"
             )
         if model_id in seen:
             raise ValueError(f"Duplicate gateway model id '{model_id}'")
+        if routing_strategy not in ROUTING_STRATEGIES:
+            raise ValueError(
+                "Gateway route strategy must be model_based or semantic"
+            )
+        if routing_strategy == "semantic" and gateway_adapter != "mulesoft":
+            raise ValueError("Semantic routing requires the MuleSoft gateway template")
+        if not model_alias:
+            model_alias = f"semantic/{model_id}" if routing_strategy == "semantic" else ""
         if not model_alias or len(model_alias) > 255:
-            raise ValueError("Each gateway model requires a model alias")
+            raise ValueError("Each gateway route requires a model or virtual route alias")
+        route_base_url = str(item.get("base_url") or "").strip().rstrip("/")
+        if route_base_url:
+            route_base_url = _validated_url(
+                route_base_url,
+                "Gateway route base URL",
+                allow_http=allow_insecure_http,
+            )
         seen.add(model_id)
         result.append(
             {
                 "id": model_id,
                 "label": str(item.get("label") or model_alias).strip()[:100],
                 "model": model_alias,
+                "routing_strategy": routing_strategy,
+                "base_url": route_base_url,
                 "supports_tools": item.get("supports_tools", True) is not False,
                 "supports_vision": item.get("supports_vision", False) is True,
             }
@@ -232,9 +258,19 @@ def normalize_ai_gateway_settings(
             "OAuth client authentication must be client_secret_post or client_secret_basic"
         )
     mtls_enabled = data.get("mtls_enabled", old.get("mtls_enabled", False)) is True
+    if mode == "external":
+        if not name:
+            raise ValueError("External AI Gateway name is required")
+        base_url = _validated_url(
+            base_url, "Gateway base URL", allow_http=allow_insecure_http
+        )
     models_source = data.get("models", old.get("models") or [])
     models = (
-        _normalize_models(models_source)
+        _normalize_models(
+            models_source,
+            gateway_adapter=gateway_adapter,
+            allow_insecure_http=allow_insecure_http,
+        )
         if mode == "external"
         else list(models_source or [])
     )
@@ -251,14 +287,9 @@ def normalize_ai_gateway_settings(
     timeout_seconds = max(5, min(timeout_seconds, 300))
 
     if mode == "external":
-        if not name:
-            raise ValueError("External AI Gateway name is required")
-        base_url = _validated_url(
-            base_url, "Gateway base URL", allow_http=allow_insecure_http
-        )
         if default_model_id not in {item["id"] for item in models}:
             raise ValueError(
-                "Select a default model from the configured gateway aliases"
+                "Select a default route from the configured gateway routes"
             )
         if auth_type == "api_key" and not api_key_ciphertext:
             raise ValueError("External AI Gateway API key is required")
@@ -316,6 +347,14 @@ def save_ai_gateway_settings(data: dict[str, Any], *, actor_id: str) -> dict[str
 
 def serialize_ai_gateway_settings(document: dict[str, Any]) -> dict[str, Any]:
     mode = str(document.get("mode") or "built_in")
+    models = [
+        {
+            **item,
+            "routing_strategy": str(item.get("routing_strategy") or "model_based"),
+            "base_url": str(item.get("base_url") or ""),
+        }
+        for item in document.get("models") or []
+    ]
     return {
         "mode": mode,
         "name": str(document.get("name") or ""),
@@ -337,7 +376,7 @@ def serialize_ai_gateway_settings(document: dict[str, Any]) -> dict[str, Any]:
             document.get("oauth_client_auth_method") or "client_secret_post"
         ),
         "mtls_enabled": document.get("mtls_enabled") is True,
-        "models": list(document.get("models") or []),
+        "models": models,
         "default_model_id": str(document.get("default_model_id") or ""),
         "timeout_seconds": int(document.get("timeout_seconds") or 60),
         "has_api_key": bool(document.get("api_key_ciphertext")),

@@ -247,6 +247,7 @@ export type LLMProviderPayload = Omit<ManagedLLMProvider, "_id" | "vendor_label"
 
 export type AIGatewayMode = "built_in" | "external" | "direct_development";
 export type AIGatewayAdapter = "generic_openai" | "mulesoft";
+export type AIGatewayRoutingStrategy = "model_based" | "semantic";
 export type AIGatewayAuthType =
     | "none"
     | "api_key"
@@ -257,6 +258,8 @@ export type AIGatewayModel = {
     id: string;
     label: string;
     model: string;
+    routing_strategy: AIGatewayRoutingStrategy;
+    base_url: string;
     supports_tools: boolean;
     supports_vision: boolean;
 };
@@ -288,7 +291,7 @@ export type AIGatewaySettings = {
 };
 
 export type AIGatewayConformanceCheck = {
-    name: "gateway_authentication" | "chat_completion" | "streaming" | "tool_calling" | "vision";
+    name: "gateway_authentication" | "chat_completion" | "semantic_routing" | "streaming" | "tool_calling" | "vision";
     status: "passed" | "failed" | "inconclusive" | "skipped";
     required: boolean;
     code?: string | null;
@@ -302,6 +305,8 @@ export type AIGatewayConformanceReport = {
     adapter: AIGatewayAdapter;
     model_id: string;
     model_alias: string;
+    routing_strategy: AIGatewayRoutingStrategy;
+    selected_model: string;
     checks: AIGatewayConformanceCheck[];
 };
 

@@ -26,8 +26,11 @@ Priority order agreed with the product owner:
 2. **P1.2 Gateway conformance and MuleSoft profile — implemented and accepted
    against the real gateway.** MuleSoft template and Client ID Enforcement headers;
    safe HTTP/correlation diagnostics; and bounded Chat, streaming, Tool, and
-   Vision conformance checks. Preserve InsightSphere Agent, Knowledge, Tool,
-   and Team governance.
+   Vision conformance checks. **P1.2.1 Semantic Routing is implemented pending
+   live acceptance:** Model-Based and Semantic routes can use separate proxy
+   Base URLs; Semantic Chat requests omit `model`; and conformance can validate
+   either route. Preserve InsightSphere Agent, Knowledge, Tool, and Team
+   governance.
 3. **P1.3 Private model control plane — P1.3a implemented.** The supported
    InsightSphere Gateway + GPUStack + vLLM topology now has a pinned optional
    Compose control plane, private health visibility, worker/model lifecycle,

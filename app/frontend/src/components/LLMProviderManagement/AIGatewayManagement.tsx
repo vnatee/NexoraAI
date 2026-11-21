@@ -46,6 +46,8 @@ const emptyModel = (): AIGatewayModel => ({
     id: "",
     label: "",
     model: "",
+    routing_strategy: "model_based",
+    base_url: "",
     supports_tools: true,
     supports_vision: false
 });
@@ -82,6 +84,11 @@ const emptySettings = (): GatewayForm => ({
 
 const toForm = (settings: AIGatewaySettings): GatewayForm => ({
     ...settings,
+    models: settings.models.map(model => ({
+        ...model,
+        routing_strategy: model.routing_strategy || "model_based",
+        base_url: model.base_url || ""
+    })),
     api_key: "",
     client_secret: "",
     ca_certificate: "",
@@ -105,11 +112,14 @@ const validateExternalForm = (form: GatewayForm): string | null => {
         if (!form.client_id.trim()) return "Enter a MuleSoft Client ID before saving.";
         if (!form.client_secret && !form.has_client_secret) return "Enter a MuleSoft Client Secret before saving.";
     }
-    if (form.models.length === 0) return "Add at least one Gateway Model Alias before saving.";
-    if (form.models.some(model => !model.id.trim() || !model.model.trim())) {
-        return "Complete the Model ID and Gateway Model Alias for every model before saving.";
+    if (form.models.length === 0) return "Add at least one Gateway Route before saving.";
+    if (form.models.some(model => !model.id.trim() || (model.routing_strategy !== "semantic" && !model.model.trim()))) {
+        return "Complete the Route ID and Gateway Model Alias for every model-based route before saving.";
     }
-    if (!form.default_model_id) return "Select a Default Model before saving.";
+    if (form.models.some(model => model.routing_strategy === "semantic") && form.gateway_adapter !== "mulesoft") {
+        return "Semantic Routing requires the MuleSoft AI Gateway template.";
+    }
+    if (!form.default_model_id) return "Select a Default Route before saving.";
     return null;
 };
 
@@ -121,6 +131,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
     const [testing, setTesting] = useState(false);
     const [runningConformance, setRunningConformance] = useState(false);
     const [conformance, setConformance] = useState<AIGatewayConformanceReport | null>(null);
+    const [conformanceModelId, setConformanceModelId] = useState("");
     const [notice, setNotice] = useState<{ severity: "success" | "warning" | "error"; text: string } | null>(null);
 
     const load = async () => {
@@ -128,7 +139,9 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
         try {
             const token = await getToken(instance);
             if (!token) throw new Error("No authentication token");
-            setForm(toForm(await getAIGatewaySettingsApi(token)));
+            const settings = await getAIGatewaySettingsApi(token);
+            setForm(toForm(settings));
+            setConformanceModelId(settings.default_model_id);
         } catch (error) {
             setNotice({ severity: "error", text: error instanceof Error ? error.message : "Unable to load AI Gateway settings" });
         } finally {
@@ -192,6 +205,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
             };
             const saved = await updateAIGatewaySettingsApi(payload, token);
             setForm(toForm(saved));
+            setConformanceModelId(saved.default_model_id);
             setConformance(null);
             window.dispatchEvent(new Event("nexora:llm-profiles-changed"));
             onChanged?.();
@@ -223,7 +237,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
         try {
             const token = await getToken(instance);
             if (!token) throw new Error("No authentication token");
-            const report = await runAIGatewayConformanceApi(token);
+            const report = await runAIGatewayConformanceApi(token, conformanceModelId || form.default_model_id);
             setConformance(report);
             setNotice({
                 severity: report.ready ? "success" : "warning",
@@ -419,8 +433,8 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
 
                         <Box display="flex" justifyContent="space-between" alignItems="center">
                             <Box>
-                                <Typography fontWeight={600}>Gateway Model Aliases</Typography>
-                                <Typography variant="caption" color="text.secondary">Map stable InsightSphere ids to model aliases understood by the gateway.</Typography>
+                                <Typography fontWeight={600}>Gateway Routes</Typography>
+                                <Typography variant="caption" color="text.secondary">Configure stable InsightSphere routes for deterministic Model-Based or content-aware Semantic proxy selection.</Typography>
                             </Box>
                             <Button startIcon={<AddIcon />} onClick={() => setForm({ ...form, models: [...form.models, emptyModel()] })}>Add Model</Button>
                         </Box>
@@ -428,10 +442,36 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                             <Paper key={index} variant="outlined" sx={{ p: 2 }}>
                                 <Stack spacing={1.25}>
                                     <Stack direction={{ xs: "column", md: "row" }} spacing={1.25}>
-                                        <TextField fullWidth required label="Model ID" value={model.id} onChange={event => updateModel(index, "id", event.target.value)} />
+                                        <TextField fullWidth required label="Route ID" value={model.id} onChange={event => updateModel(index, "id", event.target.value)} />
                                         <TextField fullWidth label="Display Label" value={model.label} onChange={event => updateModel(index, "label", event.target.value)} />
-                                        <TextField fullWidth required label="Gateway Model Alias" value={model.model} onChange={event => updateModel(index, "model", event.target.value)} />
+                                        <TextField
+                                            fullWidth
+                                            select
+                                            label="Routing Strategy"
+                                            value={model.routing_strategy || "model_based"}
+                                            onChange={event => updateModel(index, "routing_strategy", event.target.value as AIGatewayModel["routing_strategy"])}
+                                        >
+                                            <MenuItem value="model_based">Model-Based</MenuItem>
+                                            <MenuItem value="semantic" disabled={form.gateway_adapter !== "mulesoft"}>Semantic</MenuItem>
+                                        </TextField>
                                         <Button color="error" startIcon={<DeleteIcon />} onClick={() => setForm({ ...form, models: form.models.filter((_, i) => i !== index) })}>Remove</Button>
+                                    </Stack>
+                                    <Stack direction={{ xs: "column", md: "row" }} spacing={1.25}>
+                                        <TextField
+                                            fullWidth
+                                            required={model.routing_strategy !== "semantic"}
+                                            label={model.routing_strategy === "semantic" ? "Virtual Route Alias (not sent upstream)" : "Gateway Model Alias"}
+                                            value={model.model}
+                                            onChange={event => updateModel(index, "model", event.target.value)}
+                                            helperText={model.routing_strategy === "semantic" ? "May be blank; MuleSoft chooses the target model from the request content." : "Sent in the model field for deterministic routing."}
+                                        />
+                                        <TextField
+                                            fullWidth
+                                            label="Route Base URL (optional)"
+                                            value={model.base_url || ""}
+                                            onChange={event => updateModel(index, "base_url", event.target.value)}
+                                            helperText="Use a separate MuleSoft Model Proxy base path; blank uses the Gateway Base URL."
+                                        />
                                     </Stack>
                                     <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
                                         <Stack direction="row" alignItems="center"><Switch size="small" checked={model.supports_tools} onChange={event => updateModel(index, "supports_tools", event.target.checked)} /><Typography variant="body2">Tool calling</Typography></Stack>
@@ -443,11 +483,27 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                         <TextField
                             select
                             required
-                            label="Default Model"
+                            label="Default Route"
                             value={form.default_model_id}
                             onChange={event => setForm({ ...form, default_model_id: event.target.value })}
                         >
                             {form.models.filter(model => model.id).map(model => <MenuItem key={model.id} value={model.id}>{model.label || model.id}</MenuItem>)}
+                        </TextField>
+                        <TextField
+                            select
+                            label="Conformance Route"
+                            value={conformanceModelId || form.default_model_id}
+                            onChange={event => {
+                                setConformanceModelId(event.target.value);
+                                setConformance(null);
+                            }}
+                            helperText="Select which saved Model-Based or Semantic route to validate."
+                        >
+                            {form.models.filter(model => model.id).map(model => (
+                                <MenuItem key={model.id} value={model.id}>
+                                    {model.label || model.id} · {(model.routing_strategy || "model_based").replace("_", "-")}
+                                </MenuItem>
+                            ))}
                         </TextField>
                     </>
                 )}
@@ -459,8 +515,13 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                                 <Box>
                                     <Typography fontWeight={600}>Gateway Conformance</Typography>
                                     <Typography variant="caption" color="text.secondary">
-                                        {conformance.adapter} · {conformance.model_alias}
+                                        {conformance.adapter} · {conformance.routing_strategy.replace("_", "-")} · {conformance.model_alias}
                                     </Typography>
+                                    {conformance.selected_model && (
+                                        <Typography variant="caption" color="text.secondary" display="block">
+                                            Selected upstream model: {conformance.selected_model}
+                                        </Typography>
+                                    )}
                                 </Box>
                                 <Chip
                                     color={conformance.ready ? "success" : "warning"}

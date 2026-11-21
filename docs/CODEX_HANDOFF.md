@@ -2360,3 +2360,31 @@ pass. The broader service-free run reaches `1056 passed`; its `77` failures are
 the pre-existing stale `storageUrl`, paused metadata-profile/search-field and
 workspace PDF fixture expectations, not P1.3a runtime failures. Real GPU worker,
 vLLM model and failover acceptance require an NVIDIA-enabled test host.
+
+## 2026-11-21: P1.2.1 MuleSoft Semantic Routing
+
+The Enterprise AI Gateway now distinguishes Model-Based and MuleSoft Semantic
+routes. Each saved route has a stable InsightSphere Route ID, routing strategy,
+capability flags and an optional proxy-specific Base URL. Model-Based requests
+continue to send the configured upstream model alias. Semantic Chat
+Completions retain the same OpenAI-compatible SDK and authentication path, but
+the governed HTTP transport removes the `model` property before transmission
+so the MuleSoft Semantic Model Proxy can select a model from request content.
+No prompt or response is persisted by this adapter.
+
+The administration UI can configure both proxy types side by side and select
+which saved route to validate. Conformance adds a required Semantic Routing
+check for semantic routes and safely displays the upstream-selected model when
+the response provides one. Existing saved routes migrate logically to
+`model_based`, and the API serializes explicit routing defaults for older
+records. Credentials, CA and mTLS settings remain gateway-wide; separate
+MuleSoft proxy paths are supported when they use the same client application.
+Live Semantic Proxy acceptance remains pending.
+
+Validation: focused Gateway regression passes (`24 passed`); focused Ruff,
+Python compilation, TypeScript compilation, production frontend build and
+portable Compose schema validation pass. The service-free suite reaches `1060
+passed`, `1 deselected`, `76 failed`; the failures are the same pre-existing
+legacy `storageUrl`, paused Knowledge metadata/search-field and related fixture
+expectations recorded for the preceding Gateway slices, not Semantic Routing
+failures.

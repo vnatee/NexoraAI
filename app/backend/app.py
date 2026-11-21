@@ -558,6 +558,7 @@ from core.ai_gateway import (
     create_external_gateway_client,
     gateway_diagnostic_message,
     gateway_error_diagnostic,
+    gateway_model_by_id,
     run_gateway_conformance,
 )
 from core.llm_vendors import apply_llm_vendor_chat_policy, get_llm_vendor, infer_llm_vendor
@@ -1838,8 +1839,20 @@ def _build_llm_profile_clients(
     credential: Any,
 ) -> dict[str, AsyncOpenAI]:
     if str(gateway_settings.get("mode") or "built_in") == "external":
-        gateway_client = create_external_gateway_client(gateway_settings)
-        return {profile_id: gateway_client for profile_id in profiles}
+        routes = {
+            str(item.get("id") or ""): item
+            for item in gateway_settings.get("models") or []
+        }
+        route_clients: dict[str, AsyncOpenAI] = {}
+        clients: dict[str, AsyncOpenAI] = {}
+        for profile_id, profile in profiles.items():
+            route_id = str(profile.managed_model_id or "")
+            if route_id not in route_clients:
+                route_clients[route_id] = create_external_gateway_client(
+                    gateway_settings, routes.get(route_id)
+                )
+            clients[profile_id] = route_clients[route_id]
+        return clients
     return {
         profile_id: create_llm_client(profile.settings, credential)
         for profile_id, profile in profiles.items()
@@ -5154,8 +5167,9 @@ async def admin_update_ai_gateway(auth_claims: dict[str, Any]):
         # the persisted routing policy. Connectivity is checked separately.
         if normalized["mode"] == "external":
             build_external_gateway_profiles(normalized)
-            validation_client = create_external_gateway_client(normalized)
-            await validation_client.close()
+            for route in normalized["models"]:
+                validation_client = create_external_gateway_client(normalized, route)
+                await validation_client.close()
         saved = save_ai_gateway_settings(normalized, actor_id=actor_id)
         try:
             _refresh_llm_profile_registry()
@@ -5206,7 +5220,8 @@ async def admin_test_ai_gateway(auth_claims: dict[str, Any]):
     try:
         profiles = build_external_gateway_profiles(settings)
         profile = profiles[DEFAULT_LLM_PROFILE_ID]
-        client = create_external_gateway_client(settings)
+        route = gateway_model_by_id(settings, profile.managed_model_id)
+        client = create_external_gateway_client(settings, route)
         completion_options: dict[str, Any] = {"max_tokens": 3, "temperature": 0}
         if profile.settings.model in Approach.GPT_REASONING_MODELS:
             completion_options = {"max_completion_tokens": 16}
@@ -5258,7 +5273,9 @@ async def admin_conformance_ai_gateway(auth_claims: dict[str, Any]):
             {"error": "Select and save External AI Gateway mode before testing"}
         ), 409
     try:
-        report = await run_gateway_conformance(settings)
+        payload = (await request.get_json() or {}) if request.is_json else {}
+        model_id = str(payload.get("model_id") or "").strip() or None
+        report = await run_gateway_conformance(settings, model_id=model_id)
         failed_required = next(
             (
                 item

@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +9,7 @@ import app
 import core.ai_gateway as ai_gateway
 from core.ai_gateway import (
     MuleSoftClientIdEnforcementAuth,
+    _semantic_request,
     build_external_gateway_profiles,
     gateway_error_diagnostic,
     run_gateway_conformance,
@@ -81,7 +83,7 @@ def test_external_gateway_rejects_http_and_missing_default(monkeypatch):
 
     with pytest.raises(ValueError, match="HTTPS"):
         normalize_ai_gateway_settings(_payload(base_url="http://gateway.local/v1"))
-    with pytest.raises(ValueError, match="default model"):
+    with pytest.raises(ValueError, match="default route"):
         normalize_ai_gateway_settings(_payload(default_model_id="missing"))
 
 
@@ -180,6 +182,86 @@ def test_mulesoft_auth_applies_expected_headers_without_bearer_placeholder():
     assert authenticated.headers["ClientId"] == "client-1"
 
 
+def test_semantic_route_normalizes_without_upstream_model_alias(monkeypatch):
+    monkeypatch.setenv("APP_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+    normalized = normalize_ai_gateway_settings(
+        _payload(
+            gateway_adapter="mulesoft",
+            auth_type="mulesoft_client_id_enforcement",
+            api_key="",
+            client_id="client-1",
+            client_secret="mulesoft-secret",
+            models=[
+                {
+                    "id": "semantic",
+                    "label": "Semantic Proxy",
+                    "model": "",
+                    "routing_strategy": "semantic",
+                    "base_url": "https://semantic.example.test/v1",
+                    "supports_tools": False,
+                }
+            ],
+            default_model_id="semantic",
+        )
+    )
+
+    route = normalized["models"][0]
+    assert route["model"] == "semantic/semantic"
+    assert route["routing_strategy"] == "semantic"
+    assert route["base_url"] == "https://semantic.example.test/v1"
+    assert serialize_ai_gateway_settings(normalized)["models"][0] == route
+
+
+def test_semantic_route_requires_mulesoft_gateway(monkeypatch):
+    monkeypatch.setenv("APP_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+    with pytest.raises(ValueError, match="MuleSoft"):
+        normalize_ai_gateway_settings(
+            _payload(
+                models=[
+                    {
+                        "id": "semantic",
+                        "routing_strategy": "semantic",
+                    }
+                ],
+                default_model_id="semantic",
+            )
+        )
+
+
+def test_semantic_transport_removes_only_chat_completion_model():
+    import httpx
+
+    request = httpx.Request(
+        "POST",
+        "https://semantic.example.test/v1/chat/completions",
+        json={
+            "model": "semantic/semantic",
+            "messages": [{"role": "user", "content": "route this request"}],
+            "stream": True,
+            "tools": [{"type": "function", "function": {"name": "lookup"}}],
+        },
+    )
+
+    routed = _semantic_request(request)
+    payload = json.loads(routed.content)
+
+    assert "model" not in payload
+    assert payload["messages"] == [
+        {"role": "user", "content": "route this request"}
+    ]
+    assert payload["stream"] is True
+    assert payload["tools"][0]["function"]["name"] == "lookup"
+
+    embeddings = httpx.Request(
+        "POST",
+        "https://semantic.example.test/v1/embeddings",
+        json={"model": "embedding-model", "input": "unchanged"},
+    )
+    assert _semantic_request(embeddings) is embeddings
+
+
 def test_gateway_diagnostic_exposes_only_safe_status_and_correlation_metadata():
     class UpstreamError(Exception):
         status_code = 401
@@ -252,7 +334,9 @@ async def test_gateway_conformance_passes_chat_stream_and_declared_tools(monkeyp
             return None
 
     monkeypatch.setattr(
-        ai_gateway, "create_external_gateway_client", lambda _settings: GatewayClient()
+        ai_gateway,
+        "create_external_gateway_client",
+        lambda _settings, _route=None: GatewayClient(),
     )
 
     report = await run_gateway_conformance(settings)
@@ -263,6 +347,80 @@ async def test_gateway_conformance_passes_chat_stream_and_declared_tools(monkeyp
         "chat_completion": "passed",
         "streaming": "passed",
         "tool_calling": "passed",
+        "vision": "skipped",
+    }
+
+
+@pytest.mark.asyncio
+async def test_gateway_conformance_validates_selected_semantic_route(monkeypatch):
+    monkeypatch.setenv("APP_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    settings = normalize_ai_gateway_settings(
+        _payload(
+            gateway_adapter="mulesoft",
+            auth_type="mulesoft_client_id_enforcement",
+            api_key="",
+            client_id="client-1",
+            client_secret="mulesoft-secret",
+            models=[
+                {"id": "fixed", "model": "azureopenai/gpt-4.1"},
+                {
+                    "id": "semantic",
+                    "routing_strategy": "semantic",
+                    "base_url": "https://semantic.example.test/v1",
+                    "supports_tools": False,
+                },
+            ],
+            default_model_id="fixed",
+        )
+    )
+
+    class Stream:
+        def __init__(self):
+            self.sent = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.sent:
+                raise StopAsyncIteration
+            self.sent = True
+            return SimpleNamespace()
+
+        async def close(self):
+            return None
+
+    class Completions:
+        async def create(self, **kwargs):
+            if kwargs.get("stream"):
+                return Stream()
+            return SimpleNamespace(model="azureopenai/gpt-4.1", choices=[])
+
+    class GatewayClient:
+        chat = SimpleNamespace(completions=Completions())
+
+        async def close(self):
+            return None
+
+    def create_client(_settings, route=None):
+        assert route["id"] == "semantic"
+        assert route["routing_strategy"] == "semantic"
+        return GatewayClient()
+
+    monkeypatch.setattr(ai_gateway, "create_external_gateway_client", create_client)
+
+    report = await run_gateway_conformance(settings, model_id="semantic")
+
+    assert report["ready"] is True
+    assert report["model_id"] == "semantic"
+    assert report["routing_strategy"] == "semantic"
+    assert report["selected_model"] == "azureopenai/gpt-4.1"
+    assert {item["name"]: item["status"] for item in report["checks"]} == {
+        "gateway_authentication": "passed",
+        "chat_completion": "passed",
+        "semantic_routing": "passed",
+        "streaming": "passed",
+        "tool_calling": "skipped",
         "vision": "skipped",
     }
 
@@ -344,7 +502,9 @@ async def test_gateway_admin_update_returns_redacted_settings(client, monkeypatc
             return None
 
     monkeypatch.setattr(
-        app, "create_external_gateway_client", lambda _settings: GatewayClient()
+        app,
+        "create_external_gateway_client",
+        lambda _settings, _route=None: GatewayClient(),
     )
 
     response = await client.put("/admin/ai-gateway", json=_payload())
@@ -383,7 +543,9 @@ async def test_gateway_connection_failure_is_generic_and_audited(client, monkeyp
             return None
 
     monkeypatch.setattr(
-        app, "create_external_gateway_client", lambda _settings: GatewayClient()
+        app,
+        "create_external_gateway_client",
+        lambda _settings, _route=None: GatewayClient(),
     )
 
     response = await client.post("/admin/ai-gateway/test")
@@ -423,7 +585,11 @@ async def test_gateway_conformance_route_returns_safe_report_and_audits(client, 
         "get_ai_gateway_settings",
         lambda: {"mode": "external", "gateway_adapter": "mulesoft"},
     )
-    monkeypatch.setattr(app, "run_gateway_conformance", lambda _settings: _async_value(report))
+    monkeypatch.setattr(
+        app,
+        "run_gateway_conformance",
+        lambda _settings, model_id=None: _async_value(report),
+    )
     monkeypatch.setattr(
         app, "insert_integration_lifecycle_event", lambda **event: events.append(event)
     )
