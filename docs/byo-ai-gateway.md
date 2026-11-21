@@ -24,12 +24,19 @@ or another managed provider.
 
 ## Configure
 
-Open **System administration > LLM Providers > Enterprise AI Gateway** and:
+Open **System administration > AI Runtime & Models**. Use **Routing Overview**
+to confirm the active policy, **Built-in Providers** for direct provider
+records, and **Enterprise Gateways** for the enforced gateway configuration.
+Built-in records remain visible as configured-but-inactive while External mode
+is selected, so rollback does not require recreating credentials.
+
+In **Enterprise Gateways**:
 
 1. Select **External AI Gateway**.
 2. Select a Gateway Template. The MuleSoft template selects Client ID
    Enforcement defaults; the generic template keeps vendor-neutral settings.
-3. Enter the OpenAI-compatible HTTPS base URL.
+3. Enter the shared HTTPS Gateway Base URL (normally the origin/root before the
+   individual MuleSoft proxy path).
 4. Select authentication:
    - API key;
    - OAuth 2.0 client credentials, using `client_secret_post` or
@@ -40,16 +47,16 @@ Open **System administration > LLM Providers > Enterprise AI Gateway** and:
    - gateway/network-managed authentication.
 5. Add a custom CA when the gateway uses an enterprise/private trust chain.
 6. Optionally enable mTLS and add the client certificate and private key.
-7. Add stable Route IDs. For each route choose:
+7. Add stable Model Proxy IDs. For each proxy configure its relative Proxy Path
+   (for example `smartmodel/v1`) under the shared Gateway Base URL, then choose:
    - **Model-Based** and map it to the model alias expected by the gateway; or
    - **Semantic** (MuleSoft only), where the Semantic Model Proxy selects the
      target model from request content and InsightSphere omits the upstream
      `model` field.
-   A route can override the shared Base URL when Model-Based and Semantic
-   proxies use different MuleSoft paths. Mark Tool Calling and Vision support
-   accurately.
-8. Choose the deployment default and save.
-9. Use **Test Saved Route** for a lightweight request, then **Run Conformance**
+   A proxy can use the advanced full-URL override when it is hosted on a
+   different origin. Mark Tool Calling and Vision support accurately.
+8. Choose the deployment Default Proxy and save.
+9. Use **Test Proxy** and **Run Conformance** directly on every saved proxy card
    before production use.
 
 API keys, OAuth client secrets, CA material, client certificates, and private
@@ -66,8 +73,8 @@ HTTPS and should leave this flag unset.
 The persisted policy is resolved before the LLM profile registry is built.
 With External mode active:
 
-- the reserved `system` profile maps to the configured default gateway model;
-- additional profiles use `gateway:<model-id>`;
+- the reserved `system` profile maps to the configured Default Proxy;
+- additional profiles use `gateway:<proxy-id>`;
 - every effective profile uses the governed client for its configured route;
 - old managed-provider profile IDs fall back to gateway `system`, never to the
   previously selected direct provider;
@@ -79,12 +86,12 @@ With External mode active:
   registry cannot be constructed.
 
 Credential-bearing URLs are rejected. Connection-test responses and lifecycle
-audit records contain status, actor, route, model ID, and exception type only;
+audit records contain status, actor, proxy ID, and exception type only;
 they do not contain credentials, prompts, responses, or upstream error bodies.
 
 ## Conformance report
 
-**Run Conformance** performs bounded requests against the selected saved route:
+**Run Conformance** performs bounded requests against the selected saved proxy:
 
 - gateway authentication and Chat Completions are always required;
 - streaming is always required because Portal Chat streams responses;
@@ -109,15 +116,21 @@ that exposes a compatible endpoint.
 MuleSoft Client ID Enforcement and its Portal template are the first
 vendor-specific adapter. Configure the base URL only through the version segment (for example,
 `https://gateway.example/smart-model/v1`); the OpenAI client appends
-`/chat/completions`. A Model-Based route sends its configured `model`. A
-Semantic route uses a stable internal virtual alias but removes `model` from
+`/chat/completions`. InsightSphere resolves each endpoint as `Gateway Base URL
++ Proxy Path`; for example, `https://gateway.example/smartmodel/v1`. A
+Model-Based proxy sends its configured `model`. A Semantic proxy uses a stable
+internal virtual alias but removes `model` from
 the outbound Chat Completions JSON, allowing the MuleSoft Semantic Model Proxy
-to route by prompt topics. Configure separate per-route Base URLs when both
-proxy strategies are used. Gateway authentication and certificate settings are
+to route by prompt topics. Gateway authentication and certificate settings are
 currently shared across those routes; use MuleSoft proxies protected by the
 same client application, or configure separate deployments when credentials
 differ. Other vendor policy templates, configurable header
 mappings, catalog import, and usage reconciliation remain follow-up adapters.
+
+The administration API uses `proxies` and `default_proxy_id`. It continues to
+return the earlier `models` and `default_model_id` names as compatibility
+aliases, and existing saved endpoints remain operational as per-proxy full-URL
+overrides until an administrator separates the shared Base URL and Proxy Path.
 They must not weaken the central Agent/Data/Tool authorization enforced inside
 InsightSphere.
 

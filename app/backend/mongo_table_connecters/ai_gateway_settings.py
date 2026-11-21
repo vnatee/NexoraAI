@@ -23,6 +23,7 @@ AUTH_TYPES = {
 OAUTH_CLIENT_AUTH_METHODS = {"client_secret_post", "client_secret_basic"}
 ROUTING_STRATEGIES = {"model_based", "semantic"}
 _MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_PROXY_PATH = re.compile(r"^[A-Za-z0-9._~/-]+$")
 
 
 def _collection():
@@ -133,6 +134,19 @@ def _normalize_models(
             model_alias = f"semantic/{model_id}" if routing_strategy == "semantic" else ""
         if not model_alias or len(model_alias) > 255:
             raise ValueError("Each gateway route requires a model or virtual route alias")
+        proxy_path = str(item.get("proxy_path") or "").strip().strip("/")
+        if proxy_path:
+            path_parts = proxy_path.split("/")
+            if (
+                len(proxy_path) > 500
+                or not _PROXY_PATH.fullmatch(proxy_path)
+                or any(part in {"", ".", ".."} for part in path_parts)
+                or any(character in proxy_path for character in "?#\\")
+                or "://" in proxy_path
+            ):
+                raise ValueError(
+                    "Gateway proxy path must be a relative URL path without traversal, query, or fragment"
+                )
         route_base_url = str(item.get("base_url") or "").strip().rstrip("/")
         if route_base_url:
             route_base_url = _validated_url(
@@ -147,6 +161,7 @@ def _normalize_models(
                 "label": str(item.get("label") or model_alias).strip()[:100],
                 "model": model_alias,
                 "routing_strategy": routing_strategy,
+                "proxy_path": proxy_path,
                 "base_url": route_base_url,
                 "supports_tools": item.get("supports_tools", True) is not False,
                 "supports_vision": item.get("supports_vision", False) is True,
@@ -264,7 +279,9 @@ def normalize_ai_gateway_settings(
         base_url = _validated_url(
             base_url, "Gateway base URL", allow_http=allow_insecure_http
         )
-    models_source = data.get("models", old.get("models") or [])
+    models_source = data.get(
+        "proxies", data.get("models", old.get("models") or [])
+    )
     models = (
         _normalize_models(
             models_source,
@@ -275,7 +292,10 @@ def normalize_ai_gateway_settings(
         else list(models_source or [])
     )
     default_model_id = str(
-        data.get("default_model_id", old.get("default_model_id") or "")
+        data.get(
+            "default_proxy_id",
+            data.get("default_model_id", old.get("default_model_id") or ""),
+        )
     ).strip()
 
     try:
@@ -351,6 +371,7 @@ def serialize_ai_gateway_settings(document: dict[str, Any]) -> dict[str, Any]:
         {
             **item,
             "routing_strategy": str(item.get("routing_strategy") or "model_based"),
+            "proxy_path": str(item.get("proxy_path") or ""),
             "base_url": str(item.get("base_url") or ""),
         }
         for item in document.get("models") or []
@@ -376,7 +397,11 @@ def serialize_ai_gateway_settings(document: dict[str, Any]) -> dict[str, Any]:
             document.get("oauth_client_auth_method") or "client_secret_post"
         ),
         "mtls_enabled": document.get("mtls_enabled") is True,
+        # `models` and `default_model_id` remain as compatibility aliases for
+        # older Portal/API clients. New clients use proxy terminology.
+        "proxies": models,
         "models": models,
+        "default_proxy_id": str(document.get("default_model_id") or ""),
         "default_model_id": str(document.get("default_model_id") or ""),
         "timeout_seconds": int(document.get("timeout_seconds") or 60),
         "has_api_key": bool(document.get("api_key_ciphertext")),

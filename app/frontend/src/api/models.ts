@@ -254,15 +254,19 @@ export type AIGatewayAuthType =
     | "oauth2_client_credentials"
     | "mulesoft_client_id_enforcement";
 
-export type AIGatewayModel = {
+export type AIGatewayProxy = {
     id: string;
     label: string;
     model: string;
     routing_strategy: AIGatewayRoutingStrategy;
+    proxy_path: string;
     base_url: string;
     supports_tools: boolean;
     supports_vision: boolean;
 };
+
+/** Compatibility alias for extensions compiled against the P1.2 API. */
+export type AIGatewayModel = AIGatewayProxy;
 
 export type AIGatewaySettings = {
     mode: AIGatewayMode;
@@ -276,7 +280,9 @@ export type AIGatewaySettings = {
     oauth_audience: string;
     oauth_client_auth_method: "client_secret_post" | "client_secret_basic";
     mtls_enabled: boolean;
-    models: AIGatewayModel[];
+    proxies: AIGatewayProxy[];
+    default_proxy_id: string;
+    models: AIGatewayProxy[];
     default_model_id: string;
     timeout_seconds: number;
     has_api_key: boolean;
@@ -321,6 +327,8 @@ export type AIGatewaySettingsPayload = Omit<
     | "direct_development_allowed"
     | "insecure_http_allowed"
     | "updated_at"
+    | "models"
+    | "default_model_id"
 > & {
     api_key?: string;
     client_secret?: string;

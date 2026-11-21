@@ -286,7 +286,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
         },
         {
             id: "llm-providers",
-            label: "LLM providers",
+            label: "AI runtime & models",
             permission: ["Manage users", "Manage teams"],
             group: "system",
             scope: "system",

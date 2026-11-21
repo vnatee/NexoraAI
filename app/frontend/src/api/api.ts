@@ -447,10 +447,11 @@ export async function updateAIGatewaySettingsApi(
     return parseProviderAdminResponse(response);
 }
 
-export async function testAIGatewayApi(idToken: string): Promise<{ success: boolean; model_id: string }> {
+export async function testAIGatewayApi(idToken: string, proxyId?: string): Promise<{ success: boolean; proxy_id: string; model_id: string }> {
     const response = await fetch("/admin/ai-gateway/test", {
         method: "POST",
-        headers: await getHeaders(idToken)
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: proxyId || undefined })
     });
     return parseProviderAdminResponse(response);
 }

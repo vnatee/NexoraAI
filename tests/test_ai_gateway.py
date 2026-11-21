@@ -12,6 +12,7 @@ from core.ai_gateway import (
     _semantic_request,
     build_external_gateway_profiles,
     gateway_error_diagnostic,
+    gateway_route_base_url,
     run_gateway_conformance,
 )
 from core.model_profiles import DEFAULT_LLM_PROFILE_ID, LLMProfile
@@ -198,6 +199,7 @@ def test_semantic_route_normalizes_without_upstream_model_alias(monkeypatch):
                     "label": "Semantic Proxy",
                     "model": "",
                     "routing_strategy": "semantic",
+                    "proxy_path": "smartmodel2/v1",
                     "base_url": "https://semantic.example.test/v1",
                     "supports_tools": False,
                 }
@@ -209,8 +211,60 @@ def test_semantic_route_normalizes_without_upstream_model_alias(monkeypatch):
     route = normalized["models"][0]
     assert route["model"] == "semantic/semantic"
     assert route["routing_strategy"] == "semantic"
+    assert route["proxy_path"] == "smartmodel2/v1"
     assert route["base_url"] == "https://semantic.example.test/v1"
     assert serialize_ai_gateway_settings(normalized)["models"][0] == route
+    assert serialize_ai_gateway_settings(normalized)["proxies"][0] == route
+
+
+def test_proxy_contract_accepts_new_api_names_and_resolves_relative_path(monkeypatch):
+    monkeypatch.setenv("APP_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    normalized = normalize_ai_gateway_settings(
+        _payload(
+            gateway_adapter="mulesoft",
+            auth_type="mulesoft_client_id_enforcement",
+            api_key="",
+            client_id="client-1",
+            client_secret="mulesoft-secret",
+            base_url="https://gateway.example.test",
+            models=None,
+            proxies=[
+                {
+                    "id": "smartmodel",
+                    "model": "azureopenai/gpt-4.1",
+                    "proxy_path": "smartmodel/v1",
+                    "routing_strategy": "model_based",
+                }
+            ],
+            default_proxy_id="smartmodel",
+            default_model_id="",
+        )
+    )
+
+    route = normalized["models"][0]
+    assert normalized["default_model_id"] == "smartmodel"
+    assert gateway_route_base_url(normalized, route) == (
+        "https://gateway.example.test/smartmodel/v1"
+    )
+
+
+def test_proxy_path_rejects_traversal(monkeypatch):
+    monkeypatch.setenv("APP_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+    for unsafe_path in ("../admin", "%2e%2e/admin", "proxy?debug=true"):
+        with pytest.raises(ValueError, match="proxy path"):
+            normalize_ai_gateway_settings(
+                _payload(
+                    models=[
+                        {
+                            "id": "unsafe",
+                            "model": "model",
+                            "proxy_path": unsafe_path,
+                        }
+                    ],
+                    default_model_id="unsafe",
+                )
+            )
 
 
 def test_semantic_route_requires_mulesoft_gateway(monkeypatch):
@@ -556,6 +610,54 @@ async def test_gateway_connection_failure_is_generic_and_audited(client, monkeyp
     assert "openai_compatibility_failed" in body["error"]
     assert "secret upstream detail" not in str(body)
     assert events[0]["error_type"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_gateway_test_route_targets_selected_proxy(client, monkeypatch):
+    monkeypatch.setenv("APP_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    settings = normalize_ai_gateway_settings(
+        _payload(
+            models=[
+                {"id": "primary", "model": "gateway/primary"},
+                {
+                    "id": "secondary",
+                    "model": "gateway/secondary",
+                    "proxy_path": "secondary/v1",
+                },
+            ],
+            default_model_id="primary",
+        )
+    )
+    selected = []
+
+    class Completions:
+        async def create(self, **_kwargs):
+            return SimpleNamespace(choices=[])
+
+    class GatewayClient:
+        chat = SimpleNamespace(completions=Completions())
+
+        async def close(self):
+            return None
+
+    def create_client(_settings, route=None):
+        selected.append(route["id"])
+        return GatewayClient()
+
+    monkeypatch.setattr(
+        app, "_require_system_admin", lambda _claims: {"_id": "admin-1"}
+    )
+    monkeypatch.setattr(app, "get_ai_gateway_settings", lambda: settings)
+    monkeypatch.setattr(app, "create_external_gateway_client", create_client)
+    monkeypatch.setattr(app, "insert_integration_lifecycle_event", lambda **_event: None)
+
+    response = await client.post(
+        "/admin/ai-gateway/test", json={"model_id": "secondary"}
+    )
+
+    assert response.status_code == 200
+    assert (await response.get_json())["proxy_id"] == "secondary"
+    assert selected == ["secondary"]
 
 
 @pytest.mark.asyncio

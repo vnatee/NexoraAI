@@ -2388,3 +2388,28 @@ passed`, `1 deselected`, `76 failed`; the failures are the same pre-existing
 legacy `storageUrl`, paused Knowledge metadata/search-field and related fixture
 expectations recorded for the preceding Gateway slices, not Semantic Routing
 failures.
+
+## 2026-11-21: P1.2.2 AI Runtime information architecture and Model Proxies
+
+System Administration now presents **AI Runtime & Models** as Routing Overview,
+Built-in Providers, Enterprise Gateways and Private LLM Infrastructure instead
+of stacking unrelated configuration forms. The Overview identifies the active
+runtime policy and keeps inactive Built-in records visible for controlled
+rollback without implying that External mode can bypass the Gateway.
+
+The MuleSoft UI and API now model Gateway -> Model Proxies. A shared Gateway
+Base URL combines with each validated relative Proxy Path, while an advanced
+full-URL override supports a proxy on another origin and preserves legacy
+records. Each proxy declares Model-Based or Semantic routing, capabilities and
+an internal stable ID. Test and Conformance actions are available on each saved
+proxy card rather than through one global route selector. Existing `models` and
+`default_model_id` records remain compatible; the API adds `proxies` and
+`default_proxy_id`, and Agent profile IDs remain unchanged.
+
+Validation: focused Gateway regression passes (`28 passed`); focused Ruff,
+Python compilation, TypeScript compilation, the memory-safe production build,
+portable Compose validation and rebuilt local `app`/`line-bridge` health checks
+pass. The service-free suite reaches `1064 passed`, `1 deselected`, `76 failed`;
+all failures are the previously recorded legacy snapshot, paused Knowledge
+metadata/search-field and related fixture expectations, not AI Runtime or Model
+Proxy regressions.

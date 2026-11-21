@@ -18,6 +18,8 @@ import {
     Snackbar,
     Stack,
     Switch,
+    Tab,
+    Tabs,
     TextField,
     Typography
 } from "@mui/material";
@@ -34,17 +36,20 @@ import GroupWorkIcon from "@mui/icons-material/GroupWork";
 import SpeedIcon from "@mui/icons-material/Speed";
 import MemoryIcon from "@mui/icons-material/Memory";
 import SmartToyIcon from "@mui/icons-material/SmartToy";
+import AccountTreeIcon from "@mui/icons-material/AccountTree";
+import DnsIcon from "@mui/icons-material/Dns";
 import { useMsal } from "@azure/msal-react";
 import { siAnthropic, siGooglegemini, siMistralai, siOllama, siOpenai, siOpenrouter } from "simple-icons";
 
 import {
     createLLMProviderApi,
     deleteLLMProviderApi,
+    getAIGatewaySettingsApi,
     listLLMProvidersApi,
     testLLMProviderApi,
     updateLLMProviderApi
 } from "../../api";
-import { LLMProviderAdapter, LLMProviderModel, LLMProviderPayload, LLMVendor, ManagedLLMProvider } from "../../api/models";
+import { AIGatewaySettings, LLMProviderAdapter, LLMProviderModel, LLMProviderPayload, LLMVendor, ManagedLLMProvider } from "../../api/models";
 import { getToken } from "../../authConfig";
 import { AIGatewayManagement } from "./AIGatewayManagement";
 
@@ -165,6 +170,8 @@ const notifyProfileCapabilitiesChanged = () => {
 export function LLMProviderManagement() {
     const { instance } = useMsal();
     const [providers, setProviders] = useState<ManagedLLMProvider[]>([]);
+    const [gatewaySettings, setGatewaySettings] = useState<AIGatewaySettings | null>(null);
+    const [activeTab, setActiveTab] = useState<"overview" | "providers" | "gateways" | "private">("overview");
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [testingId, setTestingId] = useState<string | null>(null);
@@ -178,13 +185,19 @@ export function LLMProviderManagement() {
     const [actionProvider, setActionProvider] = useState<ManagedLLMProvider | null>(null);
     const selectedVendor = vendorOptions.find(vendor => vendor.id === form.vendor);
     const apiKeyRequired = Boolean(selectedVendor?.requiresApiKey && form.enabled && !editing?.has_api_key);
+    const builtInInactive = gatewaySettings?.mode === "external";
 
     const loadProviders = async () => {
         setLoading(true);
         try {
             const token = await getToken(instance);
             if (!token) throw new Error("No authentication token");
-            setProviders(await listLLMProvidersApi(token));
+            const [providerRecords, gateway] = await Promise.all([
+                listLLMProvidersApi(token),
+                getAIGatewaySettingsApi(token)
+            ]);
+            setProviders(providerRecords);
+            setGatewaySettings(gateway);
         } catch (error) {
             setNotice({ severity: "error", text: error instanceof Error ? error.message : "Failed to load providers" });
         } finally {
@@ -327,7 +340,84 @@ export function LLMProviderManagement() {
 
     return (
         <Stack spacing={2} sx={{ pt: 1 }}>
-            <AIGatewayManagement onChanged={() => void loadProviders()} />
+            <Box>
+                <Typography variant="h5" fontWeight={700}>AI Runtime &amp; Models</Typography>
+                <Typography variant="body2" color="text.secondary">
+                    Separate runtime routing, built-in connections, enterprise gateways, and private model infrastructure.
+                </Typography>
+            </Box>
+
+            <Paper variant="outlined">
+                <Tabs
+                    value={activeTab}
+                    onChange={(_event, value) => setActiveTab(value)}
+                    variant="scrollable"
+                    scrollButtons="auto"
+                    aria-label="AI runtime configuration sections"
+                >
+                    <Tab value="overview" label="Routing Overview" icon={<AccountTreeIcon />} iconPosition="start" />
+                    <Tab value="providers" label="Built-in Providers" icon={<SmartToyIcon />} iconPosition="start" />
+                    <Tab value="gateways" label="Enterprise Gateways" icon={<HubIcon />} iconPosition="start" />
+                    <Tab value="private" label="Private LLM Infrastructure" icon={<DnsIcon />} iconPosition="start" />
+                </Tabs>
+            </Paper>
+
+            {activeTab === "overview" && (
+                <Stack spacing={2}>
+                    <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 2 }}>
+                        <Paper variant="outlined" sx={{ p: 2.5 }}>
+                            <Typography variant="overline" color="text.secondary">Active routing mode</Typography>
+                            <Stack direction="row" spacing={1} alignItems="center" mt={0.5}>
+                                <Typography variant="h6">{gatewaySettings?.mode === "external" ? "External AI Gateway" : gatewaySettings?.mode === "direct_development" ? "Direct Development" : "Built-in Gateway"}</Typography>
+                                <Chip size="small" color={gatewaySettings?.mode === "external" ? "primary" : "default"} label={gatewaySettings?.mode === "external" ? "Governed" : "Active"} />
+                            </Stack>
+                            <Typography variant="body2" color="text.secondary" mt={1}>
+                                {gatewaySettings?.mode === "external" ? `${gatewaySettings.name || "Enterprise Gateway"} is the enforced runtime path.` : "Managed provider connections supply the runtime models."}
+                            </Typography>
+                        </Paper>
+                        <Paper variant="outlined" sx={{ p: 2.5 }}>
+                            <Typography variant="overline" color="text.secondary">Built-in providers</Typography>
+                            <Typography variant="h4" mt={0.5}>{providers.length}</Typography>
+                            <Typography variant="body2" color="text.secondary">{providers.filter(provider => provider.enabled).length} enabled configuration records</Typography>
+                            {gatewaySettings?.mode === "external" && <Chip size="small" sx={{ mt: 1 }} label="Configured · Inactive at runtime" />}
+                        </Paper>
+                        <Paper variant="outlined" sx={{ p: 2.5 }}>
+                            <Typography variant="overline" color="text.secondary">Enterprise model proxies</Typography>
+                            <Typography variant="h4" mt={0.5}>{gatewaySettings?.proxies?.length ?? gatewaySettings?.models?.length ?? 0}</Typography>
+                            <Typography variant="body2" color="text.secondary">Default: {gatewaySettings?.default_proxy_id || gatewaySettings?.default_model_id || "Not configured"}</Typography>
+                        </Paper>
+                    </Box>
+                    <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+                        <Button variant="contained" onClick={() => setActiveTab(gatewaySettings?.mode === "external" ? "gateways" : "providers")}>
+                            Configure active runtime
+                        </Button>
+                        <Button variant="outlined" onClick={() => setActiveTab("gateways")}>Manage enterprise gateways</Button>
+                    </Stack>
+                </Stack>
+            )}
+
+            {activeTab === "gateways" && <AIGatewayManagement onChanged={() => void loadProviders()} />}
+
+            {activeTab === "private" && (
+                <Paper variant="outlined" sx={{ p: 3 }}>
+                    <Stack spacing={1.5}>
+                        <Box display="flex" alignItems="center" gap={1.5}><DnsIcon color="primary" /><Typography variant="h6">Private LLM Infrastructure</Typography></Box>
+                        <Typography variant="body2" color="text.secondary">
+                            GPUStack manages workers and vLLM deployments. InsightSphere continues to access private models through the Enterprise AI Gateway so Agent, Knowledge, Tool, and audit policies remain enforced.
+                        </Typography>
+                        <Alert severity="info">Infrastructure lifecycle remains deployment-managed. Configure the resulting OpenAI-compatible endpoint as an Enterprise Gateway proxy, then validate it before assigning Agents.</Alert>
+                        <Button variant="outlined" sx={{ alignSelf: "flex-start" }} onClick={() => setActiveTab("gateways")}>Configure private model gateway</Button>
+                    </Stack>
+                </Paper>
+            )}
+
+            {activeTab === "providers" && (<>
+
+            {builtInInactive && (
+                <Alert severity="info">
+                    External AI Gateway is active. These provider records remain available for administration and rollback, but runtime access and direct connection tests are blocked.
+                </Alert>
+            )}
 
             <Box display="flex" justifyContent="space-between" alignItems="center">
                 <Box>
@@ -411,8 +501,8 @@ export function LLMProviderManagement() {
                             >
                                 <Chip
                                     size="small"
-                                    color={provider.enabled ? "success" : "default"}
-                                    label={provider.enabled ? "Enabled" : "Disabled"}
+                                    color={!builtInInactive && provider.enabled ? "success" : "default"}
+                                    label={builtInInactive ? "Configured · Inactive" : provider.enabled ? "Enabled" : "Disabled"}
                                     sx={{ position: "absolute", top: 12, left: 12 }}
                                 />
                                 <IconButton
@@ -458,10 +548,11 @@ export function LLMProviderManagement() {
                     })}
                 </Box>
             )}
+            </>)}
 
             <Menu anchorEl={actionAnchor} open={Boolean(actionAnchor)} onClose={closeActionMenu}>
                 <MenuItem
-                    disabled={!actionProvider || testingId === actionProvider._id}
+                    disabled={builtInInactive || !actionProvider || testingId === actionProvider._id}
                     onClick={() => {
                         if (actionProvider) void testConnection(actionProvider);
                         closeActionMenu();
@@ -523,7 +614,7 @@ export function LLMProviderManagement() {
                         />
                         <Stack direction="row" alignItems="center" spacing={1}>
                             <Switch checked={form.enabled} onChange={event => setForm({ ...form, enabled: event.target.checked })} />
-                            <Typography>Enabled for Agent selection</Typography>
+                            <Typography>{builtInInactive ? "Enabled when Built-in routing is restored" : "Enabled for Agent selection"}</Typography>
                         </Stack>
 
                         <Box display="flex" justifyContent="space-between" alignItems="center">

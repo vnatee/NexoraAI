@@ -5217,10 +5217,20 @@ async def admin_test_ai_gateway(auth_claims: dict[str, Any]):
     if settings.get("mode") != "external":
         return jsonify({"error": "Select and save External AI Gateway mode before testing"}), 409
     client = None
+    requested_proxy_id = str(settings.get("default_model_id") or "")
     try:
+        payload = (await request.get_json() or {}) if request.is_json else {}
+        requested_proxy_id = str(payload.get("model_id") or requested_proxy_id).strip()
         profiles = build_external_gateway_profiles(settings)
-        profile = profiles[DEFAULT_LLM_PROFILE_ID]
-        route = gateway_model_by_id(settings, profile.managed_model_id)
+        route = gateway_model_by_id(
+            settings, requested_proxy_id or None
+        )
+        profile_id = (
+            DEFAULT_LLM_PROFILE_ID
+            if route.get("id") == settings.get("default_model_id")
+            else f"gateway:{route['id']}"
+        )
+        profile = profiles[profile_id]
         client = create_external_gateway_client(settings, route)
         completion_options: dict[str, Any] = {"max_tokens": 3, "temperature": 0}
         if profile.settings.model in Approach.GPT_REASONING_MODELS:
@@ -5233,19 +5243,25 @@ async def admin_test_ai_gateway(auth_claims: dict[str, Any]):
         insert_integration_lifecycle_event(
             action="ai_gateway_tested",
             status="success",
-            connection_id="system",
+            connection_id=f"proxy:{route.get('id') or ''}",
             team_id="",
             actor_id=actor_id,
             vendor="ai_gateway",
         )
-        return jsonify({"success": True, "model_id": settings.get("default_model_id")})
+        return jsonify(
+            {
+                "success": True,
+                "proxy_id": route.get("id"),
+                "model_id": route.get("id"),
+            }
+        )
     except Exception as error:
         diagnostic = gateway_error_diagnostic(error)
         current_app.logger.warning("AI Gateway connection test failed: %s", type(error).__name__)
         insert_integration_lifecycle_event(
             action="ai_gateway_tested",
             status="failed",
-            connection_id="system",
+            connection_id=f"proxy:{requested_proxy_id}",
             team_id="",
             actor_id=actor_id,
             vendor="ai_gateway",
@@ -5272,10 +5288,13 @@ async def admin_conformance_ai_gateway(auth_claims: dict[str, Any]):
         return jsonify(
             {"error": "Select and save External AI Gateway mode before testing"}
         ), 409
+    requested_proxy_id = str(settings.get("default_model_id") or "")
     try:
         payload = (await request.get_json() or {}) if request.is_json else {}
-        model_id = str(payload.get("model_id") or "").strip() or None
-        report = await run_gateway_conformance(settings, model_id=model_id)
+        requested_proxy_id = str(payload.get("model_id") or requested_proxy_id).strip()
+        report = await run_gateway_conformance(
+            settings, model_id=requested_proxy_id or None
+        )
         failed_required = next(
             (
                 item
@@ -5287,7 +5306,7 @@ async def admin_conformance_ai_gateway(auth_claims: dict[str, Any]):
         insert_integration_lifecycle_event(
             action="ai_gateway_conformance",
             status="success" if report["ready"] else "failed",
-            connection_id="system",
+            connection_id=f"proxy:{report.get('model_id') or ''}",
             team_id="",
             actor_id=actor_id,
             vendor=str(settings.get("gateway_adapter") or "ai_gateway"),
@@ -5302,7 +5321,7 @@ async def admin_conformance_ai_gateway(auth_claims: dict[str, Any]):
         insert_integration_lifecycle_event(
             action="ai_gateway_conformance",
             status="failed",
-            connection_id="system",
+            connection_id=f"proxy:{requested_proxy_id}",
             team_id="",
             actor_id=actor_id,
             vendor=str(settings.get("gateway_adapter") or "ai_gateway"),

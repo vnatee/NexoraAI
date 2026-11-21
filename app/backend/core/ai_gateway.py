@@ -266,10 +266,24 @@ def gateway_model_settings(
         deployment=None,
         api_version="",
         endpoint=None,
-        base_url=str(model.get("base_url") or settings["base_url"]),
+        base_url=gateway_route_base_url(settings, model),
         api_key=decrypt_secret(settings.get("api_key_ciphertext")),
         organization=None,
     )
+
+
+def gateway_route_base_url(
+    settings: dict[str, Any], route: dict[str, Any] | None
+) -> str:
+    """Resolve a proxy endpoint while preserving legacy full-route URLs."""
+
+    selected = route or {}
+    override = str(selected.get("base_url") or "").strip().rstrip("/")
+    if override:
+        return override
+    base_url = str(settings["base_url"]).rstrip("/")
+    proxy_path = str(selected.get("proxy_path") or "").strip().strip("/")
+    return f"{base_url}/{proxy_path}" if proxy_path else base_url
 
 
 def build_external_gateway_profiles(settings: dict[str, Any]) -> dict[str, LLMProfile]:
@@ -351,7 +365,7 @@ def create_external_gateway_client(
         timeout=int(settings.get("timeout_seconds") or 60),
     )
     return AsyncOpenAI(
-        base_url=str(route.get("base_url") or settings["base_url"]),
+        base_url=gateway_route_base_url(settings, route),
         api_key=api_key,
         http_client=http_client,
     )

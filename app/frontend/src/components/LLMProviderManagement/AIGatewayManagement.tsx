@@ -28,13 +28,13 @@ import {
 import {
     AIGatewayAuthType,
     AIGatewayConformanceReport,
-    AIGatewayModel,
+    AIGatewayProxy,
     AIGatewaySettings,
     AIGatewaySettingsPayload
 } from "../../api/models";
 import { getToken } from "../../authConfig";
 
-type GatewayForm = AIGatewaySettings & {
+type GatewayForm = Omit<AIGatewaySettings, "models" | "default_model_id"> & {
     api_key: string;
     client_secret: string;
     ca_certificate: string;
@@ -42,11 +42,12 @@ type GatewayForm = AIGatewaySettings & {
     client_private_key: string;
 };
 
-const emptyModel = (): AIGatewayModel => ({
+const emptyProxy = (): AIGatewayProxy => ({
     id: "",
     label: "",
     model: "",
     routing_strategy: "model_based",
+    proxy_path: "",
     base_url: "",
     supports_tools: true,
     supports_vision: false
@@ -64,8 +65,8 @@ const emptySettings = (): GatewayForm => ({
     oauth_audience: "",
     oauth_client_auth_method: "client_secret_post",
     mtls_enabled: false,
-    models: [],
-    default_model_id: "",
+    proxies: [],
+    default_proxy_id: "",
     timeout_seconds: 60,
     has_api_key: false,
     has_client_secret: false,
@@ -82,24 +83,36 @@ const emptySettings = (): GatewayForm => ({
     client_private_key: ""
 });
 
-const toForm = (settings: AIGatewaySettings): GatewayForm => ({
-    ...settings,
-    models: settings.models.map(model => ({
-        ...model,
-        routing_strategy: model.routing_strategy || "model_based",
-        base_url: model.base_url || ""
+const toForm = (settings: AIGatewaySettings): GatewayForm => {
+    const { models: legacyModels, default_model_id: legacyDefault, ...current } = settings;
+    return ({
+    ...current,
+    proxies: (settings.proxies || legacyModels || []).map(proxy => ({
+        ...proxy,
+        routing_strategy: proxy.routing_strategy || "model_based",
+        proxy_path: proxy.proxy_path || "",
+        // A pre-P1.2.2 MuleSoft record stored the complete proxy endpoint in
+        // the gateway Base URL. Preserve it as a per-proxy override until an
+        // administrator splits it into the shared root and Proxy Path.
+        base_url: proxy.base_url || (
+            settings.gateway_adapter === "mulesoft" && !proxy.proxy_path
+                ? settings.base_url
+                : ""
+        )
     })),
+    default_proxy_id: settings.default_proxy_id || legacyDefault || "",
     api_key: "",
     client_secret: "",
     ca_certificate: "",
     client_certificate: "",
     client_private_key: ""
-});
+    });
+};
 
 const validateExternalForm = (form: GatewayForm): string | null => {
     if (form.mode !== "external") return null;
     if (!form.name.trim()) return "Enter a Gateway Name before saving.";
-    if (!form.base_url.trim()) return "Enter an OpenAI-compatible Base URL before saving.";
+    if (!form.base_url.trim()) return "Enter a Gateway Base URL before saving.";
     if (form.auth_type === "api_key" && !form.api_key && !form.has_api_key) {
         return "Enter an API Key before saving.";
     }
@@ -112,26 +125,39 @@ const validateExternalForm = (form: GatewayForm): string | null => {
         if (!form.client_id.trim()) return "Enter a MuleSoft Client ID before saving.";
         if (!form.client_secret && !form.has_client_secret) return "Enter a MuleSoft Client Secret before saving.";
     }
-    if (form.models.length === 0) return "Add at least one Gateway Route before saving.";
-    if (form.models.some(model => !model.id.trim() || (model.routing_strategy !== "semantic" && !model.model.trim()))) {
+    if (form.proxies.length === 0) return "Add at least one Model Proxy before saving.";
+    if (form.proxies.some(proxy => !proxy.id.trim() || (proxy.routing_strategy !== "semantic" && !proxy.model.trim()))) {
         return "Complete the Route ID and Gateway Model Alias for every model-based route before saving.";
     }
-    if (form.models.some(model => model.routing_strategy === "semantic") && form.gateway_adapter !== "mulesoft") {
+    if (form.gateway_adapter === "mulesoft" && form.proxies.some(proxy => !proxy.proxy_path.trim() && !proxy.base_url.trim())) {
+        return "Enter a Proxy Path for each MuleSoft Model Proxy, or use the advanced full URL override.";
+    }
+    if (form.proxies.some(proxy => proxy.routing_strategy === "semantic") && form.gateway_adapter !== "mulesoft") {
         return "Semantic Routing requires the MuleSoft AI Gateway template.";
     }
-    if (!form.default_model_id) return "Select a Default Route before saving.";
+    if (!form.default_proxy_id) return "Select a Default Proxy before saving.";
     return null;
 };
+
+const proxyEndpointPreview = (baseUrl: string, proxy: AIGatewayProxy): string => {
+    if (proxy.base_url.trim()) return proxy.base_url.trim().replace(/\/$/, "");
+    const base = baseUrl.trim().replace(/\/$/, "");
+    const path = proxy.proxy_path.trim().replace(/^\/+|\/+$/g, "");
+    return path ? `${base}/${path}` : base;
+};
+
+const configurationFingerprint = (form: GatewayForm): string => JSON.stringify(form);
 
 export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
     const { instance } = useMsal();
     const [form, setForm] = useState<GatewayForm>(emptySettings());
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
-    const [testing, setTesting] = useState(false);
-    const [runningConformance, setRunningConformance] = useState(false);
-    const [conformance, setConformance] = useState<AIGatewayConformanceReport | null>(null);
-    const [conformanceModelId, setConformanceModelId] = useState("");
+    const [testingProxyId, setTestingProxyId] = useState<string | null>(null);
+    const [conformanceProxyId, setConformanceProxyId] = useState<string | null>(null);
+    const [conformanceByProxy, setConformanceByProxy] = useState<Record<string, AIGatewayConformanceReport>>({});
+    const [savedProxyIds, setSavedProxyIds] = useState<Set<string>>(new Set());
+    const [savedFingerprint, setSavedFingerprint] = useState("");
     const [notice, setNotice] = useState<{ severity: "success" | "warning" | "error"; text: string } | null>(null);
 
     const load = async () => {
@@ -140,8 +166,10 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
             const token = await getToken(instance);
             if (!token) throw new Error("No authentication token");
             const settings = await getAIGatewaySettingsApi(token);
-            setForm(toForm(settings));
-            setConformanceModelId(settings.default_model_id);
+            const loadedForm = toForm(settings);
+            setForm(loadedForm);
+            setSavedFingerprint(configurationFingerprint(loadedForm));
+            setSavedProxyIds(new Set((settings.proxies || settings.models || []).map(proxy => proxy.id)));
         } catch (error) {
             setNotice({ severity: "error", text: error instanceof Error ? error.message : "Unable to load AI Gateway settings" });
         } finally {
@@ -153,10 +181,10 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
         void load();
     }, [instance]);
 
-    const updateModel = <K extends keyof AIGatewayModel>(index: number, key: K, value: AIGatewayModel[K]) => {
+    const updateProxy = <K extends keyof AIGatewayProxy>(index: number, key: K, value: AIGatewayProxy[K]) => {
         setForm(current => ({
             ...current,
-            models: current.models.map((model, modelIndex) => modelIndex === index ? { ...model, [key]: value } : model)
+            proxies: current.proxies.map((proxy, proxyIndex) => proxyIndex === index ? { ...proxy, [key]: value } : proxy)
         }));
     };
 
@@ -169,7 +197,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                 ? "mulesoft_client_id_enforcement"
                 : current.auth_type === "mulesoft_client_id_enforcement" ? "none" : current.auth_type
         }));
-        setConformance(null);
+        setConformanceByProxy({});
     };
 
     const save = async () => {
@@ -194,8 +222,8 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                 oauth_audience: form.oauth_audience,
                 oauth_client_auth_method: form.oauth_client_auth_method,
                 mtls_enabled: form.mtls_enabled,
-                models: form.models,
-                default_model_id: form.default_model_id,
+                proxies: form.proxies,
+                default_proxy_id: form.default_proxy_id,
                 timeout_seconds: form.timeout_seconds,
                 api_key: form.api_key || undefined,
                 client_secret: form.client_secret || undefined,
@@ -204,9 +232,11 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                 client_private_key: form.client_private_key || undefined
             };
             const saved = await updateAIGatewaySettingsApi(payload, token);
-            setForm(toForm(saved));
-            setConformanceModelId(saved.default_model_id);
-            setConformance(null);
+            const savedForm = toForm(saved);
+            setForm(savedForm);
+            setSavedFingerprint(configurationFingerprint(savedForm));
+            setSavedProxyIds(new Set((saved.proxies || saved.models || []).map(proxy => proxy.id)));
+            setConformanceByProxy({});
             window.dispatchEvent(new Event("nexora:llm-profiles-changed"));
             onChanged?.();
             setNotice({ severity: "success", text: "AI Gateway routing policy saved" });
@@ -217,28 +247,32 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
         }
     };
 
-    const test = async () => {
-        setTesting(true);
+    const testProxy = async (proxyId: string) => {
+        setTestingProxyId(proxyId);
         try {
             const token = await getToken(instance);
             if (!token) throw new Error("No authentication token");
-            const result = await testAIGatewayApi(token);
-            setNotice({ severity: "success", text: `Gateway connection succeeded through model ${result.model_id}` });
+            const result = await testAIGatewayApi(token, proxyId);
+            setNotice({ severity: "success", text: `Model Proxy ${result.proxy_id} connection succeeded` });
         } catch (error) {
             setNotice({ severity: "error", text: error instanceof Error ? error.message : "Gateway connection failed" });
         } finally {
-            setTesting(false);
+            setTestingProxyId(null);
         }
     };
 
-    const runConformance = async () => {
-        setRunningConformance(true);
-        setConformance(null);
+    const runConformance = async (proxyId: string) => {
+        setConformanceProxyId(proxyId);
+        setConformanceByProxy(current => {
+            const next = { ...current };
+            delete next[proxyId];
+            return next;
+        });
         try {
             const token = await getToken(instance);
             if (!token) throw new Error("No authentication token");
-            const report = await runAIGatewayConformanceApi(token, conformanceModelId || form.default_model_id);
-            setConformance(report);
+            const report = await runAIGatewayConformanceApi(token, proxyId);
+            setConformanceByProxy(current => ({ ...current, [proxyId]: report }));
             setNotice({
                 severity: report.ready ? "success" : "warning",
                 text: report.ready
@@ -248,7 +282,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
         } catch (error) {
             setNotice({ severity: "error", text: error instanceof Error ? error.message : "Gateway conformance check failed" });
         } finally {
-            setRunningConformance(false);
+            setConformanceProxyId(null);
         }
     };
 
@@ -257,6 +291,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
     }
 
     const external = form.mode === "external";
+    const configurationSaved = configurationFingerprint(form) === savedFingerprint;
     const secretLabel = (label: string, stored: boolean) => stored ? `${label} (leave blank to keep stored value)` : label;
 
     return (
@@ -310,10 +345,10 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                             <TextField
                                 fullWidth
                                 required
-                                label="OpenAI-compatible Base URL"
+                                label="Gateway Base URL"
                                 value={form.base_url}
                                 onChange={event => setForm({ ...form, base_url: event.target.value })}
-                                helperText={form.insecure_http_allowed ? "HTTP is permitted by deployment policy." : "HTTPS is required."}
+                                helperText={form.gateway_adapter === "mulesoft" ? "Shared origin/root; each Model Proxy appends its Proxy Path." : form.insecure_http_allowed ? "HTTP is permitted by deployment policy." : "HTTPS is required."}
                             />
                             <TextField
                                 sx={{ minWidth: 170 }}
@@ -433,169 +468,144 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
 
                         <Box display="flex" justifyContent="space-between" alignItems="center">
                             <Box>
-                                <Typography fontWeight={600}>Gateway Routes</Typography>
-                                <Typography variant="caption" color="text.secondary">Configure stable InsightSphere routes for deterministic Model-Based or content-aware Semantic proxy selection.</Typography>
+                                <Typography fontWeight={600}>Model Proxies</Typography>
+                                <Typography variant="caption" color="text.secondary">Each MuleSoft proxy has its own path, routing strategy, capability contract, and test result.</Typography>
                             </Box>
-                            <Button startIcon={<AddIcon />} onClick={() => setForm({ ...form, models: [...form.models, emptyModel()] })}>Add Model</Button>
+                            <Button startIcon={<AddIcon />} onClick={() => setForm({ ...form, proxies: [...form.proxies, emptyProxy()] })}>Add Proxy</Button>
                         </Box>
-                        {form.models.map((model, index) => (
+                        {form.proxies.map((proxy, index) => {
+                            const report = conformanceByProxy[proxy.id];
+                            const saved = configurationSaved && savedProxyIds.has(proxy.id);
+                            const endpointPreview = proxyEndpointPreview(form.base_url, proxy);
+                            return (
                             <Paper key={index} variant="outlined" sx={{ p: 2 }}>
                                 <Stack spacing={1.25}>
+                                    <Box display="flex" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
+                                        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                                            <Typography fontWeight={700}>{proxy.label || proxy.id || `Model Proxy ${index + 1}`}</Typography>
+                                            <Chip size="small" label={(proxy.routing_strategy || "model_based").replace("_", "-")} />
+                                            {form.default_proxy_id === proxy.id && <Chip size="small" color="primary" label="Default" />}
+                                        </Stack>
+                                        <Button color="error" startIcon={<DeleteIcon />} onClick={() => setForm({ ...form, proxies: form.proxies.filter((_, i) => i !== index) })}>Remove</Button>
+                                    </Box>
                                     <Stack direction={{ xs: "column", md: "row" }} spacing={1.25}>
-                                        <TextField fullWidth required label="Route ID" value={model.id} onChange={event => updateModel(index, "id", event.target.value)} />
-                                        <TextField fullWidth label="Display Label" value={model.label} onChange={event => updateModel(index, "label", event.target.value)} />
+                                        <TextField fullWidth required label="Proxy ID" value={proxy.id} onChange={event => updateProxy(index, "id", event.target.value)} helperText="Stable InsightSphere identifier" />
+                                        <TextField fullWidth label="Display Name" value={proxy.label} onChange={event => updateProxy(index, "label", event.target.value)} />
+                                        <TextField
+                                            fullWidth
+                                            required={form.gateway_adapter === "mulesoft" && !proxy.base_url}
+                                            label="Proxy Path"
+                                            value={proxy.proxy_path}
+                                            onChange={event => updateProxy(index, "proxy_path", event.target.value)}
+                                            helperText="Relative to Gateway Base URL, for example smartmodel/v1"
+                                        />
                                         <TextField
                                             fullWidth
                                             select
                                             label="Routing Strategy"
-                                            value={model.routing_strategy || "model_based"}
-                                            onChange={event => updateModel(index, "routing_strategy", event.target.value as AIGatewayModel["routing_strategy"])}
+                                            value={proxy.routing_strategy || "model_based"}
+                                            onChange={event => updateProxy(index, "routing_strategy", event.target.value as AIGatewayProxy["routing_strategy"])}
                                         >
                                             <MenuItem value="model_based">Model-Based</MenuItem>
                                             <MenuItem value="semantic" disabled={form.gateway_adapter !== "mulesoft"}>Semantic</MenuItem>
                                         </TextField>
-                                        <Button color="error" startIcon={<DeleteIcon />} onClick={() => setForm({ ...form, models: form.models.filter((_, i) => i !== index) })}>Remove</Button>
                                     </Stack>
                                     <Stack direction={{ xs: "column", md: "row" }} spacing={1.25}>
                                         <TextField
                                             fullWidth
-                                            required={model.routing_strategy !== "semantic"}
-                                            label={model.routing_strategy === "semantic" ? "Virtual Route Alias (not sent upstream)" : "Gateway Model Alias"}
-                                            value={model.model}
-                                            onChange={event => updateModel(index, "model", event.target.value)}
-                                            helperText={model.routing_strategy === "semantic" ? "May be blank; MuleSoft chooses the target model from the request content." : "Sent in the model field for deterministic routing."}
+                                            required={proxy.routing_strategy !== "semantic"}
+                                            label={proxy.routing_strategy === "semantic" ? "Internal Virtual Alias (not sent upstream)" : "Upstream Model Alias"}
+                                            value={proxy.model}
+                                            onChange={event => updateProxy(index, "model", event.target.value)}
+                                            helperText={proxy.routing_strategy === "semantic" ? "May be blank; MuleSoft selects the model from request content." : "Sent as model for deterministic Model-Based routing."}
                                         />
                                         <TextField
                                             fullWidth
-                                            label="Route Base URL (optional)"
-                                            value={model.base_url || ""}
-                                            onChange={event => updateModel(index, "base_url", event.target.value)}
-                                            helperText="Use a separate MuleSoft Model Proxy base path; blank uses the Gateway Base URL."
+                                            label="Full Base URL Override (advanced)"
+                                            value={proxy.base_url || ""}
+                                            onChange={event => updateProxy(index, "base_url", event.target.value)}
+                                            helperText="Optional for a proxy hosted on a different origin; overrides Gateway Base URL + Proxy Path."
                                         />
                                     </Stack>
+                                    <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+                                        Resolved endpoint: {endpointPreview || "Complete the Gateway Base URL and Proxy Path"}
+                                    </Typography>
                                     <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-                                        <Stack direction="row" alignItems="center"><Switch size="small" checked={model.supports_tools} onChange={event => updateModel(index, "supports_tools", event.target.checked)} /><Typography variant="body2">Tool calling</Typography></Stack>
-                                        <Stack direction="row" alignItems="center"><Switch size="small" checked={model.supports_vision} onChange={event => updateModel(index, "supports_vision", event.target.checked)} /><Typography variant="body2">Vision</Typography></Stack>
+                                        <Stack direction="row" alignItems="center"><Switch size="small" checked={proxy.supports_tools} onChange={event => updateProxy(index, "supports_tools", event.target.checked)} /><Typography variant="body2">Tool calling</Typography></Stack>
+                                        <Stack direction="row" alignItems="center"><Switch size="small" checked={proxy.supports_vision} onChange={event => updateProxy(index, "supports_vision", event.target.checked)} /><Typography variant="body2">Vision</Typography></Stack>
                                     </Stack>
+                                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                                        <Button
+                                            size="small"
+                                            variant="outlined"
+                                            startIcon={testingProxyId === proxy.id ? <CircularProgress size={14} /> : <PlayArrowIcon />}
+                                            disabled={!saved || saving || testingProxyId !== null || conformanceProxyId !== null}
+                                            onClick={() => void testProxy(proxy.id)}
+                                        >
+                                            Test Proxy
+                                        </Button>
+                                        <Button
+                                            size="small"
+                                            variant="outlined"
+                                            startIcon={conformanceProxyId === proxy.id ? <CircularProgress size={14} /> : <PlayArrowIcon />}
+                                            disabled={!saved || saving || testingProxyId !== null || conformanceProxyId !== null}
+                                            onClick={() => void runConformance(proxy.id)}
+                                        >
+                                            Run Conformance
+                                        </Button>
+                                        {!saved && <Typography variant="caption" color="warning.main" alignSelf="center">Save all Gateway changes before testing this proxy.</Typography>}
+                                    </Stack>
+                                    {report && (
+                                        <Box sx={{ pt: 1, borderTop: 1, borderColor: "divider" }}>
+                                            <Box display="flex" justifyContent="space-between" alignItems="center" gap={1}>
+                                                <Box>
+                                                    <Typography variant="body2" fontWeight={700}>Proxy Conformance</Typography>
+                                                    <Typography variant="caption" color="text.secondary">
+                                                        {report.routing_strategy.replace("_", "-")}{report.selected_model ? ` · selected ${report.selected_model}` : ""}
+                                                    </Typography>
+                                                </Box>
+                                                <Chip size="small" color={report.ready ? "success" : "warning"} label={report.ready ? "Ready" : "Not ready"} />
+                                            </Box>
+                                            {report.checks.map(check => {
+                                                const references = Object.entries(check.correlation_ids || {}).map(([name, value]) => `${name}=${value}`).join(", ");
+                                                return (
+                                                    <Box key={check.name} display="flex" justifyContent="space-between" alignItems="flex-start" gap={2} sx={{ py: 0.75, mt: 0.75, borderTop: 1, borderColor: "divider" }}>
+                                                        <Box>
+                                                            <Typography variant="body2" fontWeight={600}>{check.name.replaceAll("_", " ")}{check.required ? " · required" : " · optional"}</Typography>
+                                                            {(check.code || check.http_status || references) && <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{[check.code, check.http_status ? `HTTP ${check.http_status}` : "", references].filter(Boolean).join(" · ")}</Typography>}
+                                                        </Box>
+                                                        <Chip size="small" color={check.status === "passed" ? "success" : check.status === "skipped" ? "default" : "error"} label={check.status} />
+                                                    </Box>
+                                                );
+                                            })}
+                                        </Box>
+                                    )}
                                 </Stack>
                             </Paper>
-                        ))}
+                            );
+                        })}
                         <TextField
                             select
                             required
-                            label="Default Route"
-                            value={form.default_model_id}
-                            onChange={event => setForm({ ...form, default_model_id: event.target.value })}
+                            label="Default Proxy"
+                            value={form.default_proxy_id}
+                            onChange={event => setForm({ ...form, default_proxy_id: event.target.value })}
                         >
-                            {form.models.filter(model => model.id).map(model => <MenuItem key={model.id} value={model.id}>{model.label || model.id}</MenuItem>)}
-                        </TextField>
-                        <TextField
-                            select
-                            label="Conformance Route"
-                            value={conformanceModelId || form.default_model_id}
-                            onChange={event => {
-                                setConformanceModelId(event.target.value);
-                                setConformance(null);
-                            }}
-                            helperText="Select which saved Model-Based or Semantic route to validate."
-                        >
-                            {form.models.filter(model => model.id).map(model => (
-                                <MenuItem key={model.id} value={model.id}>
-                                    {model.label || model.id} · {(model.routing_strategy || "model_based").replace("_", "-")}
-                                </MenuItem>
-                            ))}
+                            {form.proxies.filter(proxy => proxy.id).map(proxy => <MenuItem key={proxy.id} value={proxy.id}>{proxy.label || proxy.id}</MenuItem>)}
                         </TextField>
                     </>
-                )}
-
-                {conformance && (
-                    <Paper variant="outlined" sx={{ p: 2 }}>
-                        <Stack spacing={1.25}>
-                            <Box display="flex" justifyContent="space-between" alignItems="center" gap={1}>
-                                <Box>
-                                    <Typography fontWeight={600}>Gateway Conformance</Typography>
-                                    <Typography variant="caption" color="text.secondary">
-                                        {conformance.adapter} · {conformance.routing_strategy.replace("_", "-")} · {conformance.model_alias}
-                                    </Typography>
-                                    {conformance.selected_model && (
-                                        <Typography variant="caption" color="text.secondary" display="block">
-                                            Selected upstream model: {conformance.selected_model}
-                                        </Typography>
-                                    )}
-                                </Box>
-                                <Chip
-                                    color={conformance.ready ? "success" : "warning"}
-                                    label={conformance.ready ? "Ready" : "Not ready"}
-                                />
-                            </Box>
-                            {conformance.checks.map(check => {
-                                const references = Object.entries(check.correlation_ids || {})
-                                    .map(([name, value]) => `${name}=${value}`)
-                                    .join(", ");
-                                return (
-                                    <Box
-                                        key={check.name}
-                                        display="flex"
-                                        justifyContent="space-between"
-                                        alignItems="flex-start"
-                                        gap={2}
-                                        sx={{ py: 1, borderTop: 1, borderColor: "divider" }}
-                                    >
-                                        <Box>
-                                            <Typography variant="body2" fontWeight={600}>
-                                                {check.name.replaceAll("_", " ")}
-                                                {check.required ? " · required" : " · optional"}
-                                            </Typography>
-                                            {(check.code || check.http_status || references) && (
-                                                <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
-                                                    {[check.code, check.http_status ? `HTTP ${check.http_status}` : "", references]
-                                                        .filter(Boolean)
-                                                        .join(" · ")}
-                                                </Typography>
-                                            )}
-                                        </Box>
-                                        <Chip
-                                            size="small"
-                                            color={check.status === "passed" ? "success" : check.status === "skipped" ? "default" : "error"}
-                                            label={check.status}
-                                        />
-                                    </Box>
-                                );
-                            })}
-                        </Stack>
-                    </Paper>
                 )}
 
                 {notice && <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.text}</Alert>}
 
                 <Stack direction="row" justifyContent="flex-end" spacing={1} flexWrap="wrap" useFlexGap>
-                    {external && (
-                        <>
-                            <Button
-                                variant="outlined"
-                                startIcon={testing ? <CircularProgress size={16} /> : <PlayArrowIcon />}
-                                disabled={testing || saving || runningConformance}
-                                onClick={() => void test()}
-                            >
-                                Test Saved Route
-                            </Button>
-                            <Button
-                                variant="outlined"
-                                startIcon={runningConformance ? <CircularProgress size={16} /> : <PlayArrowIcon />}
-                                disabled={testing || saving || runningConformance}
-                                onClick={() => void runConformance()}
-                            >
-                                Run Conformance
-                            </Button>
-                        </>
-                    )}
                     <Button
                         variant="contained"
                         startIcon={saving ? <CircularProgress color="inherit" size={16} /> : <SaveIcon />}
-                        disabled={saving || testing || runningConformance}
+                        disabled={saving || testingProxyId !== null || conformanceProxyId !== null}
                         onClick={() => void save()}
                     >
-                        Save Routing Policy
+                        Save Gateway Configuration
                     </Button>
                 </Stack>
             </Stack>
