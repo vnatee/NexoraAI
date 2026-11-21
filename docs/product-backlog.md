@@ -23,14 +23,17 @@ Priority order agreed with the product owner:
    credentials; model aliases; System Admin UI; health test; metadata-only
    audit; and fail-closed prevention of direct-provider bypass. See
    `docs/byo-ai-gateway.md`.
-2. **P1.2 Gateway conformance and MuleSoft profile — implemented; real-gateway
-   acceptance pending.** MuleSoft template and Client ID Enforcement headers;
+2. **P1.2 Gateway conformance and MuleSoft profile — implemented and accepted
+   against the real gateway.** MuleSoft template and Client ID Enforcement headers;
    safe HTTP/correlation diagnostics; and bounded Chat, streaming, Tool, and
    Vision conformance checks. Preserve InsightSphere Agent, Knowledge, Tool,
    and Team governance.
-3. **P1.3 Private model control plane.** Package the supported
-   InsightSphere Gateway + GPUStack + vLLM topology, model lifecycle, capacity
-   and GPU health, controlled rollout/rollback, and production runbooks.
+3. **P1.3 Private model control plane — P1.3a implemented.** The supported
+   InsightSphere Gateway + GPUStack + vLLM topology now has a pinned optional
+   Compose control plane, private health visibility, worker/model lifecycle,
+   sizing, controlled rollout/rollback, backup and production-acceptance
+   runbooks. P1.3b remains: governed inventory/capacity visibility and tested
+   multi-worker rollout/rollback automation.
 4. **P1.4 Usage and policy reconciliation.** Correlate InsightSphere request
    metadata with gateway/provider usage, budget and policy decisions without
    exporting prompt or response content by default.

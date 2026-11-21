@@ -410,6 +410,16 @@ async def build_system_health_snapshot(
                 gateway_url,
             )
         )
+    gpustack_url = _safe_http_url(str(settings.get("GPUSTACK_CONTROL_PLANE_URL", "")), "/healthz")
+    if gpustack_url:
+        service_checks.append(
+            _http_service(
+                "private_model_control_plane",
+                "Private model control plane",
+                "GPUStack",
+                gpustack_url,
+            )
+        )
     services.extend(await asyncio.gather(*service_checks))
 
     required_failures = [item for item in services if item["status"] == "unavailable"]

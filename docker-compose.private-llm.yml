@@ -1,0 +1,32 @@
+services:
+  app:
+    environment:
+      # Used only for metadata-free control-plane health in System Health.
+      # Model traffic still traverses the governed Enterprise AI Gateway.
+      GPUSTACK_CONTROL_PLANE_URL: ${GPUSTACK_CONTROL_PLANE_URL:-http://gpustack:80}
+
+  gpustack:
+    image: ${GPUSTACK_IMAGE:-gpustack/gpustack:v2.3.1}
+    restart: unless-stopped
+    ports:
+      - "${GPUSTACK_BIND_ADDRESS:-127.0.0.1}:${GPUSTACK_PORT:-18080}:80"
+    volumes:
+      - nexora_gpustack_data:/var/lib/gpustack
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - --show-error
+        - http://127.0.0.1/healthz
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+volumes:
+  nexora_gpustack_data:
+

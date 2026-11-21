@@ -2330,7 +2330,33 @@ failure message.
 
 Focused Gateway validation passes `20` tests. Python compilation, focused Ruff,
 TypeScript compilation, the memory-safe production build and rebuilt local
-Compose runtime pass. Live conformance against the currently configured
-MuleSoft endpoint correctly reports `authentication_failed`, HTTP 401 and only
-the allowlisted MuleSoft/APIM correlation IDs; MuleSoft-to-Azure OpenAI
-credential/endpoint remediation remains external acceptance work.
+Compose runtime pass. Live conformance initially reported a safe HTTP 401
+diagnostic. After the downstream MuleSoft/Azure OpenAI configuration was
+corrected, the product owner confirmed that authentication, Chat Completion,
+streaming and Tool Calling all pass and the report is **Ready**. Vision remains
+correctly skipped because it is optional for the declared route.
+
+## 2026-11-21: P1.3a Private model control-plane packaging
+
+The optional `docker-compose.private-llm.yml` overlay pins GPUStack `v2.3.1`,
+persists its control-plane state, binds its administration UI to loopback and
+adds a metadata-free GPUStack `/healthz` check to System Health. GPUStack API
+keys and worker tokens are deliberately absent from Compose and System Health;
+the dedicated inference key remains encrypted in the existing Enterprise AI
+Gateway settings. GPU workers remain separate Linux GPU hosts, and GPUStack
+deploys/manages vLLM rather than embedding an inference runtime in the
+InsightSphere application container.
+
+`docs/private-model-control-plane.md` defines the supported architecture,
+worker prerequisites, model/capacity sizing inputs, Gateway connection,
+side-by-side rollout and alias rollback, backup/recovery and production
+acceptance. P1.3b remains governed inventory/capacity visibility and tested
+multi-worker rollout/rollback automation.
+
+P1.3a focused Gateway/System Health/Compose regression passes (`41 passed`).
+Ruff, Python compilation, TypeScript compilation, the memory-safe production
+frontend build, merged Compose schema and production application image build
+pass. The broader service-free run reaches `1056 passed`; its `77` failures are
+the pre-existing stale `storageUrl`, paused metadata-profile/search-field and
+workspace PDF fixture expectations, not P1.3a runtime failures. Real GPU worker,
+vLLM model and failover acceptance require an NVIDIA-enabled test host.

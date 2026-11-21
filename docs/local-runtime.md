@@ -195,6 +195,11 @@ The Compose stack can run unchanged on an Azure VM. For a production VM:
 6. Attach a supported GPU or move Ollama to a private GPU host for production
    throughput. CPU mode is intended primarily for evaluation and light loads.
 
+For governed multi-GPU model serving, use the optional
+[`private-model-control-plane.md`](private-model-control-plane.md) overlay. It
+keeps GPUStack/vLLM lifecycle separate from the application while model traffic
+continues through the Enterprise AI Gateway policy boundary.
+
 For multi-node/high-availability operation, move stateful services to managed
 or clustered equivalents and deploy the application image to an orchestrator.
 This single-host runtime does not provide database replication, automatic

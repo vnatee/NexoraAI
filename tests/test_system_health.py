@@ -91,6 +91,7 @@ async def test_health_snapshot_contains_safe_service_integration_and_job_counts(
             "QDRANT_URL": "http://qdrant:6333",
             "INTEGRATION_CONTROLLER_URL": "http://integration-controller:8080",
             "NEXORA_TLS_GATEWAY_HEALTH_URL": "http://tls-gateway:8081",
+            "GPUSTACK_CONTROL_PLANE_URL": "http://gpustack:80",
             "WEB_SEARCH_PROVIDER": "brave",
             "WEB_SEARCH_API_KEY": "web-secret",
             "USE_USER_UPLOAD": "true",
@@ -129,6 +130,16 @@ async def test_health_snapshot_contains_safe_service_integration_and_job_counts(
         "status": "healthy",
         "detail": "Health endpoint responded",
         "provider": "Nginx",
+        "latency_ms": 12,
+    }
+    assert next(
+        item for item in snapshot["services"] if item["id"] == "private_model_control_plane"
+    ) == {
+        "id": "private_model_control_plane",
+        "name": "Private model control plane",
+        "status": "healthy",
+        "detail": "Health endpoint responded",
+        "provider": "GPUStack",
         "latency_ms": 12,
     }
     assert next(item for item in snapshot["services"] if item["id"] == "web_search") == {
@@ -195,6 +206,7 @@ async def test_health_snapshot_omits_tls_gateway_when_overlay_is_not_configured(
     )
 
     assert all(item["id"] != "tls_gateway" for item in snapshot["services"])
+    assert all(item["id"] != "private_model_control_plane" for item in snapshot["services"])
 
 
 @pytest.mark.asyncio
