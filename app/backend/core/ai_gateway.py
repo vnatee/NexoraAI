@@ -95,6 +95,24 @@ class GatewayManagedAuth(httpx.Auth):
         yield request
 
 
+class MuleSoftClientIdEnforcementAuth(httpx.Auth):
+    """Apply MuleSoft Client ID Enforcement credentials to gateway requests."""
+
+    def __init__(self, *, client_id: str, client_secret: str) -> None:
+        self.client_id = client_id
+        self.client_secret = client_secret
+
+    def auth_flow(self, request: httpx.Request):
+        # AsyncOpenAI always prepares a Bearer credential. MuleSoft Client ID
+        # Enforcement authenticates with request headers instead, so do not
+        # leak the SDK placeholder or imply that it is a usable bearer token.
+        request.headers.pop("Authorization", None)
+        request.headers["client_id"] = self.client_id
+        request.headers["client_secret"] = self.client_secret
+        request.headers["ClientId"] = self.client_id
+        yield request
+
+
 def _ssl_context(settings: dict[str, Any]) -> ssl.SSLContext:
     ca_certificate = decrypt_secret(settings.get("ca_certificate_ciphertext"))
     context = ssl.create_default_context(cadata=ca_certificate or None)
@@ -196,6 +214,14 @@ def create_external_gateway_client(settings: dict[str, Any]) -> AsyncOpenAI:
             ),
             timeout_seconds=int(settings.get("timeout_seconds") or 60),
             ssl_context=ssl_context,
+        )
+    elif auth_type == "mulesoft_client_id_enforcement":
+        auth = MuleSoftClientIdEnforcementAuth(
+            client_id=str(settings.get("client_id") or ""),
+            client_secret=decrypt_secret(
+                settings.get("client_secret_ciphertext")
+            )
+            or "",
         )
     http_client = httpx.AsyncClient(
         auth=auth,

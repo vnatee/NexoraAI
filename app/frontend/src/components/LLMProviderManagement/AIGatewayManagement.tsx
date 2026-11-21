@@ -82,6 +82,30 @@ const toForm = (settings: AIGatewaySettings): GatewayForm => ({
     client_private_key: ""
 });
 
+const validateExternalForm = (form: GatewayForm): string | null => {
+    if (form.mode !== "external") return null;
+    if (!form.name.trim()) return "Enter a Gateway Name before saving.";
+    if (!form.base_url.trim()) return "Enter an OpenAI-compatible Base URL before saving.";
+    if (form.auth_type === "api_key" && !form.api_key && !form.has_api_key) {
+        return "Enter an API Key before saving.";
+    }
+    if (form.auth_type === "oauth2_client_credentials") {
+        if (!form.token_url.trim()) return "Enter an OAuth Token URL before saving.";
+        if (!form.client_id.trim()) return "Enter an OAuth Client ID before saving.";
+        if (!form.client_secret && !form.has_client_secret) return "Enter an OAuth Client Secret before saving.";
+    }
+    if (form.auth_type === "mulesoft_client_id_enforcement") {
+        if (!form.client_id.trim()) return "Enter a MuleSoft Client ID before saving.";
+        if (!form.client_secret && !form.has_client_secret) return "Enter a MuleSoft Client Secret before saving.";
+    }
+    if (form.models.length === 0) return "Add at least one Gateway Model Alias before saving.";
+    if (form.models.some(model => !model.id.trim() || !model.model.trim())) {
+        return "Complete the Model ID and Gateway Model Alias for every model before saving.";
+    }
+    if (!form.default_model_id) return "Select a Default Model before saving.";
+    return null;
+};
+
 export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
     const { instance } = useMsal();
     const [form, setForm] = useState<GatewayForm>(emptySettings());
@@ -115,6 +139,11 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
     };
 
     const save = async () => {
+        const validationError = validateExternalForm(form);
+        if (validationError) {
+            setNotice({ severity: "warning", text: validationError });
+            return;
+        }
         setSaving(true);
         try {
             const token = await getToken(instance);
@@ -189,8 +218,6 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                     />
                 </Box>
 
-                {notice && <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.text}</Alert>}
-
                 <TextField
                     select
                     label="Routing Mode"
@@ -239,6 +266,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                             <MenuItem value="none">Network / gateway-managed authentication</MenuItem>
                             <MenuItem value="api_key">API key</MenuItem>
                             <MenuItem value="oauth2_client_credentials">OAuth 2.0 client credentials</MenuItem>
+                            <MenuItem value="mulesoft_client_id_enforcement">MuleSoft Client ID enforcement</MenuItem>
                         </TextField>
                         {form.auth_type === "api_key" && (
                             <TextField
@@ -276,6 +304,31 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                                         <MenuItem value="client_secret_post">Credentials in request body</MenuItem>
                                         <MenuItem value="client_secret_basic">HTTP Basic authentication</MenuItem>
                                     </TextField>
+                                </Stack>
+                            </Stack>
+                        )}
+                        {form.auth_type === "mulesoft_client_id_enforcement" && (
+                            <Stack spacing={1.5}>
+                                <Alert severity="info">
+                                    Sends MuleSoft Client ID Enforcement headers: client_id, client_secret, and ClientId. This does not request an OAuth access token.
+                                </Alert>
+                                <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+                                    <TextField
+                                        fullWidth
+                                        required
+                                        label="Client ID"
+                                        value={form.client_id}
+                                        onChange={event => setForm({ ...form, client_id: event.target.value })}
+                                    />
+                                    <TextField
+                                        fullWidth
+                                        required={!form.has_client_secret}
+                                        type="password"
+                                        autoComplete="new-password"
+                                        label={secretLabel("Client Secret", form.has_client_secret)}
+                                        value={form.client_secret}
+                                        onChange={event => setForm({ ...form, client_secret: event.target.value })}
+                                    />
                                 </Stack>
                             </Stack>
                         )}
@@ -345,6 +398,8 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                     </>
                 )}
 
+                {notice && <Alert severity={notice.severity} onClose={() => setNotice(null)}>{notice.text}</Alert>}
+
                 <Stack direction="row" justifyContent="flex-end" spacing={1}>
                     {external && (
                         <Button variant="outlined" startIcon={testing ? <CircularProgress size={16} /> : <PlayArrowIcon />} disabled={testing || saving} onClick={() => void test()}>
@@ -354,7 +409,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                     <Button
                         variant="contained"
                         startIcon={saving ? <CircularProgress color="inherit" size={16} /> : <SaveIcon />}
-                        disabled={saving || testing || (external && (form.models.length === 0 || form.models.some(model => !model.id || !model.model) || !form.default_model_id))}
+                        disabled={saving || testing}
                         onClick={() => void save()}
                     >
                         Save Routing Policy

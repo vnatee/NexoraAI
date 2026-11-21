@@ -2271,7 +2271,8 @@ Gateway policy above the existing managed LLM connections:
 
 - Built-in, External, and deployment-gated Direct Development routing modes
 - OpenAI-compatible external gateway with API key, OAuth 2.0 client
-  credentials, custom CA, and optional mTLS
+  credentials, MuleSoft Client ID Enforcement request headers, custom CA, and
+  optional mTLS
 - encrypted secrets using the stable `APP_DATA_ENCRYPTION_KEY` contract
 - stable gateway model IDs/aliases with tool and Vision capability metadata
 - System Administrator Portal/API configuration, saved-route connection test,
@@ -2304,3 +2305,13 @@ Validation:
   metadata field-count expectations, and related file-strategy snapshots. None
   involve the gateway/runtime files. `tests/test_app_config.py` remains excluded
   because its startup variants wait on an unavailable real MongoDB service.
+
+The follow-up MuleSoft authentication adapter adds the explicit
+`mulesoft_client_id_enforcement` profile. It sends `client_id`,
+`client_secret`, and `ClientId` exactly at the OpenAI-compatible gateway
+request, removes the SDK Bearer placeholder, encrypts the Client Secret, and
+keeps it redacted from administration responses. Focused gateway validation is
+`15 passed`; Ruff, Python compilation, TypeScript compilation, the memory-safe
+production build, rebuilt local Compose runtime, and live/ready health checks
+pass. A real customer gateway test remains manual because credentials are not
+stored in the repository.

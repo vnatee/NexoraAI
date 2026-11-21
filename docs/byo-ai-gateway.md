@@ -32,6 +32,9 @@ Open **System administration > LLM Providers > Enterprise AI Gateway** and:
    - API key;
    - OAuth 2.0 client credentials, using `client_secret_post` or
      `client_secret_basic`, with optional scope and audience; or
+   - MuleSoft Client ID Enforcement, which sends `client_id`, `client_secret`,
+     and the gateway-routing `ClientId` header without requesting an OAuth
+     access token; or
    - gateway/network-managed authentication.
 4. Add a custom CA when the gateway uses an enterprise/private trust chain.
 5. Optionally enable mTLS and add the client certificate and private key.
@@ -76,10 +79,13 @@ therefore sit in front of MuleSoft AI Chain Gateway, Azure API Management,
 Kong, LiteLLM, Portkey, an internal gateway, GPUStack/vLLM, or another product
 that exposes a compatible endpoint.
 
-Vendor-specific policy templates, header mappings, catalog import, usage
-reconciliation, and conformance probes are separate follow-up adapters. They
-must not weaken the central Agent/Data/Tool authorization enforced inside
-InsightSphere.
+MuleSoft Client ID Enforcement is the first vendor-specific authentication
+adapter. Configure the base URL only through the version segment (for example,
+`https://gateway.example/smart-model/v1`); the OpenAI client appends
+`/chat/completions`. Other vendor policy templates, configurable header
+mappings, catalog import, usage reconciliation, and conformance probes remain
+follow-up adapters. They must not weaken the central Agent/Data/Tool
+authorization enforced inside InsightSphere.
 
 ## Recovery
 

@@ -246,7 +246,11 @@ export type LLMProviderPayload = Omit<ManagedLLMProvider, "_id" | "vendor_label"
 };
 
 export type AIGatewayMode = "built_in" | "external" | "direct_development";
-export type AIGatewayAuthType = "none" | "api_key" | "oauth2_client_credentials";
+export type AIGatewayAuthType =
+    | "none"
+    | "api_key"
+    | "oauth2_client_credentials"
+    | "mulesoft_client_id_enforcement";
 
 export type AIGatewayModel = {
     id: string;

@@ -5,7 +5,10 @@ from cryptography.fernet import Fernet
 from quart import Quart
 
 import app
-from core.ai_gateway import build_external_gateway_profiles
+from core.ai_gateway import (
+    MuleSoftClientIdEnforcementAuth,
+    build_external_gateway_profiles,
+)
 from core.model_profiles import DEFAULT_LLM_PROFILE_ID, LLMProfile
 from core.provider_secrets import decrypt_secret
 from core.runtime_settings import LLMProviderSettings, ModelProvider
@@ -100,6 +103,55 @@ def test_external_gateway_oauth_and_mtls_require_complete_credentials(monkeypatc
         )
     )
     assert basic["oauth_client_auth_method"] == "client_secret_basic"
+
+
+def test_external_gateway_mulesoft_credentials_are_encrypted_and_required(monkeypatch):
+    monkeypatch.setenv("APP_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+    with pytest.raises(ValueError, match="MuleSoft client id and client secret"):
+        normalize_ai_gateway_settings(
+            _payload(
+                auth_type="mulesoft_client_id_enforcement",
+                api_key="",
+            )
+        )
+
+    normalized = normalize_ai_gateway_settings(
+        _payload(
+            auth_type="mulesoft_client_id_enforcement",
+            api_key="",
+            client_id="client-1",
+            client_secret="mulesoft-secret",
+        )
+    )
+    public = serialize_ai_gateway_settings(normalized)
+
+    assert decrypt_secret(normalized["client_secret_ciphertext"]) == "mulesoft-secret"
+    assert public["client_id"] == "client-1"
+    assert public["has_client_secret"] is True
+    assert "client_secret" not in public
+    assert "client_secret_ciphertext" not in public
+
+
+def test_mulesoft_auth_applies_expected_headers_without_bearer_placeholder():
+    import httpx
+
+    request = httpx.Request(
+        "POST",
+        "https://gateway.example.test/v1/chat/completions",
+        headers={"Authorization": "Bearer gateway-managed-auth"},
+    )
+    auth = MuleSoftClientIdEnforcementAuth(
+        client_id="client-1",
+        client_secret="mulesoft-secret",
+    )
+
+    authenticated = list(auth.auth_flow(request))[0]
+
+    assert "Authorization" not in authenticated.headers
+    assert authenticated.headers["client_id"] == "client-1"
+    assert authenticated.headers["client_secret"] == "mulesoft-secret"
+    assert authenticated.headers["ClientId"] == "client-1"
 
 
 def test_direct_development_mode_requires_explicit_deployment_flag():

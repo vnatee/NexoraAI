@@ -13,7 +13,12 @@ from mongo_table_connecters.mongo_connector import get_database
 
 SETTINGS_ID = "system"
 MODES = {"built_in", "external", "direct_development"}
-AUTH_TYPES = {"none", "api_key", "oauth2_client_credentials"}
+AUTH_TYPES = {
+    "none",
+    "api_key",
+    "oauth2_client_credentials",
+    "mulesoft_client_id_enforcement",
+}
 OAUTH_CLIENT_AUTH_METHODS = {"client_secret_post", "client_secret_basic"}
 _MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -148,7 +153,8 @@ def normalize_ai_gateway_settings(
     )
     if auth_type not in AUTH_TYPES:
         raise ValueError(
-            "Gateway authentication must be none, api_key, or oauth2_client_credentials"
+            "Gateway authentication must be none, api_key, "
+            "oauth2_client_credentials, or mulesoft_client_id_enforcement"
         )
 
     api_key_ciphertext = _secret_update(
@@ -248,6 +254,12 @@ def normalize_ai_gateway_settings(
             )
             if not client_id or not client_secret_ciphertext:
                 raise ValueError("OAuth client id and client secret are required")
+        if auth_type == "mulesoft_client_id_enforcement" and (
+            not client_id or not client_secret_ciphertext
+        ):
+            raise ValueError(
+                "MuleSoft client id and client secret are required"
+            )
         if mtls_enabled and not (
             client_certificate_ciphertext and client_private_key_ciphertext
         ):
