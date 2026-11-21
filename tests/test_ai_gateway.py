@@ -444,8 +444,11 @@ async def test_gateway_conformance_validates_selected_semantic_route(monkeypatch
         async def close(self):
             return None
 
+    probe_contents = []
+
     class Completions:
         async def create(self, **kwargs):
+            probe_contents.append(kwargs["messages"][0]["content"])
             if kwargs.get("stream"):
                 return Stream()
             return SimpleNamespace(model="azureopenai/gpt-4.1", choices=[])
@@ -463,12 +466,17 @@ async def test_gateway_conformance_validates_selected_semantic_route(monkeypatch
 
     monkeypatch.setattr(ai_gateway, "create_external_gateway_client", create_client)
 
-    report = await run_gateway_conformance(settings, model_id="semantic")
+    report = await run_gateway_conformance(
+        settings,
+        model_id="semantic",
+        probe_prompt="semantic-probe-token",
+    )
 
     assert report["ready"] is True
     assert report["model_id"] == "semantic"
     assert report["routing_strategy"] == "semantic"
     assert report["selected_model"] == "azureopenai/gpt-4.1"
+    assert probe_contents == ["semantic-probe-token", "semantic-probe-token"]
     assert {item["name"]: item["status"] for item in report["checks"]} == {
         "gateway_authentication": "passed",
         "chat_completion": "passed",
@@ -477,6 +485,9 @@ async def test_gateway_conformance_validates_selected_semantic_route(monkeypatch
         "tool_calling": "skipped",
         "vision": "skipped",
     }
+
+    with pytest.raises(ValueError, match="requires a probe prompt"):
+        await run_gateway_conformance(settings, model_id="semantic")
 
 
 def test_direct_development_mode_requires_explicit_deployment_flag():
@@ -617,21 +628,28 @@ async def test_gateway_test_route_targets_selected_proxy(client, monkeypatch):
     monkeypatch.setenv("APP_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode())
     settings = normalize_ai_gateway_settings(
         _payload(
+            gateway_adapter="mulesoft",
+            auth_type="mulesoft_client_id_enforcement",
+            api_key="",
+            client_id="client-1",
+            client_secret="mulesoft-secret",
             models=[
                 {"id": "primary", "model": "gateway/primary"},
                 {
                     "id": "secondary",
-                    "model": "gateway/secondary",
                     "proxy_path": "secondary/v1",
+                    "routing_strategy": "semantic",
                 },
             ],
             default_model_id="primary",
         )
     )
     selected = []
+    probe_contents = []
 
     class Completions:
-        async def create(self, **_kwargs):
+        async def create(self, **kwargs):
+            probe_contents.append(kwargs["messages"][0]["content"])
             return SimpleNamespace(choices=[])
 
     class GatewayClient:
@@ -652,12 +670,14 @@ async def test_gateway_test_route_targets_selected_proxy(client, monkeypatch):
     monkeypatch.setattr(app, "insert_integration_lifecycle_event", lambda **_event: None)
 
     response = await client.post(
-        "/admin/ai-gateway/test", json={"model_id": "secondary"}
+        "/admin/ai-gateway/test",
+        json={"model_id": "secondary", "probe_prompt": "semantic-probe-token"},
     )
 
     assert response.status_code == 200
     assert (await response.get_json())["proxy_id"] == "secondary"
     assert selected == ["secondary"]
+    assert probe_contents == ["semantic-probe-token"]
 
 
 @pytest.mark.asyncio
@@ -690,7 +710,7 @@ async def test_gateway_conformance_route_returns_safe_report_and_audits(client, 
     monkeypatch.setattr(
         app,
         "run_gateway_conformance",
-        lambda _settings, model_id=None: _async_value(report),
+        lambda _settings, model_id=None, probe_prompt=None: _async_value(report),
     )
     monkeypatch.setattr(
         app, "insert_integration_lifecycle_event", lambda **event: events.append(event)

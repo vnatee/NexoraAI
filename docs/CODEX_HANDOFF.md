@@ -2413,3 +2413,14 @@ pass. The service-free suite reaches `1064 passed`, `1 deselected`, `76 failed`;
 all failures are the previously recorded legacy snapshot, paused Knowledge
 metadata/search-field and related fixture expectations, not AI Runtime or Model
 Proxy regressions.
+
+## 2026-11-21: Semantic topic-aware conformance probe
+
+Semantic Proxy Test and Conformance no longer reuse the generic Model-Based
+`Reply with OK` health prompt, which can legitimately miss every MuleSoft
+semantic topic and return `route_or_model_not_found`. Each Semantic Proxy card
+now requires an operator-entered probe that matches a configured topic. The
+value remains ephemeral browser/backend request data: it is not added to the
+persisted Gateway document, response payload, application log or lifecycle
+audit metadata. Chat, streaming, Tool Calling and Vision checks retain the same
+topic context, while Model-Based proxies keep the bounded default probe.

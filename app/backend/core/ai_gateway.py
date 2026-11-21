@@ -420,7 +420,9 @@ def _gateway_adapter(settings: dict[str, Any]) -> str:
 
 
 async def run_gateway_conformance(
-    settings: dict[str, Any], model_id: str | None = None
+    settings: dict[str, Any],
+    model_id: str | None = None,
+    probe_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Run bounded OpenAI-compatible probes against the saved gateway route."""
 
@@ -434,6 +436,12 @@ async def run_gateway_conformance(
     profile = profiles[profile_id]
     model = profile.settings.model
     routing_strategy = str(route.get("routing_strategy") or "model_based")
+    prompt = str(probe_prompt or "").strip()
+    if len(prompt) > 2_000:
+        raise ValueError("Gateway probe prompt exceeds 2000 characters")
+    if routing_strategy == "semantic" and not prompt:
+        raise ValueError("Semantic Model Proxy requires a probe prompt")
+    prompt = prompt or "Reply with OK"
     client = create_external_gateway_client(settings, route)
     checks: list[dict[str, Any]] = []
     selected_model = ""
@@ -441,7 +449,7 @@ async def run_gateway_conformance(
         try:
             completion = await client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": "Reply with OK"}],
+                messages=[{"role": "user", "content": prompt}],
                 max_tokens=8,
             )
             checks.append(
@@ -513,7 +521,7 @@ async def run_gateway_conformance(
         try:
             stream = await client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": "Reply with OK"}],
+                messages=[{"role": "user", "content": prompt}],
                 max_tokens=8,
                 stream=True,
             )
@@ -542,7 +550,7 @@ async def run_gateway_conformance(
                     messages=[
                         {
                             "role": "user",
-                            "content": "Call gateway_probe with value OK.",
+                            "content": f"{prompt}\nUse gateway_probe with value OK.",
                         }
                     ],
                     tools=[
@@ -592,7 +600,7 @@ async def run_gateway_conformance(
                         {
                             "role": "user",
                             "content": [
-                                {"type": "text", "text": "Reply with OK."},
+                                {"type": "text", "text": prompt},
                                 {
                                     "type": "image_url",
                                     "image_url": {"url": _VISION_PROBE_IMAGE},

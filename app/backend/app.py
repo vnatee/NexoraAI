@@ -5225,6 +5225,11 @@ async def admin_test_ai_gateway(auth_claims: dict[str, Any]):
         route = gateway_model_by_id(
             settings, requested_proxy_id or None
         )
+        probe_prompt = str(payload.get("probe_prompt") or "").strip()
+        if len(probe_prompt) > 2_000:
+            raise ValueError("Gateway probe prompt exceeds 2000 characters")
+        if route.get("routing_strategy") == "semantic" and not probe_prompt:
+            raise ValueError("Semantic Model Proxy requires a probe prompt")
         profile_id = (
             DEFAULT_LLM_PROFILE_ID
             if route.get("id") == settings.get("default_model_id")
@@ -5237,7 +5242,12 @@ async def admin_test_ai_gateway(auth_claims: dict[str, Any]):
             completion_options = {"max_completion_tokens": 16}
         await client.chat.completions.create(
             model=profile.settings.model,
-            messages=[{"role": "user", "content": "Reply with OK"}],
+            messages=[
+                {
+                    "role": "user",
+                    "content": probe_prompt or "Reply with OK",
+                }
+            ],
             **completion_options,
         )
         insert_integration_lifecycle_event(
@@ -5293,7 +5303,9 @@ async def admin_conformance_ai_gateway(auth_claims: dict[str, Any]):
         payload = (await request.get_json() or {}) if request.is_json else {}
         requested_proxy_id = str(payload.get("model_id") or requested_proxy_id).strip()
         report = await run_gateway_conformance(
-            settings, model_id=requested_proxy_id or None
+            settings,
+            model_id=requested_proxy_id or None,
+            probe_prompt=str(payload.get("probe_prompt") or "").strip() or None,
         )
         failed_required = next(
             (

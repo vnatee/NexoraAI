@@ -31,8 +31,10 @@ Priority order agreed with the product owner:
    separates routing, built-in providers, enterprise gateways and private
    infrastructure. MuleSoft is configured as one Gateway with multiple Model
    Proxies (`Base URL + Proxy Path`); each proxy has Model-Based/Semantic
-   strategy and its own Test/Conformance actions. Semantic Chat requests omit
-   `model`. Preserve InsightSphere Agent, Knowledge, Tool, and Team governance.
+   strategy and its own Test/Conformance actions. Semantic tests use an
+   operator-supplied, non-persisted topic-matching probe prompt, and Semantic
+   Chat requests omit `model`. Preserve InsightSphere Agent, Knowledge, Tool,
+   and Team governance.
 3. **P1.3 Private model control plane — P1.3a implemented.** The supported
    InsightSphere Gateway + GPUStack + vLLM topology now has a pinned optional
    Compose control plane, private health visibility, worker/model lifecycle,

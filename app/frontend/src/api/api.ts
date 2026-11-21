@@ -447,20 +447,20 @@ export async function updateAIGatewaySettingsApi(
     return parseProviderAdminResponse(response);
 }
 
-export async function testAIGatewayApi(idToken: string, proxyId?: string): Promise<{ success: boolean; proxy_id: string; model_id: string }> {
+export async function testAIGatewayApi(idToken: string, proxyId?: string, probePrompt?: string): Promise<{ success: boolean; proxy_id: string; model_id: string }> {
     const response = await fetch("/admin/ai-gateway/test", {
         method: "POST",
         headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
-        body: JSON.stringify({ model_id: proxyId || undefined })
+        body: JSON.stringify({ model_id: proxyId || undefined, probe_prompt: probePrompt || undefined })
     });
     return parseProviderAdminResponse(response);
 }
 
-export async function runAIGatewayConformanceApi(idToken: string, modelId?: string): Promise<AIGatewayConformanceReport> {
+export async function runAIGatewayConformanceApi(idToken: string, modelId?: string, probePrompt?: string): Promise<AIGatewayConformanceReport> {
     const response = await fetch("/admin/ai-gateway/conformance", {
         method: "POST",
         headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
-        body: JSON.stringify({ model_id: modelId || undefined })
+        body: JSON.stringify({ model_id: modelId || undefined, probe_prompt: probePrompt || undefined })
     });
     return parseProviderAdminResponse(response);
 }

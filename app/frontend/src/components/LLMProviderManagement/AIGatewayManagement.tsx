@@ -158,6 +158,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
     const [conformanceByProxy, setConformanceByProxy] = useState<Record<string, AIGatewayConformanceReport>>({});
     const [savedProxyIds, setSavedProxyIds] = useState<Set<string>>(new Set());
     const [savedFingerprint, setSavedFingerprint] = useState("");
+    const [semanticProbePrompts, setSemanticProbePrompts] = useState<Record<string, string>>({});
     const [notice, setNotice] = useState<{ severity: "success" | "warning" | "error"; text: string } | null>(null);
 
     const load = async () => {
@@ -252,7 +253,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
         try {
             const token = await getToken(instance);
             if (!token) throw new Error("No authentication token");
-            const result = await testAIGatewayApi(token, proxyId);
+            const result = await testAIGatewayApi(token, proxyId, semanticProbePrompts[proxyId]);
             setNotice({ severity: "success", text: `Model Proxy ${result.proxy_id} connection succeeded` });
         } catch (error) {
             setNotice({ severity: "error", text: error instanceof Error ? error.message : "Gateway connection failed" });
@@ -271,7 +272,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
         try {
             const token = await getToken(instance);
             if (!token) throw new Error("No authentication token");
-            const report = await runAIGatewayConformanceApi(token, proxyId);
+            const report = await runAIGatewayConformanceApi(token, proxyId, semanticProbePrompts[proxyId]);
             setConformanceByProxy(current => ({ ...current, [proxyId]: report }));
             setNotice({
                 severity: report.ready ? "success" : "warning",
@@ -527,6 +528,19 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                                             helperText="Optional for a proxy hosted on a different origin; overrides Gateway Base URL + Proxy Path."
                                         />
                                     </Stack>
+                                    {proxy.routing_strategy === "semantic" && (
+                                        <TextField
+                                            fullWidth
+                                            required
+                                            multiline
+                                            minRows={2}
+                                            label="Semantic Probe Prompt"
+                                            value={semanticProbePrompts[proxy.id] || ""}
+                                            onChange={event => setSemanticProbePrompts(current => ({ ...current, [proxy.id]: event.target.value }))}
+                                            inputProps={{ maxLength: 2000 }}
+                                            helperText="Enter a short request that matches one configured MuleSoft topic. It is sent only for Test/Conformance and is not saved or audited."
+                                        />
+                                    )}
                                     <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
                                         Resolved endpoint: {endpointPreview || "Complete the Gateway Base URL and Proxy Path"}
                                     </Typography>
@@ -539,7 +553,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                                             size="small"
                                             variant="outlined"
                                             startIcon={testingProxyId === proxy.id ? <CircularProgress size={14} /> : <PlayArrowIcon />}
-                                            disabled={!saved || saving || testingProxyId !== null || conformanceProxyId !== null}
+                                            disabled={!saved || (proxy.routing_strategy === "semantic" && !semanticProbePrompts[proxy.id]?.trim()) || saving || testingProxyId !== null || conformanceProxyId !== null}
                                             onClick={() => void testProxy(proxy.id)}
                                         >
                                             Test Proxy
@@ -548,7 +562,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                                             size="small"
                                             variant="outlined"
                                             startIcon={conformanceProxyId === proxy.id ? <CircularProgress size={14} /> : <PlayArrowIcon />}
-                                            disabled={!saved || saving || testingProxyId !== null || conformanceProxyId !== null}
+                                            disabled={!saved || (proxy.routing_strategy === "semantic" && !semanticProbePrompts[proxy.id]?.trim()) || saving || testingProxyId !== null || conformanceProxyId !== null}
                                             onClick={() => void runConformance(proxy.id)}
                                         >
                                             Run Conformance

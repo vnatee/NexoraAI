@@ -59,6 +59,13 @@ In **Enterprise Gateways**:
 9. Use **Test Proxy** and **Run Conformance** directly on every saved proxy card
    before production use.
 
+Semantic proxy cards require an ephemeral **Semantic Probe Prompt**. Enter a
+short request that matches one of the topics configured in the MuleSoft
+Semantic Model Proxy. A generic health prompt might not match any topic and can
+correctly produce `route_or_model_not_found`. The probe is sent only for the
+operator-initiated Test/Conformance request; InsightSphere does not persist it
+in Gateway settings or lifecycle audit metadata.
+
 API keys, OAuth client secrets, CA material, client certificates, and private
 keys are encrypted with the existing Fernet application-secret contract. The
 Portal returns only `has_*` indicators. Keep `APP_DATA_ENCRYPTION_KEY` stable
@@ -99,7 +106,9 @@ they do not contain credentials, prompts, responses, or upstream error bodies.
   support;
 - Vision is required only when the configured model declares Vision support.
 - Semantic routes additionally require a successful model-less Semantic Proxy
-  request. The report may show the model selected by the upstream response.
+  request using the operator-supplied Semantic Probe Prompt. The same topic-
+  matching context is retained for streaming, Tool Calling and Vision probes.
+  The report may show the model selected by the upstream response.
 
 The report returns pass/fail/skipped, safe error categories, HTTP status, and
 allowlisted upstream correlation IDs. It never returns response bodies,
