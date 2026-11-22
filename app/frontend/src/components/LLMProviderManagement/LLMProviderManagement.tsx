@@ -52,6 +52,7 @@ import {
 import { AIGatewaySettings, LLMProviderAdapter, LLMProviderModel, LLMProviderPayload, LLMVendor, ManagedLLMProvider } from "../../api/models";
 import { getToken } from "../../authConfig";
 import { AIGatewayManagement } from "./AIGatewayManagement";
+import { PrivateLLMManagement } from "./PrivateLLMManagement";
 
 const emptyModel = (): LLMProviderModel => ({
     id: "",
@@ -399,16 +400,7 @@ export function LLMProviderManagement() {
             {activeTab === "gateways" && <AIGatewayManagement onChanged={() => void loadProviders()} />}
 
             {activeTab === "private" && (
-                <Paper variant="outlined" sx={{ p: 3 }}>
-                    <Stack spacing={1.5}>
-                        <Box display="flex" alignItems="center" gap={1.5}><DnsIcon color="primary" /><Typography variant="h6">Private LLM Infrastructure</Typography></Box>
-                        <Typography variant="body2" color="text.secondary">
-                            GPUStack manages workers and vLLM deployments. InsightSphere continues to access private models through the Enterprise AI Gateway so Agent, Knowledge, Tool, and audit policies remain enforced.
-                        </Typography>
-                        <Alert severity="info">Infrastructure lifecycle remains deployment-managed. Configure the resulting OpenAI-compatible endpoint as an Enterprise Gateway proxy, then validate it before assigning Agents.</Alert>
-                        <Button variant="outlined" sx={{ alignSelf: "flex-start" }} onClick={() => setActiveTab("gateways")}>Configure private model gateway</Button>
-                    </Stack>
-                </Paper>
+                <PrivateLLMManagement onConfigureGateway={() => setActiveTab("gateways")} />
             )}
 
             {activeTab === "providers" && (<>
@@ -419,17 +411,28 @@ export function LLMProviderManagement() {
                 </Alert>
             )}
 
-            <Box display="flex" justifyContent="space-between" alignItems="center">
-                <Box>
+            <Stack
+                direction={{ xs: "column", sm: "row" }}
+                spacing={1.5}
+                justifyContent="space-between"
+                alignItems={{ xs: "flex-start", sm: "center" }}
+            >
+                <Box sx={{ minWidth: 0, flex: 1 }}>
                     <Typography variant="h6">LLM Providers</Typography>
                     <Typography variant="body2" color="text.secondary">
                         Manage built-in provider connections. External Gateway mode keeps these records stored but blocks runtime use and direct connection tests. Secrets are never shown after saving.
                     </Typography>
                 </Box>
-                <Button variant="contained" startIcon={<AddIcon />} onClick={openCreate}>
+                <Button
+                    size="small"
+                    variant="contained"
+                    startIcon={<AddIcon />}
+                    onClick={openCreate}
+                    sx={{ flexShrink: 0, whiteSpace: "nowrap", minWidth: 132 }}
+                >
                     Add Provider
                 </Button>
-            </Box>
+            </Stack>
 
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
                 <TextField

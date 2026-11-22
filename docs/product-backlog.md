@@ -2,6 +2,53 @@
 
 Items in this document are proposals only. Their architecture, scope, priority, and acceptance criteria must be discussed before implementation.
 
+## Deferred — Playground next phases
+
+The product owner moved the following items to an unscheduled backlog on
+2026-11-22. Do not expand them until their scope and priority are discussed:
+
+1. Automated Playground test cases and evaluation sets.
+2. Side-by-side Active Agent versus private-revision comparison.
+3. Playground attachments.
+4. Approval-gated testing of write-capable tools.
+5. Trace export and comparison across revisions.
+
+## Deferred — Full external Customer Portal
+
+The External Customer API/channel foundation remains implemented. The product
+owner moved the complete customer-facing Portal scope below to an unscheduled
+backlog on 2026-11-22:
+
+1. Branded external-customer Chat experience.
+2. Customer login and governed guest-access policy.
+3. Explicit Internal versus External information separation in the Portal.
+4. Rate limits, abuse controls, and customer-channel analytics.
+5. Customer feedback and escalation to a human operator.
+6. Read-only SAP Business One integration through the governed integration
+   boundary.
+
+Do not begin this Portal slice until product scope, identity model, data
+publication policy, and acceptance criteria are discussed.
+
+## Deferred — Datadog monitoring demo
+
+The provider-neutral observability foundation remains implemented: OpenTelemetry,
+JSON logs, detail-free health endpoints, and content-free Agent/Tool spans. The
+product owner moved the live Datadog demo scope below to an unscheduled backlog
+on 2026-11-22:
+
+1. Install and configure a real Datadog Agent Compose overlay.
+2. Export application logs, host/container metrics, and traces to Datadog.
+3. Build Platform and LLM/Agent dashboards.
+4. Configure monitors for HTTP 5xx, latency, LLM/tool failure, container
+   restart, and CPU/memory/disk pressure.
+5. Verify that prompts, responses, tool arguments/output, credentials,
+   Knowledge, and attachments are absent from exported telemetry.
+6. Validate a real Agent → LLM → RAG/Tool/MCP trace in Datadog.
+
+Do not install Datadog or introduce vendor-specific runtime dependencies until
+this backlog item is explicitly resumed.
+
 ## In progress — 2.3.0 production readiness gate
 
 The current priority is to qualify the enterprise-authentication and Agent
@@ -41,9 +88,11 @@ Priority order agreed with the product owner:
    sizing, controlled rollout/rollback, backup and production-acceptance
    runbooks. P1.3b remains: governed inventory/capacity visibility and tested
    multi-worker rollout/rollback automation.
-4. **P1.4 Usage and policy reconciliation.** Correlate InsightSphere request
-   metadata with gateway/provider usage, budget and policy decisions without
-   exporting prompt or response content by default.
+4. **P1.4 Usage and policy reconciliation — foundation implemented.** The
+   versioned USD Price Catalog, provider-token and Local AI TCO estimates,
+   pricing coverage, Raw CSV, and PDF report are implemented without prompt or
+   response content. Gateway/provider billing reconciliation, THB conversion,
+   budgets, and policy decisions remain backlog work.
 5. **P1 security gate.** Run dependency/secret/SAST/container/IaC scans and a
    focused penetration test after the gateway slices stabilize. Existing ACL,
    read-only database, tool-policy, guardrail, encrypted-secret and audit

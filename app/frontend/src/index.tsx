@@ -13,6 +13,7 @@ import LayoutWrapper from "./layoutWrapper";
 import i18next from "./i18n/config";
 import { AuthWatcher } from "./AuthWatcher";
 import { NotificationProvider } from "./utill/NotificationProvider";
+import { PersistentDialogBackdropGuard } from "./components/PersistentDialogBackdropGuard";
 
 initializeIcons();
 
@@ -42,6 +43,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
         <I18nextProvider i18n={i18next}>
             <HelmetProvider>
                 <NotificationProvider>
+                    <PersistentDialogBackdropGuard />
                     <RouterProvider router={router} />
                     <AuthWatcher />
                     <NotificationHandler />

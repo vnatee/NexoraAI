@@ -1,9 +1,10 @@
 .historyItem {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 4px 8px;
-    border-radius: 6px;
+    gap: 4px;
+    min-height: 38px;
+    padding: 4px 6px 4px 12px;
+    border-radius: 8px;
     transition: background-color 0.2s;
 }
 
@@ -12,10 +13,10 @@
 }
 
 .historyItemButton {
-    flex-grow: 1;
+    flex: 1;
+    min-width: 0;
     text-align: left;
-    padding: 0;
-    margin-right: 4px;
+    padding: 5px 0;
     background: none;
     border: none;
     cursor: pointer;
@@ -30,7 +31,14 @@
 }
 
 .historyItemTitle {
-    font-size: 1rem;
+    display: block;
+    overflow: hidden;
+    color: #f0f0f0;
+    font-size: 14px;
+    font-weight: 500;
+    line-height: 20px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .deleteIcon {
@@ -39,6 +47,9 @@
 }
 
 .deleteButton {
+    flex: 0 0 28px;
+    width: 28px;
+    height: 28px;
     opacity: 0;
     transition: opacity 0.2s;
     background: none;

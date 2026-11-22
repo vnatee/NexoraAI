@@ -208,6 +208,73 @@ def latest_indexed_times(
     return result
 
 
+def latest_indexed_jobs_for_reindex() -> list[dict[str, Any]]:
+    """Return the latest successful manifest for every stored document object."""
+
+    return list(
+        collection.aggregate(
+            [
+                {"$match": {"status": "indexed", "storage_path": {"$ne": ""}}},
+                {"$sort": {"completed_at": -1, "created_at": -1}},
+                {
+                    "$group": {
+                        "_id": {"scope": "$scope", "storage_path": "$storage_path"},
+                        "job": {"$first": "$$ROOT"},
+                    }
+                },
+                {"$replaceRoot": {"newRoot": "$job"}},
+                {"$sort": {"scope": 1, "storage_path": 1}},
+            ]
+        )
+    )
+
+
+def clone_ingestion_job_for_reindex(
+    source_job_id: str, *, reindex_run_id: str
+) -> dict[str, Any]:
+    source = get_ingestion_job(source_job_id)
+    if not source or source.get("status") != "indexed":
+        raise ValueError("Indexed source manifest is unavailable")
+    route = {
+        "source": source.get("route_source"),
+        "profile": {
+            "_id": source.get("profile_id"),
+            "name": source.get("profile_name"),
+        },
+        "provider": {
+            "_id": source.get("provider_id"),
+            "name": source.get("provider_name"),
+        },
+        "rule": {
+            "_id": source.get("rule_id"),
+            "name": source.get("rule_name"),
+        },
+    }
+    job = create_ingestion_job(
+        owner_id=str(source.get("owner_id") or ""),
+        owner_name=str(source.get("owner_name") or ""),
+        scope=str(source.get("scope") or ""),
+        filename=str(source.get("filename") or ""),
+        storage_path=str(source.get("storage_path") or ""),
+        file_size=int(source.get("file_size") or 0),
+        team_id=str(source.get("team_id") or ""),
+        data_group_ids=list(source.get("data_group_ids") or []),
+        metadata_profile_id=str(source.get("metadata_profile_id") or ""),
+        metadata_profile_name=str(source.get("metadata_profile_name") or ""),
+        metadata_profile_version=int(source.get("metadata_profile_version") or 0),
+        business_metadata=dict(source.get("business_metadata") or {}),
+        business_metadata_text=str(source.get("business_metadata_text") or ""),
+        routing_context=dict(source.get("routing_context") or {}),
+        route=route,
+    )
+    collection.update_one(
+        {"_id": job["_id"]},
+        {"$set": {"embedding_reindex_run_id": reindex_run_id}},
+    )
+    job["embedding_reindex_run_id"] = reindex_run_id
+    return job
+
+
 def update_ingestion_job_status(
     job_id: str,
     status: str,

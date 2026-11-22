@@ -4,6 +4,10 @@ Read `docs/CODEX_HANDOFF.md` before changing this repository. It is the current
 source of truth for product decisions, implemented slices, known limitations,
 validation status, and the recommended next work.
 
+Read `docs/COLLABORATION_PROFILE.md` before working with the product owner. It
+defines the evidence standard, decision boundary, communication style, and
+handoff behavior expected across Codex sessions.
+
 - Preserve the dirty working tree. Changes after checkpoint `fba5481` belong to
   the current migration and must not be discarded or broadly reformatted.
 - Keep Azure behavior working while provider interfaces are introduced for

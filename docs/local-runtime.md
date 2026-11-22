@@ -68,6 +68,45 @@ initial installation; the image is not pulled until Azure is enabled. Keep the F
 for the lifetime of the deployment; changing it makes stored provider and Entra
 secrets unreadable.
 
+### Dev Container Docker credentials
+
+The repository Dev Container sets `DOCKER_CONFIG=/home/vscode/.docker-nexora`.
+This prevents Docker from using VS Code's temporary `dev-containers-*`
+credential helper, which can become stale after a host or Dev Container restart
+and block even public image pulls. Rebuild the Dev Container once after this
+setting changes. Public registries require no login; for a private registry,
+run `docker login <registry>` inside the Dev Container and never copy its
+Docker configuration into the repository.
+
+## Select a deployment mode
+
+Use the `./nexora` launcher so every command receives the same Compose files.
+This avoids accidentally starting Ollama beside an enterprise private-model
+stack or forgetting an enabled overlay.
+
+```bash
+cp docs/nexora-runtime.example .env.nexora-runtime
+```
+
+Set exactly one `MODE` in the ignored `.env.nexora-runtime` file:
+
+| Mode | Model runtime started by InsightSphere | Intended use |
+| --- | --- | --- |
+| `local-simple` | Ollama and the configured local models | developer, evaluation, small single-host installation |
+| `private-enterprise` | GPUStack control plane; vLLM runs on registered GPU workers | governed private production model service |
+| `external-gateway` | none | an existing MuleSoft or other enterprise AI gateway |
+
+Optional comma-separated `FEATURES` are `tls`, `ocr`, and `datadog`. The
+Datadog feature also requires `DATADOG_COMPOSE_FILE` to name the operator-owned
+Compose overlay. The runtime file contains only deployment selections. Keep all
+passwords, tokens, and encryption keys in the protected env file.
+
+Validate the selected stack without starting it:
+
+```bash
+./nexora preflight
+```
+
 ## Start
 
 The first start builds the application image and downloads BGE-M3 plus the
@@ -75,24 +114,37 @@ configured local chat model. It can therefore take several minutes and use
 multiple gigabytes of network and disk space.
 
 ```bash
-docker compose --env-file .env.local-runtime \
-  -f docker-compose.local-runtime.yml up -d --build --wait
+./nexora up
 ```
 
 Follow startup and model-download progress with:
 
 ```bash
-docker compose --env-file .env.local-runtime \
-  -f docker-compose.local-runtime.yml logs -f app ollama-models
+./nexora logs app ollama-models
 ```
+
+For `private-enterprise`, start the infrastructure first. Configure GPUStack,
+register its worker(s), and deploy the approved vLLM chat and embedding routes
+before starting the complete application:
+
+```bash
+./nexora infra up
+# Configure GPUStack workers and vLLM routes through its private admin UI.
+./nexora up
+```
+
+This ordering is deliberate for a new installation. InsightSphere does not
+install GPU drivers or deploy model artifacts, and a GPU worker may be on a
+different private host. `./nexora infra up` never starts the Portal/API.
+When changing modes, the launcher removes containers that are no longer part
+of the selected topology, but it never removes their named data volumes.
 
 Open `http://127.0.0.1:50505`. Create the first local administrator using the
 one-time bootstrap token. Then remove `LOCAL_AUTH_BOOTSTRAP_TOKEN` from the env
 file and recreate only the application container:
 
 ```bash
-docker compose --env-file .env.local-runtime \
-  -f docker-compose.local-runtime.yml up -d --force-recreate app
+./nexora recreate app
 ```
 
 The bootstrap endpoint remains closed after the first local identity exists,
@@ -124,10 +176,8 @@ environment. See [`licensing.md`](licensing.md).
 
 Start Docling only when a processing profile needs it:
 
-```bash
-docker compose --env-file .env.local-runtime \
-  -f docker-compose.local-runtime.yml --profile ocr up -d docling
-```
+Set `FEATURES=ocr` (or include `ocr` in the comma-separated list), then run
+`./nexora up`.
 
 In **Admin Management → Document Processing & OCR**, configure a Docling
 provider endpoint as `http://docling:5001`. The application and Docling share
@@ -151,8 +201,7 @@ verification, and rollback guide.
 Stop containers without deleting state:
 
 ```bash
-docker compose --env-file .env.local-runtime \
-  -f docker-compose.local-runtime.yml down
+./nexora down
 ```
 
 Application state is held in five named volumes: MongoDB (including Chat

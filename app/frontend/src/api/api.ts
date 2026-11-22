@@ -17,10 +17,24 @@ import {
     AIGatewayConformanceReport,
     AIGatewaySettings,
     AIGatewaySettingsPayload,
+    PrivateLLMInventory,
+    PrivateLLMDeployPayload,
+    PrivateLLMModel,
+    PrivateLLMModelAction,
+    PrivateLLMModelTestResult,
+    PrivateLLMCatalogModel,
+    PrivateLLMCatalogSpec,
+    PrivateLLMModelPreflight,
+    PrivateLLMRollout,
+    PrivateLLMSettings,
+    PrivateLLMSettingsPayload,
     LLMProviderPayload,
     ManagedLLMProvider,
     EmbeddingProfilePayload,
     EmbeddingProfileSettings,
+    EmbeddingReindexPlan,
+    EmbeddingReindexRun,
+    EmbeddingCollectionCompatibility,
     ManagedEmbeddingProfile,
     ManagedMCPServer,
     MCPServerPayload,
@@ -29,6 +43,10 @@ import {
     LicenseStatusResponse,
     AgentAuditEvent,
     AgentCatalogItem,
+    Agent,
+    AgentPlaygroundResponse,
+    UsagePriceProfile,
+    UsagePriceProfilePayload,
     User,
     RegisterUserPayload,
     Prompt,
@@ -424,6 +442,44 @@ export async function completeEmbeddingReindexApi(profileId: string, idToken: st
     return parseProviderAdminResponse(response);
 }
 
+export async function getEmbeddingReindexPlanApi(profileId: string, idToken: string): Promise<EmbeddingReindexPlan> {
+    const response = await fetch(`/admin/embedding-profiles/${profileId}/reindex-plan`, { headers: await getHeaders(idToken) });
+    return parseProviderAdminResponse(response);
+}
+
+export async function startEmbeddingReindexApi(profileId: string, confirmation: string, idToken: string): Promise<{ run: EmbeddingReindexRun }> {
+    const response = await fetch(`/admin/embedding-profiles/${profileId}/reindex`, {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmation })
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function getLatestEmbeddingReindexApi(profileId: string, idToken: string): Promise<{ run: EmbeddingReindexRun | null }> {
+    const query = new URLSearchParams({ profile_id: profileId });
+    const response = await fetch(`/admin/embedding-reindex-runs/latest?${query}`, { headers: await getHeaders(idToken) });
+    return parseProviderAdminResponse(response);
+}
+
+export async function previewEmbeddingCollectionAdoptionApi(profileId: string, collectionName: string, idToken: string): Promise<EmbeddingCollectionCompatibility> {
+    const response = await fetch(`/admin/embedding-profiles/${profileId}/adopt-collection/preview`, {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ collection_name: collectionName })
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function adoptEmbeddingCollectionApi(profileId: string, collectionName: string, confirmation: string, idToken: string): Promise<{ profile: ManagedEmbeddingProfile; settings: EmbeddingProfileSettings; evidence: EmbeddingCollectionCompatibility }> {
+    const response = await fetch(`/admin/embedding-profiles/${profileId}/adopt-collection`, {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ collection_name: collectionName, confirmation })
+    });
+    return parseProviderAdminResponse(response);
+}
+
 export async function listLLMProvidersApi(idToken: string): Promise<ManagedLLMProvider[]> {
     const response = await fetch("/admin/llm-providers", { headers: await getHeaders(idToken) });
     const data = await parseProviderAdminResponse(response);
@@ -461,6 +517,129 @@ export async function runAIGatewayConformanceApi(idToken: string, modelId?: stri
         method: "POST",
         headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
         body: JSON.stringify({ model_id: modelId || undefined, probe_prompt: probePrompt || undefined })
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function getPrivateLLMSettingsApi(idToken: string): Promise<PrivateLLMSettings> {
+    const response = await fetch("/admin/private-llm", { headers: await getHeaders(idToken) });
+    return parseProviderAdminResponse(response);
+}
+
+export async function updatePrivateLLMSettingsApi(payload: PrivateLLMSettingsPayload, idToken: string): Promise<PrivateLLMSettings> {
+    const response = await fetch("/admin/private-llm", {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function getPrivateLLMInventoryApi(idToken: string): Promise<PrivateLLMInventory> {
+    const response = await fetch("/admin/private-llm/inventory", { headers: await getHeaders(idToken) });
+    return parseProviderAdminResponse(response);
+}
+
+export async function deployPrivateLLMModelApi(
+    payload: PrivateLLMDeployPayload,
+    idToken: string
+): Promise<PrivateLLMModel> {
+    const response = await fetch("/admin/private-llm/models", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, confirmation: `deploy:${payload.name}` })
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function getPrivateLLMCatalogApi(
+    category: "llm" | "embedding",
+    idToken: string,
+    search = ""
+): Promise<PrivateLLMCatalogModel[]> {
+    const params = new URLSearchParams({ category });
+    if (search) params.set("search", search);
+    const response = await fetch(`/admin/private-llm/catalog?${params.toString()}`, { headers: await getHeaders(idToken) });
+    const data = await parseProviderAdminResponse(response);
+    return data.models || [];
+}
+
+export async function getPrivateLLMCatalogSpecsApi(
+    modelSetId: number,
+    clusterId: number,
+    idToken: string
+): Promise<PrivateLLMCatalogSpec[]> {
+    const response = await fetch(`/admin/private-llm/catalog/${modelSetId}/specs?cluster_id=${clusterId}`, { headers: await getHeaders(idToken) });
+    const data = await parseProviderAdminResponse(response);
+    return data.specs || [];
+}
+
+export async function preflightPrivateLLMModelApi(
+    payload: PrivateLLMDeployPayload,
+    idToken: string
+): Promise<PrivateLLMModelPreflight> {
+    const response = await fetch("/admin/private-llm/models/preflight", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, confirmation: `deploy:${payload.name}` })
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function managePrivateLLMModelApi(
+    modelId: number | string,
+    action: PrivateLLMModelAction,
+    idToken: string,
+    replicas?: number
+): Promise<{ action: PrivateLLMModelAction; model_id: number | string; result: unknown }> {
+    const response = await fetch(`/admin/private-llm/models/${encodeURIComponent(String(modelId))}/actions`, {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ action, replicas, confirmation: `${action}:${modelId}` })
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function testPrivateLLMModelApi(
+    modelId: number | string,
+    prompt: string,
+    idToken: string
+): Promise<PrivateLLMModelTestResult> {
+    const response = await fetch(`/admin/private-llm/models/${encodeURIComponent(String(modelId))}/test`, {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt })
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function listPrivateLLMRolloutsApi(idToken: string): Promise<PrivateLLMRollout[]> {
+    const response = await fetch("/admin/private-llm/rollouts", { headers: await getHeaders(idToken) });
+    const data = await parseProviderAdminResponse(response);
+    return data.rollouts || [];
+}
+
+export async function createPrivateLLMRolloutApi(
+    payload: { proxy_id: string; candidate_model: string; min_ready_replicas: number; min_ready_workers: number },
+    idToken: string
+): Promise<PrivateLLMRollout> {
+    const response = await fetch("/admin/private-llm/rollouts", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    return parseProviderAdminResponse(response);
+}
+
+export async function transitionPrivateLLMRolloutApi(
+    rolloutId: string,
+    action: "activate" | "rollback",
+    idToken: string
+): Promise<PrivateLLMRollout> {
+    const response = await fetch(`/admin/private-llm/rollouts/${encodeURIComponent(rolloutId)}/${action}`, {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmation: rolloutId })
     });
     return parseProviderAdminResponse(response);
 }
@@ -1189,6 +1368,7 @@ export type UsageAnalyticsParams = {
     provider?: string;
     model?: string;
     profile_id?: string;
+    route_type?: string;
     file_type?: string;
     document_scope?: string;
     from?: string;
@@ -1210,6 +1390,47 @@ export async function getUsageAnalyticsApi(idToken: string, params: UsageAnalyti
         throw new Error(payload.error || `Loading usage analytics failed (${response.status})`);
     }
     return response.json();
+}
+
+export async function exportUsageAnalyticsCsvApi(idToken: string, params: UsageAnalyticsParams): Promise<Blob> {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => { if (value) query.set(key, value); });
+    const response = await fetch(`/usage-analytics/export.csv?${query.toString()}`, {
+        method: "GET",
+        headers: await getHeaders(idToken)
+    });
+    if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `Exporting usage CSV failed (${response.status})`);
+    }
+    return response.blob();
+}
+
+export async function listUsagePriceProfilesApi(idToken: string): Promise<UsagePriceProfile[]> {
+    const response = await fetch("/usage-price-catalog", { headers: await getHeaders(idToken) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Loading usage prices failed");
+    return payload.profiles ?? [];
+}
+
+export async function createUsagePriceProfileApi(payload: UsagePriceProfilePayload, idToken: string): Promise<UsagePriceProfile> {
+    const response = await fetch("/usage-price-catalog", {
+        method: "POST",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "Creating usage price failed");
+    return data.profile;
+}
+
+export async function retireUsagePriceProfileApi(profileId: string, idToken: string): Promise<void> {
+    const response = await fetch(`/usage-price-catalog/${encodeURIComponent(profileId)}/retire`, {
+        method: "POST",
+        headers: await getHeaders(idToken)
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "Retiring usage price failed");
 }
 
 export async function updateUserApi(
@@ -1972,6 +2193,28 @@ export async function edit_agent(team_id: string, agent_id: string, agent_name: 
     return await dataResponse;
 }
 
+export async function begin_agent_revision(teamId: string, agentId: string, idToken: string): Promise<{ revision: Agent; created: boolean }> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/teams/${encodeURIComponent(teamId)}/agents/${encodeURIComponent(agentId)}/revision`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" }
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `start Agent revision failed: ${response.statusText}`);
+    return payload as { revision: Agent; created: boolean };
+}
+
+export async function publish_agent_revision(teamId: string, agentId: string, revisionId: string, idToken: string): Promise<{ agent: Agent }> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/teams/${encodeURIComponent(teamId)}/agents/${encodeURIComponent(agentId)}/revisions/${encodeURIComponent(revisionId)}/publish`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" }
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || `publish Agent revision failed: ${response.statusText}`);
+    return payload as { agent: Agent };
+}
+
 export async function delete_agent(team_id: string, agent_id: string, idToken: string): Promise<any> {
     const headers = await getHeaders(idToken);
 
@@ -2001,6 +2244,37 @@ export async function activate_agent_draft(team_id: string, agent_id: string, id
         throw new Error(detail.error || `activate agent failed: ${response.statusText}`);
     }
     return await response.json();
+}
+
+export async function runAgentPlaygroundApi(
+    teamId: string,
+    agentId: string,
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    selectedScopes: string[],
+    dataGroupIds: string[],
+    idToken: string
+): Promise<AgentPlaygroundResponse> {
+    const headers = await getHeaders(idToken);
+    const response = await fetch(`/teams/${encodeURIComponent(teamId)}/agents/${encodeURIComponent(agentId)}/playground`, {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({
+            usage_request_id: crypto.randomUUID(),
+            messages,
+            selected_scopes: selectedScopes,
+            data_groups_id: dataGroupIds,
+            safe_mode: true
+        })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        const error = new Error(payload?.error || `Agent Playground failed (${response.status})`) as Error & {
+            diagnostics?: AgentPlaygroundResponse["diagnostics"];
+        };
+        if (payload?.diagnostics) error.diagnostics = payload.diagnostics;
+        throw error;
+    }
+    return payload as AgentPlaygroundResponse;
 }
 
 export async function list_agent_catalog(idToken: string, team_id?: string): Promise<AgentCatalogItem[]> {

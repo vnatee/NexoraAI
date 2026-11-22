@@ -757,4 +757,10 @@ def test_profile_builder_maps_default_and_alias_without_direct_provider(monkeypa
     profiles = build_external_gateway_profiles(settings)
 
     assert profiles[DEFAULT_LLM_PROFILE_ID].settings.model == "gateway/general"
+    assert profiles[DEFAULT_LLM_PROFILE_ID].label == (
+        "Enterprise Gateway — Default (gateway/general)"
+    )
+    assert profiles["gateway:general"].label == (
+        "Enterprise Gateway — gateway/general (Pinned Proxy)"
+    )
     assert profiles["gateway:vision"].supports_vision is True

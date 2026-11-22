@@ -8,11 +8,16 @@ a query spans Personal, Team, and Global Knowledge.
 System administrators manage profiles in **Administration → Embedding
 profiles**. The environment configuration is always shown as a read-only
 fallback. Managed profiles support Azure OpenAI, OpenAI, and OpenAI-compatible
-services such as the bundled Ollama server.
+services such as the bundled Ollama server. When the deployment uses an
+External Enterprise AI Gateway, a managed profile can instead select
+**Enterprise AI Gateway** and provide the Gateway embedding proxy path. That
+profile reuses the Gateway authentication, TLS, timeout, and base URL policy;
+it does not store a second copy of the Gateway credential.
 
 Each profile defines:
 
 - provider endpoint and encrypted API key, when required;
+- Enterprise Gateway embedding proxy path when Gateway routing is selected;
 - model and Azure deployment name;
 - vector dimensions; and
 - a unique Qdrant collection.
@@ -36,6 +41,22 @@ restarts.
 6. After validating ingestion, retrieval, citations, and ACL isolation, select
    **Mark re-index complete**.
 
+The Portal provides **Start full re-index** after the selected profile is
+running. It inventories stored Personal, Team, Company, and approved web
+sources, shows the target model/dimensions/collection, and requires the operator
+to type the displayed confirmation phrase. Re-indexing reuses the stored source
+objects and their ACL/metadata manifests; users do not upload the files again.
+Progress and failures remain durable across requests. **Mark re-index complete**
+is unavailable until every queued item succeeds.
+
+When the embedding model has only moved to another endpoint, use **Adopt
+existing collection** instead. The server embeds samples from the existing
+collection with the running profile and compares dimensions and cosine
+similarity. Adoption requires a second typed confirmation, records bounded
+compatibility evidence in audit metadata, then requires an application restart
+without a full re-index. General editing remains locked for active/running
+profiles so this controlled path cannot be used to silently mix vector spaces.
+
 The Portal keeps separate `Selected` and `Running` indicators. A restart
 warning remains visible while those values differ, and a re-index warning
 remains visible until an administrator explicitly confirms completion.
@@ -50,3 +71,9 @@ Phase 1 uses one active embedding profile system-wide. Per-Data Group profiles
 would require duplicate indexing for documents assigned to multiple groups and
 a defined rank-fusion strategy for queries spanning different vector spaces.
 That behavior is intentionally deferred.
+
+Agent LLM selection never changes the embedding profile. Indexing and query
+embedding must use the same active profile, dimensions, and Qdrant collection;
+otherwise vectors are not comparable. An Enterprise Gateway embedding profile
+therefore governs Knowledge traffic system-wide independently of each Agent's
+Chat/Reasoning proxy.

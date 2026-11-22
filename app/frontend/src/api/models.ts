@@ -342,7 +342,181 @@ export type AIGatewaySettingsPayload = Omit<
     clear_client_private_key?: boolean;
 };
 
-export type EmbeddingProviderAdapter = "azure_openai" | "openai" | "openai_compatible";
+export type PrivateLLMSettings = {
+    base_url: string;
+    console_url: string;
+    console_auth_mode: "local" | "oidc" | "saml";
+    timeout_seconds: number;
+    has_api_key: boolean;
+    updated_at?: string | null;
+};
+
+export type PrivateLLMSettingsPayload = {
+    base_url: string;
+    console_url: string;
+    console_auth_mode: "local" | "oidc" | "saml";
+    timeout_seconds: number;
+    api_key?: string;
+    clear_api_key?: boolean;
+};
+
+export type PrivateLLMWorker = {
+    id: number | string;
+    name: string;
+    state: string;
+    heartbeat_time?: string | null;
+    worker_version: string;
+    cpu_utilization_percent: number;
+    memory_total_bytes: number;
+    memory_used_bytes: number;
+    gpus: Array<{
+        index?: number | null;
+        name: string;
+        vendor: string;
+        memory_total_bytes: number;
+        memory_used_bytes: number;
+        memory_allocated_bytes: number;
+        memory_system_reserved_bytes: number;
+        memory_physical_free_bytes: number;
+        memory_schedulable_bytes: number;
+        memory_available_bytes: number;
+        memory_utilization_percent: number;
+        utilization_percent: number;
+    }>;
+};
+
+export type PrivateLLMModel = {
+    id: number | string;
+    name: string;
+    state: string;
+    backend: string;
+    backend_version: string;
+    replicas: number;
+    ready_replicas: number;
+    categories: string[];
+    stale: boolean;
+    updated_at?: string | null;
+};
+
+export type PrivateLLMDeployPayload = {
+    name: string;
+    huggingface_repo_id: string;
+    category: "llm" | "embedding";
+    replicas: number;
+    cluster_id: number;
+};
+
+export type PrivateLLMModelAction = "restart" | "scale" | "stop";
+
+export type PrivateLLMModelTestResult = {
+    model: string;
+    content: string;
+    finish_reason: string;
+    latency_ms: number;
+    usage: {
+        prompt_tokens: number;
+        completion_tokens: number;
+        total_tokens: number;
+    };
+};
+
+export type PrivateLLMCatalogModel = {
+    id: number;
+    name: string;
+    description: string;
+    categories: string[];
+    capabilities: string[];
+    size?: number | null;
+    size_unit: string;
+    licenses: string[];
+};
+
+export type PrivateLLMCatalogSpec = {
+    huggingface_repo_id: string;
+    backend: string;
+    backend_version: string;
+    quantization: string;
+    mode: string;
+};
+
+export type PrivateLLMModelPreflight = {
+    compatible: boolean;
+    error: boolean;
+    error_message: string;
+    compatibility_messages: string[];
+    scheduling_messages: string[];
+    resource_claim: { ram_bytes: number; vram_bytes: number };
+};
+
+export type PrivateLLMInstance = {
+    id: number | string;
+    name: string;
+    model_id: number | string;
+    model_name: string;
+    state: string;
+    worker_ids: number[];
+    gpu_indexes: number[];
+    vram_claim_bytes: number;
+    restart_count: number;
+    updated_at?: string | null;
+};
+
+export type PrivateLLMInventory = {
+    generated_at: string;
+    summary: {
+        workers: number;
+        ready_workers: number;
+        gpus: number;
+        vram_total_bytes: number;
+        vram_used_bytes: number;
+        vram_allocated_bytes: number;
+        vram_system_reserved_bytes: number;
+        vram_physical_free_bytes: number;
+        vram_schedulable_bytes: number;
+        vram_available_bytes: number;
+        models: number;
+        ready_models: number;
+        running_instances: number;
+        clusters: number;
+        ready_clusters: number;
+    };
+    clusters: Array<{
+        id: number;
+        name: string;
+        state: string;
+        is_default: boolean;
+        workers: number;
+        ready_workers: number;
+        gpus: number;
+        models: number;
+    }>;
+    workers: PrivateLLMWorker[];
+    models: PrivateLLMModel[];
+    instances: PrivateLLMInstance[];
+};
+
+export type PrivateLLMRollout = {
+    _id: string;
+    proxy_id: string;
+    candidate_model: string;
+    previous_model: string;
+    min_ready_replicas: number;
+    min_ready_workers: number;
+    status: "pending_approval" | "active" | "rolled_back";
+    preflight: {
+        model_id?: number | string;
+        model_state: string;
+        ready_replicas: number;
+        ready_workers: number;
+        running_instances: number;
+        stale: boolean;
+    };
+    created_at?: string | null;
+    activated_at?: string | null;
+    rolled_back_at?: string | null;
+};
+
+export type EmbeddingProviderAdapter = "azure_openai" | "openai" | "openai_compatible" | "ai_gateway";
 
 export type ManagedEmbeddingProfile = {
     _id: string;
@@ -354,6 +528,7 @@ export type ManagedEmbeddingProfile = {
     collection_name: string;
     endpoint?: string | null;
     base_url?: string | null;
+    gateway_proxy_path?: string | null;
     api_version?: string | null;
     organization?: string | null;
     enabled: boolean;
@@ -375,6 +550,46 @@ export type EmbeddingProfileSettings = {
     reindex_required: boolean;
     activated_at?: string | null;
     runtime_started_at?: string | null;
+};
+
+export type EmbeddingReindexProgress = {
+    total: number;
+    queued: number;
+    running: number;
+    succeeded: number;
+    failed: number;
+};
+
+export type EmbeddingReindexRun = {
+    _id: string;
+    profile_id: string;
+    profile: { name: string; model: string; dimensions: number; collection_name: string };
+    status: "queued" | "running" | "completed" | "completed_with_failures";
+    progress: EmbeddingReindexProgress;
+    created_at?: string | null;
+    started_at?: string | null;
+    completed_at?: string | null;
+};
+
+export type EmbeddingReindexPlan = {
+    profile_id: string;
+    profile_name: string;
+    model: string;
+    dimensions: number;
+    collection_name: string;
+    total: number;
+    counts: Record<string, number>;
+    confirmation: string;
+};
+
+export type EmbeddingCollectionCompatibility = {
+    compatible: boolean;
+    sample_count: number;
+    minimum_cosine_similarity: number;
+    mean_cosine_similarity: number;
+    threshold: number;
+    dimensions: number;
+    collection_name: string;
 };
 
 export interface ManagedMCPServer {
@@ -1011,6 +1226,112 @@ export interface Prompt {
     output_format: string;
     constraints: string;
 }
+
+export interface AgentPlaygroundToolDiagnostic {
+    name: string;
+    source: string;
+    risk_level: string;
+    status: "success" | "error" | "blocked";
+    duration_ms: number;
+}
+
+export interface AgentPlaygroundTraceStep {
+    kind: "input" | "guardrail" | "knowledge" | "llm" | "tool" | "mcp" | "integration" | "subagent" | "answer" | string;
+    label: string;
+    status: "success" | "error" | "blocked" | "info";
+    duration_ms?: number;
+    summary: string;
+    details?: {
+        iteration?: number;
+        model?: string;
+        source?: string;
+        risk_level?: string;
+        automatic?: boolean;
+        argument_keys?: string[];
+        requested_tools?: string[];
+        token_usage?: {
+            prompt_tokens: number;
+            completion_tokens: number;
+            reasoning_tokens: number;
+            total_tokens: number;
+        };
+    };
+}
+
+export interface AgentPlaygroundResponse {
+    answer: string;
+    citations: string[];
+    diagnostics: {
+        runtime: "legacy" | "langgraph";
+        safe_mode: boolean;
+        legacy_boundary: string | null;
+        model: string;
+        profile_id: string;
+        route_type: string;
+        duration_ms: number;
+        iterations: number;
+        token_usage: {
+            prompt_tokens: number;
+            completion_tokens: number;
+            reasoning_tokens: number;
+            total_tokens: number;
+        };
+        tools: AgentPlaygroundToolDiagnostic[];
+        steps: AgentPlaygroundTraceStep[];
+        configuration: {
+            prompt_revision: string;
+            temperature: number;
+            max_tokens: number;
+            knowledge_search: string;
+            max_search_results: number;
+            min_search_score: number;
+            selected_scopes: string[];
+            data_group_count: number;
+            model: string;
+            route_type: string;
+        };
+        run_id: string;
+    };
+}
+
+export interface UsagePriceProfile {
+    _id: string;
+    name: string;
+    pricing_type: "token" | "local_tco";
+    provider: string;
+    provider_id: string;
+    model: string;
+    profile_id: string;
+    route_type: string;
+    currency: "USD";
+    source_type: string;
+    source_reference: string;
+    effective_from: string;
+    effective_to?: string | null;
+    enabled: boolean;
+    input_usd_per_million: number;
+    cached_input_usd_per_million: number;
+    output_usd_per_million: number;
+    local_tco?: {
+        hardware_purchase_usd: number;
+        residual_value_usd: number;
+        useful_life_years: number;
+        annual_maintenance_usd: number;
+        annual_operations_usd: number;
+        average_power_kw: number;
+        pue: number;
+        electricity_usd_per_kwh: number;
+        cloud_gpu_usd_per_hour: number;
+        aggregate_tokens_per_second: number;
+        utilization: number;
+        loaded_cost_usd_per_hour: number;
+        blended_usd_per_million_tokens: number;
+    };
+}
+
+export type UsagePriceProfilePayload = Omit<UsagePriceProfile, "_id" | "currency" | "enabled" | "local_tco"> & {
+    local_tco?: Record<string, number>;
+};
 export interface Agent {
     _id: string;
     agent_name: string;
@@ -1019,6 +1340,9 @@ export interface Agent {
     delete_at?: string;
     lifecycle_status?: "active" | "draft";
     draft_expires_at?: string | null;
+    draft_kind?: "setup" | "revision";
+    revision_of?: string;
+    revision_base_updated_at?: string;
     config: AgentConf;
     prompt: Prompt;
 }

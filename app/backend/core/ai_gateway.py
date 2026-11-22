@@ -297,7 +297,10 @@ def build_external_gateway_profiles(settings: dict[str, Any]) -> dict[str, LLMPr
     profiles: dict[str, LLMProfile] = {
         DEFAULT_LLM_PROFILE_ID: LLMProfile(
             profile_id=DEFAULT_LLM_PROFILE_ID,
-            label=f"{settings.get('name') or 'External AI Gateway'} — {default_model.get('label') or default_model['model']}",
+            label=(
+                f"{settings.get('name') or 'External AI Gateway'} — "
+                f"Default ({default_model.get('label') or default_model['model']})"
+            ),
             settings=gateway_model_settings(settings, default_model),
             managed_provider_id="ai_gateway",
             managed_model_id=str(default_model["id"]),
@@ -307,9 +310,17 @@ def build_external_gateway_profiles(settings: dict[str, Any]) -> dict[str, LLMPr
     }
     for model in models:
         profile_id = f"gateway:{model['id']}"
+        profile_kind = (
+            "Semantic Proxy"
+            if model.get("routing_strategy") == "semantic"
+            else "Pinned Proxy"
+        )
         profiles[profile_id] = LLMProfile(
             profile_id=profile_id,
-            label=f"{settings.get('name') or 'External AI Gateway'} — {model.get('label') or model['model']}",
+            label=(
+                f"{settings.get('name') or 'External AI Gateway'} — "
+                f"{model.get('label') or model['model']} ({profile_kind})"
+            ),
             settings=gateway_model_settings(settings, model),
             managed_provider_id="ai_gateway",
             managed_model_id=str(model["id"]),

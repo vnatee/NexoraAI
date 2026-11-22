@@ -66,20 +66,19 @@ import {
     Menu,
     MenuItem,
     Divider,
-    ListItemIcon
+    ListItemIcon,
+    Tooltip
 } from "@mui/material";
 import { Add24Regular } from "@fluentui/react-icons";
 import LibraryAddCheckIcon from "@mui/icons-material/LibraryAddCheck";
 import { Skeleton, Box } from "@mui/material";
 import { UserManagement } from "../../components/UserManagment/UserManagement";
-import { Dashboard } from "../../components/DashBoard/Dashboard";
 import { HistoryList } from "../../components/HistoryPanel/HistoryList";
 import { AgentSelectionSummary } from "../../components/AgentSelectionSummary";
 import ChatIcon from "@mui/icons-material/Chat";
 import SearchIcon from "@mui/icons-material/Search";
 import FeedIcon from "@mui/icons-material/Feed";
 import FeedbackDialog from "../../components/FeedbackPage/FeedbackDialog";
-import FeedbackDashboardDialog from "../../components/FeedbackDashboard/FeedbackDashboardDialog";
 import { TeamManagementTabsDialog } from "../../components/TeamManagementTabsDialog/TeamManagementTabsDialog";
 import CheckIcon from "@mui/icons-material/Check";
 import Checkbox from "@mui/material/Checkbox";
@@ -91,7 +90,7 @@ import { ACTIVE_TEAM_CHANGED_EVENT, STORAGE_KEYS } from "../../utill/storageKeys
 import { useNotification } from "../../utill/NotificationProvider";
 
 const DATA_SCOPES = [
-    { key: "global", label: "Global" },
+    { key: "global", label: "Company" },
     { key: "personal", label: "Personal" }
 ] as const;
 
@@ -178,7 +177,6 @@ const Chat = () => {
     const globalUploadDialogRef = useRef<HTMLDivElement>(null);
     const scrapDataDialogRef = useRef<HTMLDivElement>(null);
     const userManagementDialogRef = useRef<HTMLDivElement>(null);
-    const dashboardDialogRef = useRef<HTMLDivElement>(null);
 
     const [open, setOpen] = useState(false);
     const [disabled, setDisabled] = useState(false);
@@ -203,7 +201,6 @@ const Chat = () => {
     const [results, setResults] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
     const [openFeedback, setOpenFeedback] = useState(false);
-    const [openFeedbackDashboard, setOpenFeedbackDashboard] = useState(false);
     const [openTeamManagement, setOpenTeamManagement] = useState(false);
     const [openTeamAdminManagement, setOpenTeamAdminManagement] = useState(false);
     const [agents, setAgents] = useState<Agent[]>([]);
@@ -430,15 +427,12 @@ const Chat = () => {
         });
     };
 
-    const getAgentModelName = (agent: Agent | null): string => {
-        if (!agent) return "";
-        const profileId = agent.config?.llm_profile_id ?? "system";
-        return llmProfiles.find(profile => profile.id === profileId)?.model ?? profileId;
-    };
-
     const selectedDataGroupNames = selectedDataGroupIds
         .map(groupId => dataGroups.find(group => group._id === groupId)?.name)
         .filter((name): name is string => Boolean(name));
+    const filteredDataGroups = dataGroups.filter(group =>
+        group.name.toLowerCase().includes(groupKeyword.trim().toLowerCase())
+    );
 
     const handleAsyncRequest = async (question: string, answers: [string, ChatAppResponse][], responseBody: ReadableStream<any>) => {
         let answer: string = "";
@@ -1467,7 +1461,10 @@ const Chat = () => {
             "Manage team permissions",
             "Approve team users",
             "Manage teams",
-            "Manage users"
+            "Manage users",
+            "View system dashboard",
+            "View team dashboard",
+            "View feedback dashboard"
         ]
     });
     const canManageUploads = hasPermission({
@@ -1476,13 +1473,6 @@ const Chat = () => {
         sys_permissions: sysPers ?? [],
         requiredPermissions: ["Manage team uploads", "Manage global uploads"]
     });
-    const canViewFeedbackDashboard = hasPermission({
-        is_sys_admin: userData?.is_sys_admin ?? false,
-        permissions: selectTeamData?.permissions ?? [],
-        sys_permissions: sysPers ?? [],
-        requiredPermissions: ["View feedback dashboard"]
-    });
-
     const openAgentCatalog = async () => {
         if (!selectTeamData?._id) return;
         setAgentAnchorEl(null);
@@ -1534,7 +1524,7 @@ const Chat = () => {
                         ) : (
                             <AgentSelectionSummary
                                 agentName={selectedAgent?.agent_name}
-                                modelName={getAgentModelName(selectedAgent)}
+                                agentDescription={selectedAgent?.prompt?.task?.trim() || selectedAgent?.prompt?.role?.trim()}
                                 teamName={selectTeamData?.name}
                                 selectedScopes={selectedScopes}
                                 selectedDataGroups={selectedDataGroupNames}
@@ -1782,35 +1772,6 @@ const Chat = () => {
                                                             </div>
                                                         )}
 
-                                                        <div className={styles.sidebarMenuSection}>
-                                                            <div className={styles.sidebarSectionLabel}>Insights</div>
-                                                        <Dashboard
-                                                            className={styles.menuItem}
-                                                            disabled={!loggedIn}
-                                                            dialogRef={dashboardDialogRef}
-                                                            teamId={selectTeamData?._id}
-                                                            teamName={selectTeamData?.name}
-                                                            canViewSystem={Boolean(
-                                                                userData?.is_sys_admin ||
-                                                                sysPers?.some(permission => permission.toLowerCase() === "view system dashboard")
-                                                            )}
-                                                            canViewTeam={Boolean(
-                                                                userData?.is_sys_admin ||
-                                                                selectTeamData?.permissions?.some(permission => permission.toLowerCase() === "view team dashboard")
-                                                            )}
-                                                        />
-
-                                                        {canViewFeedbackDashboard && (
-                                                                <Button
-                                                                    variant="text"
-                                                                    startIcon={<FeedIcon />}
-                                                                    className={styles.newChatTextButton}
-                                                                    onClick={() => setOpenFeedbackDashboard(true)}
-                                                                >
-                                                                    Feedback Dashboard
-                                                                </Button>
-                                                            )}
-                                                        </div>
                                                     </>
                                                 )}
                                             </div>
@@ -1987,11 +1948,6 @@ const Chat = () => {
                     onClose={() => setOpenFeedback(false)}
                 // onSubmit={handleSubmitFeedback}
                 />
-                <FeedbackDashboardDialog
-                    open={openFeedbackDashboard}
-                    onClose={() => setOpenFeedbackDashboard(false)}
-                // onSubmit={handleSubmitFeedback}
-                />
                 <TeamManagementTabsDialog
                     open={openTeamAdminManagement}
                     is_sys_admin={userData ? userData?.is_sys_admin! : false}
@@ -2056,7 +2012,7 @@ const Chat = () => {
                         }
                     }}
                 >
-                    <Box sx={{ display: "flex", width: hasSelectedAgent ? 620 : 280 }}>
+                    <Box sx={{ display: "flex", width: hasSelectedAgent ? 680 : 280, maxWidth: "calc(100vw - 32px)" }}>
                         {/* ================= LEFT : AGENT ================= */}
                         <Box sx={{ width: 280, maxHeight: 360, overflowY: "auto" }}>
                             <MenuItem disabled>
@@ -2074,23 +2030,21 @@ const Chat = () => {
                                 const selected = selectedAgent?._id === agent._id;
 
                                 return (
-                                    <MenuItem key={agent._id} selected={selected} onClick={() => handleSelectAgent(agent)} sx={{ alignItems: "flex-start" }}>
-                                        <ListItemIcon sx={{ minWidth: 28 }}>{selected && <CheckIcon fontSize="small" />}</ListItemIcon>
-
-                                        <ListItemText
-                                            primary={
-                                                <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.75, minWidth: 0 }}>
-                                                    <Typography component="span" variant="body2" fontWeight={selected ? 600 : 400} noWrap sx={{ minWidth: 0 }}>
-                                                        {agent.agent_name}
-                                                    </Typography>
-                                                    <Typography component="span" variant="caption" color="text.secondary" noWrap sx={{ fontSize: "0.68rem", maxWidth: 120, flexShrink: 1 }}>
-                                                        · {getAgentModelName(agent)}
-                                                    </Typography>
-                                                </Box>
-                                            }
-                                            secondary={`Temp ${agent.config.temperature} · Max ${agent.config.max_tokens}`}
-                                        />
-                                    </MenuItem>
+                                    <Tooltip
+                                        key={agent._id}
+                                        title={agent.prompt?.task?.trim() || agent.prompt?.role?.trim() || "No description provided."}
+                                        placement="right"
+                                        arrow
+                                        enterDelay={400}
+                                    >
+                                        <MenuItem selected={selected} onClick={() => handleSelectAgent(agent)}>
+                                            <ListItemIcon sx={{ minWidth: 28 }}>{selected && <CheckIcon fontSize="small" />}</ListItemIcon>
+                                            <ListItemText
+                                                primary={agent.agent_name}
+                                                primaryTypographyProps={{ fontWeight: selected ? 600 : 400, noWrap: true }}
+                                            />
+                                        </MenuItem>
+                                    </Tooltip>
                                 );
                             })}
 
@@ -2108,7 +2062,7 @@ const Chat = () => {
 
                                 <Box
                                     sx={{
-                                        width: 340,
+                                        width: 400,
                                         display: "flex",
                                         flexDirection: "column",
                                         height: 360 // ให้เท่ากับฝั่งซ้าย
@@ -2117,35 +2071,53 @@ const Chat = () => {
                                     {/* ====== Content scroll area ====== */}
                                     <Box sx={{ flex: 1, overflowY: "auto" }}>
                                         {/* ---------- Data Scope ---------- */}
-                                        <MenuItem disabled>
+                                        <Box px={1.5} pt={1.5} pb={0.5}>
                                             <Typography variant="subtitle2">Data Scope</Typography>
-                                        </MenuItem>
+                                            <Typography variant="caption" color="text.secondary">Choose where this Agent may retrieve knowledge.</Typography>
+                                        </Box>
 
-                                        {DATA_SCOPES.map(({ key, label }) => {
-                                            const checked = draftScopes.includes(key);
-
-                                            return (
-                                                <MenuItem
-                                                    key={key}
-                                                    onClick={e => {
-                                                        e.stopPropagation();
-                                                        setDraftScopes(prev => (checked ? prev.filter(s => s !== key) : [...prev, key]));
-                                                    }}
-                                                >
-                                                    <ListItemIcon>
-                                                        <Checkbox checked={checked} />
-                                                    </ListItemIcon>
-                                                    <ListItemText primary={label} />
-                                                </MenuItem>
-                                            );
-                                        })}
+                                        <Stack direction="row" spacing={1} px={1.5} pb={1}>
+                                            {DATA_SCOPES.map(({ key, label }) => {
+                                                const checked = draftScopes.includes(key);
+                                                return (
+                                                    <Box
+                                                        key={key}
+                                                        component="label"
+                                                        sx={{
+                                                            flex: 1,
+                                                            display: "flex",
+                                                            alignItems: "center",
+                                                            border: "1px solid",
+                                                            borderColor: checked ? "primary.main" : "divider",
+                                                            bgcolor: checked ? "action.selected" : "background.paper",
+                                                            borderRadius: 1.5,
+                                                            px: 0.75,
+                                                            cursor: "pointer"
+                                                        }}
+                                                    >
+                                                        <Checkbox
+                                                            size="small"
+                                                            checked={checked}
+                                                            onChange={() => setDraftScopes(prev => checked ? prev.filter(scope => scope !== key) : [...prev, key])}
+                                                        />
+                                                        <Typography variant="body2" fontWeight={checked ? 600 : 400}>{label}</Typography>
+                                                    </Box>
+                                                );
+                                            })}
+                                        </Stack>
 
                                         <Divider sx={{ my: 1 }} />
 
                                         {/* ---------- Data Groups ---------- */}
-                                        <MenuItem disabled>
-                                            <Typography variant="subtitle2">Data Groups</Typography>
-                                        </MenuItem>
+                                        <Box px={1.5} pt={0.5} pb={1}>
+                                            <Stack direction="row" alignItems="center" justifyContent="space-between">
+                                                <Box>
+                                                    <Typography variant="subtitle2">Data Groups</Typography>
+                                                    <Typography variant="caption" color="text.secondary">Choose specific team knowledge collections.</Typography>
+                                                </Box>
+                                                <Typography variant="caption" color="primary.main" fontWeight={600}>{draftDataGroupIds.length} selected</Typography>
+                                            </Stack>
+                                        </Box>
 
                                         {effectiveAccessError && (
                                             <Box px={2} pb={1}>
@@ -2155,7 +2127,7 @@ const Chat = () => {
                                             </Box>
                                         )}
 
-                                        <Box px={1} pb={1}>
+                                        <Box px={1.5} pb={0.5}>
                                             <TextField
                                                 size="small"
                                                 fullWidth
@@ -2165,10 +2137,35 @@ const Chat = () => {
                                             />
                                         </Box>
 
+                                        <Stack direction="row" spacing={0.5} px={1.5} pb={0.5}>
+                                            <Button
+                                                size="small"
+                                                disabled={dataGroups.length === 0}
+                                                onClick={event => {
+                                                    event.stopPropagation();
+                                                    setDraftDataGroupIds(dataGroups.map(group => group._id));
+                                                }}
+                                                sx={{ textTransform: "none" }}
+                                            >
+                                                Select All
+                                            </Button>
+                                            <Button
+                                                size="small"
+                                                disabled={draftDataGroupIds.length === 0}
+                                                onClick={event => { event.stopPropagation(); setDraftDataGroupIds([]); }}
+                                                sx={{ textTransform: "none" }}
+                                            >
+                                                Clear
+                                            </Button>
+                                        </Stack>
+
                                         <Box sx={{ maxHeight: 220, overflowY: "auto" }}>
-                                            {dataGroups
-                                                .filter(g => g.name.toLowerCase().includes(groupKeyword.toLowerCase()))
-                                                .map(group => {
+                                            {filteredDataGroups.length === 0 && (
+                                                <Typography variant="body2" color="text.secondary" px={2} py={1.5}>
+                                                    {dataGroups.length === 0 ? "No data groups are available." : "No data groups match your search."}
+                                                </Typography>
+                                            )}
+                                            {filteredDataGroups.map(group => {
                                                     const checked = draftDataGroupIds.includes(group._id);
 
                                                     return (
@@ -2184,10 +2181,7 @@ const Chat = () => {
                                                             <ListItemIcon>
                                                                 <Checkbox checked={checked} />
                                                             </ListItemIcon>
-                                                            <ListItemText
-                                                                primary={group.name}
-                                                                secondary={group.access_mode === "team" ? "Available to entire team" : "Assigned to selected users"}
-                                                            />
+                                                            <ListItemText primary={group.name} />
                                                         </MenuItem>
                                                     );
                                                 })}

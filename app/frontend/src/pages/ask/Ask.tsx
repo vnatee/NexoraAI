@@ -40,7 +40,7 @@ import { TokenClaimsDisplay } from "../../components/TokenClaimsDisplay";
 import { LoginContext } from "../../loginContext";
 import { LanguagePicker } from "../../i18n/LanguagePicker";
 import { IconButton } from "@fluentui/react";
-import { Box, Button, Checkbox, Divider, ListItemIcon, ListItemText, Menu, MenuItem, Skeleton, TextField, Typography } from "@mui/material";
+import { Box, Button, Checkbox, Divider, ListItemIcon, ListItemText, Menu, MenuItem, Skeleton, Stack, TextField, Tooltip, Typography } from "@mui/material";
 import CheckIcon from "@mui/icons-material/Check";
 import { Storage } from "../../utill/storage";
 import { STORAGE_KEYS } from "../../utill/storageKeys";
@@ -49,7 +49,7 @@ import { AuthStorage } from "../../utill/authStorage";
 import { AgentSelectionSummary } from "../../components/AgentSelectionSummary";
 
 const DATA_SCOPES = [
-    { key: "global", label: "Global" },
+    { key: "global", label: "Company" },
     { key: "personal", label: "Personal" }
 ] as const;
 
@@ -174,10 +174,12 @@ export function Component(): JSX.Element {
     const documentsAvailable = documentAttachmentsEnabled && chatDocumentAttachmentsEnabled;
     const showAttachmentButton = imageInputEnabled || documentAttachmentsEnabled;
     const selectedLlmProfileLabel = selectedLlmProfile?.label ?? (selectedLlmProfileId === "system" ? "System default" : selectedLlmProfileId);
-    const selectedAgentModelName = selectedLlmProfile?.model ?? selectedLlmProfileId;
     const selectedDataGroupNames = selectedDataGroupIds
         .map(groupId => dataGroups.find(group => group._id === groupId)?.name)
         .filter((name): name is string => Boolean(name));
+    const filteredDataGroups = dataGroups.filter(group =>
+        group.name.toLowerCase().includes(groupKeyword.trim().toLowerCase())
+    );
     const visionDisabledReason = !imageInputEnabled
         ? "Image input is disabled in Agent Management."
         : !selectedLlmProfile && selectedLlmProfileId !== "system"
@@ -934,7 +936,7 @@ export function Component(): JSX.Element {
                             ) : (
                                 <AgentSelectionSummary
                                     agentName={selectedAgent?.agent_name}
-                                    modelName={selectedAgentModelName}
+                                    agentDescription={selectedAgent?.prompt?.task?.trim() || selectedAgent?.prompt?.role?.trim()}
                                     teamName={selectTeamData?.name}
                                     selectedScopes={selectedScopes}
                                     selectedDataGroups={selectedDataGroupNames}
@@ -1080,7 +1082,7 @@ export function Component(): JSX.Element {
                     }
                 }}
             >
-                <Box sx={{ display: "flex", width: hasSelectedAgent ? 620 : 280 }}>
+                <Box sx={{ display: "flex", width: hasSelectedAgent ? 680 : 280, maxWidth: "calc(100vw - 32px)" }}>
                     {/* ================= LEFT : AGENT ================= */}
                     <Box sx={{ width: 280, maxHeight: 360, overflowY: "auto" }}>
                         <MenuItem disabled>
@@ -1093,17 +1095,21 @@ export function Component(): JSX.Element {
                             const selected = selectedAgent?._id === agent._id;
 
                             return (
-                                <MenuItem key={agent._id} selected={selected} onClick={() => handleSelectAgent(agent)} sx={{ alignItems: "flex-start" }}>
-                                    <ListItemIcon sx={{ minWidth: 28 }}>{selected && <CheckIcon fontSize="small" />}</ListItemIcon>
-
-                                    <ListItemText
-                                        primary={agent.agent_name}
-                                        secondary={`Temp ${agent.config.temperature} · Max ${agent.config.max_tokens}`}
-                                        primaryTypographyProps={{
-                                            fontWeight: selected ? 600 : 400
-                                        }}
-                                    />
-                                </MenuItem>
+                                <Tooltip
+                                    key={agent._id}
+                                    title={agent.prompt?.task?.trim() || agent.prompt?.role?.trim() || "No description provided."}
+                                    placement="right"
+                                    arrow
+                                    enterDelay={400}
+                                >
+                                    <MenuItem selected={selected} onClick={() => handleSelectAgent(agent)}>
+                                        <ListItemIcon sx={{ minWidth: 28 }}>{selected && <CheckIcon fontSize="small" />}</ListItemIcon>
+                                        <ListItemText
+                                            primary={agent.agent_name}
+                                            primaryTypographyProps={{ fontWeight: selected ? 600 : 400, noWrap: true }}
+                                        />
+                                    </MenuItem>
+                                </Tooltip>
                             );
                         })}
 
@@ -1121,7 +1127,7 @@ export function Component(): JSX.Element {
 
                             <Box
                                 sx={{
-                                    width: 340,
+                                    width: 400,
                                     display: "flex",
                                     flexDirection: "column",
                                     height: 360 // ให้เท่ากับฝั่งซ้าย
@@ -1130,35 +1136,53 @@ export function Component(): JSX.Element {
                                 {/* ====== Content scroll area ====== */}
                                 <Box sx={{ flex: 1, overflowY: "auto" }}>
                                     {/* ---------- Data Scope ---------- */}
-                                    <MenuItem disabled>
+                                    <Box px={1.5} pt={1.5} pb={0.5}>
                                         <Typography variant="subtitle2">Data Scope</Typography>
-                                    </MenuItem>
+                                        <Typography variant="caption" color="text.secondary">Choose where this Agent may retrieve knowledge.</Typography>
+                                    </Box>
 
-                                    {DATA_SCOPES.map(({ key, label }) => {
-                                        const checked = draftScopes.includes(key);
-
-                                        return (
-                                            <MenuItem
-                                                key={key}
-                                                onClick={e => {
-                                                    e.stopPropagation();
-                                                    setDraftScopes(prev => (checked ? prev.filter(s => s !== key) : [...prev, key]));
-                                                }}
-                                            >
-                                                <ListItemIcon>
-                                                    <Checkbox checked={checked} />
-                                                </ListItemIcon>
-                                                <ListItemText primary={label} />
-                                            </MenuItem>
-                                        );
-                                    })}
+                                    <Stack direction="row" spacing={1} px={1.5} pb={1}>
+                                        {DATA_SCOPES.map(({ key, label }) => {
+                                            const checked = draftScopes.includes(key);
+                                            return (
+                                                <Box
+                                                    key={key}
+                                                    component="label"
+                                                    sx={{
+                                                        flex: 1,
+                                                        display: "flex",
+                                                        alignItems: "center",
+                                                        border: "1px solid",
+                                                        borderColor: checked ? "primary.main" : "divider",
+                                                        bgcolor: checked ? "action.selected" : "background.paper",
+                                                        borderRadius: 1.5,
+                                                        px: 0.75,
+                                                        cursor: "pointer"
+                                                    }}
+                                                >
+                                                    <Checkbox
+                                                        size="small"
+                                                        checked={checked}
+                                                        onChange={() => setDraftScopes(prev => checked ? prev.filter(scope => scope !== key) : [...prev, key])}
+                                                    />
+                                                    <Typography variant="body2" fontWeight={checked ? 600 : 400}>{label}</Typography>
+                                                </Box>
+                                            );
+                                        })}
+                                    </Stack>
 
                                     <Divider sx={{ my: 1 }} />
 
                                     {/* ---------- Data Groups ---------- */}
-                                    <MenuItem disabled>
-                                        <Typography variant="subtitle2">Data Groups</Typography>
-                                    </MenuItem>
+                                    <Box px={1.5} pt={0.5} pb={1}>
+                                        <Stack direction="row" alignItems="center" justifyContent="space-between">
+                                            <Box>
+                                                <Typography variant="subtitle2">Data Groups</Typography>
+                                                <Typography variant="caption" color="text.secondary">Choose specific team knowledge collections.</Typography>
+                                            </Box>
+                                            <Typography variant="caption" color="primary.main" fontWeight={600}>{draftDataGroupIds.length} selected</Typography>
+                                        </Stack>
+                                    </Box>
 
                                     {effectiveAccessError && (
                                         <Box px={2} pb={1}>
@@ -1168,7 +1192,7 @@ export function Component(): JSX.Element {
                                         </Box>
                                     )}
 
-                                    <Box px={1} pb={1}>
+                                    <Box px={1.5} pb={0.5}>
                                         <TextField
                                             size="small"
                                             fullWidth
@@ -1178,10 +1202,35 @@ export function Component(): JSX.Element {
                                         />
                                     </Box>
 
+                                    <Stack direction="row" spacing={0.5} px={1.5} pb={0.5}>
+                                        <Button
+                                            size="small"
+                                            disabled={dataGroups.length === 0}
+                                            onClick={event => {
+                                                event.stopPropagation();
+                                                setDraftDataGroupIds(dataGroups.map(group => group._id));
+                                            }}
+                                            sx={{ textTransform: "none" }}
+                                        >
+                                            Select All
+                                        </Button>
+                                        <Button
+                                            size="small"
+                                            disabled={draftDataGroupIds.length === 0}
+                                            onClick={event => { event.stopPropagation(); setDraftDataGroupIds([]); }}
+                                            sx={{ textTransform: "none" }}
+                                        >
+                                            Clear
+                                        </Button>
+                                    </Stack>
+
                                     <Box sx={{ maxHeight: 220, overflowY: "auto" }}>
-                                        {dataGroups
-                                            .filter(g => g.name.toLowerCase().includes(groupKeyword.toLowerCase()))
-                                            .map(group => {
+                                        {filteredDataGroups.length === 0 && (
+                                            <Typography variant="body2" color="text.secondary" px={2} py={1.5}>
+                                                {dataGroups.length === 0 ? "No data groups are available." : "No data groups match your search."}
+                                            </Typography>
+                                        )}
+                                        {filteredDataGroups.map(group => {
                                                 const checked = draftDataGroupIds.includes(group._id);
 
                                                 return (
@@ -1197,10 +1246,7 @@ export function Component(): JSX.Element {
                                                         <ListItemIcon>
                                                             <Checkbox checked={checked} />
                                                         </ListItemIcon>
-                                                    <ListItemText
-                                                        primary={group.name}
-                                                        secondary={group.access_mode === "team" ? "Available to entire team" : "Assigned to selected users"}
-                                                    />
+                                                    <ListItemText primary={group.name} />
                                                     </MenuItem>
                                                 );
                                             })}

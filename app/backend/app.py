@@ -15,11 +15,12 @@ import random
 import secrets
 import uuid
 
+import httpx
 import requests
 # Scraping import
 from bs4 import BeautifulSoup
 from azure.storage.blob import BlobServiceClient
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 import asyncio
 # End of Scraping import
 from collections.abc import AsyncGenerator
@@ -157,6 +158,7 @@ from mongo_table_connecters.usage_quotas import (
 from core.usage_quotas import UsageQuotaPolicy
 from mongo_table_connecters.agents import (
     activate_agent_by_id,
+    create_or_resume_agent_revision,
     delete_agent_cascade,
     ensure_agent_indexes,
     get_agent_by_id,
@@ -164,6 +166,7 @@ from mongo_table_connecters.agents import (
     is_active_agent,
     is_expired_agent_draft,
     list_expired_agent_draft_ids,
+    publish_agent_revision,
     update_agent,
 )
 from mongo_table_connecters.agent_invocation_jobs import (
@@ -233,6 +236,18 @@ from mongo_table_connecters.ai_gateway_settings import (
     save_ai_gateway_settings,
     serialize_ai_gateway_settings,
 )
+from mongo_table_connecters.private_llm_control_plane import (
+    create_rollout_plan,
+    get_private_llm_settings,
+    get_rollout_plan,
+    list_rollout_plans,
+    normalize_private_llm_settings,
+    normalize_rollout_request,
+    save_private_llm_settings,
+    serialize_private_llm_settings,
+    serialize_rollout_plan,
+    update_rollout_plan,
+)
 from mongo_table_connecters.embedding_profiles import (
     ENVIRONMENT_PROFILE_ID,
     activate_embedding_profile,
@@ -240,6 +255,7 @@ from mongo_table_connecters.embedding_profiles import (
     get_embedding_settings,
     insert_embedding_profile,
     list_embedding_profiles,
+    mark_embedding_collection_adopted,
     mark_embedding_runtime_started,
     mark_embedding_reindex_complete,
     soft_delete_embedding_profile,
@@ -382,15 +398,31 @@ from core.knowledge_store import (
 )
 from mongo_table_connecters.ingestion_jobs import (
     claim_ingestion_job,
+    clone_ingestion_job_for_reindex,
     create_ingestion_job,
     get_ingestion_job,
     latest_indexed_times,
+    latest_indexed_jobs_for_reindex,
     list_ingestion_jobs,
     list_recoverable_ingestion_jobs,
     release_ingestion_job,
     restart_failed_ingestion_job,
     serialize_ingestion_job,
     update_ingestion_job_status,
+)
+from mongo_table_connecters.embedding_reindex_runs import (
+    claim_embedding_reindex_run,
+    complete_embedding_reindex_run,
+    create_embedding_reindex_run,
+    embedding_reindex_progress,
+    ensure_embedding_reindex_indexes,
+    get_embedding_reindex_run,
+    heartbeat_embedding_reindex_run,
+    latest_embedding_reindex_run,
+    list_recoverable_embedding_reindex_runs,
+    pending_embedding_reindex_items,
+    release_embedding_reindex_run,
+    update_embedding_reindex_item,
 )
 from mongo_table_connecters.chat_attachment_metadata import (
     claim_attachment_extraction,
@@ -495,6 +527,7 @@ from core.document_attachments import (
 from core.effective_access import AccessControlError, EffectiveAccess, resolve_effective_access
 from chat_history.cosmosdb import chat_history_cosmosdb_bp
 from config import (
+    CONFIG_AI_GATEWAY_MODE,
     CONFIG_AGENT_CLIENT,
     CONFIG_ACTIVE_EMBEDDING_PROFILE_ID,
     CONFIG_AGENTIC_RETRIEVAL_ENABLED,
@@ -559,7 +592,15 @@ from core.ai_gateway import (
     gateway_diagnostic_message,
     gateway_error_diagnostic,
     gateway_model_by_id,
+    gateway_route_base_url,
     run_gateway_conformance,
+)
+from core.private_llm_control_plane import (
+    GPUStackControlPlaneClient,
+    normalize_model_action_request,
+    normalize_model_deploy_request,
+    normalize_model_test_request,
+    rollout_preflight,
 )
 from core.llm_vendors import apply_llm_vendor_chat_policy, get_llm_vendor, infer_llm_vendor
 from core.model_profiles import (
@@ -587,6 +628,7 @@ from core.system_health import (
 )
 from core.mcp_auth import EntraClientCredentials
 from core.runtime_settings import EmbeddingProviderSettings, LLMProviderSettings, ModelProvider, RuntimeSettings, parse_model_provider
+from prepdocslib.embeddings import OpenAIClientEmbeddingService
 from agent_runtime.policy import normalize_tool_policy
 from core.guardrails import (
     GuardrailPolicy,
@@ -608,7 +650,14 @@ from prepdocs import (
 from prepdocslib.filestrategy import UploadUserFileStrategy
 from prepdocslib.listfilestrategy import File
 from prepdocslib.docinteldb import insert_document_processing_usage
-from mongo_table_connecters.usage_analytics import get_usage_analytics
+from mongo_table_connecters.usage_analytics import get_usage_analytics, usage_cost_csv
+from mongo_table_connecters.usage_pricing import (
+    create_price_profile,
+    ensure_usage_pricing_indexes,
+    list_price_profiles,
+    retire_price_profile,
+    serialize_price_profile,
+)
 from addons.scraping_web import (
     WebScrapingError,
     legacy_source_folder,
@@ -809,13 +858,25 @@ def _validate_agent_web_search_connection(config: dict[str, Any], team_id: str) 
         )
 
 
-def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> None:
+def _apply_agent_llm_profile(
+    context: dict[str, Any],
+    agent_id: str | None,
+    *,
+    agent_document: dict[str, Any] | None = None,
+) -> None:
     profile_id = DEFAULT_LLM_PROFILE_ID
     agent_config: dict[str, Any] = {}
     agent_found = not agent_id
     if agent_id:
-        agent = get_agent_by_id(agent_id)
-        if is_active_agent(agent):
+        agent = agent_document if agent_document is not None else get_agent_by_id(agent_id)
+        if agent and agent.get("publish_lock"):
+            raise AccessControlError(
+                "Agent revision is being published. Retry shortly.", status_code=409
+            )
+        if is_active_agent(agent) or (
+            agent_document is not None
+            and str((agent or {}).get("lifecycle_status") or "active") == "draft"
+        ):
             agent_found = True
             agent_config = agent.get("config") or {}
             profile_id = agent_config.get("llm_profile_id") or DEFAULT_LLM_PROFILE_ID
@@ -844,6 +905,14 @@ def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> N
     overrides["_llm_profile_id"] = profile_id
     overrides["_llm_provider_id"] = (
         profile.managed_provider_id or f"configured:{profile.settings.provider.value}"
+    )
+    gateway_mode = str(current_app.config.get(CONFIG_AI_GATEWAY_MODE) or "built_in")
+    overrides["_llm_route_type"] = (
+        "external_gateway"
+        if profile.managed_provider_id == "ai_gateway"
+        else "direct_development"
+        if gateway_mode == "direct_development"
+        else "built_in"
     )
     overrides["_llm_supports_tools"] = profile.supports_tools
     overrides["_llm_supports_vision"] = profile.supports_vision
@@ -885,19 +954,28 @@ def _apply_agent_llm_profile(context: dict[str, Any], agent_id: str | None) -> N
 
 
 def _usage_metadata(
-    context: dict[str, Any], agent_id: str | None, workload: str = "chat"
+    context: dict[str, Any],
+    agent_id: str | None,
+    workload: str = "chat",
+    *,
+    agent_document: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     overrides = context.get("overrides") if isinstance(context.get("overrides"), dict) else {}
-    agent = get_agent_by_id(agent_id) if agent_id else None
+    agent = agent_document if agent_document is not None else get_agent_by_id(agent_id) if agent_id else None
     agent_config = (agent or {}).get("config") or {}
     return {
         "agent_id": str(agent_id or ""),
-        "agent_name": str((agent or {}).get("name") or "System default"),
+        "agent_name": str(
+            (agent or {}).get("agent_name")
+            or (agent or {}).get("name")
+            or "System default"
+        ),
         "provider": str(overrides.get("_llm_vendor") or "unknown"),
         "provider_id": str(overrides.get("_llm_provider_id") or ""),
         "model": str(overrides.get("_llm_model") or "unknown"),
         "deployment": str(overrides.get("_llm_deployment") or ""),
         "profile_id": str(overrides.get("_llm_profile_id") or ""),
+        "route_type": str(overrides.get("_llm_route_type") or "unknown"),
         "runtime": str(agent_config.get("runtime") or "legacy"),
         "workload": workload,
         "usage_event_id": str(context.get("usage_request_id") or ""),
@@ -1425,11 +1503,18 @@ def _normalize_embedding_profile_payload(
     body: dict[str, Any], existing: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     name = str(body.get("name") or "").strip()
-    provider = parse_model_provider(str(body.get("provider") or ""))
+    provider_value = str(body.get("provider") or "").strip().lower()
+    gateway_managed = provider_value == "ai_gateway"
+    provider = (
+        ModelProvider.OPENAI_COMPATIBLE
+        if gateway_managed
+        else parse_model_provider(provider_value)
+    )
     model = str(body.get("model") or "").strip()
     deployment = str(body.get("deployment") or "").strip() or None
     endpoint = str(body.get("endpoint") or "").strip().rstrip("/") or None
     base_url = str(body.get("base_url") or "").strip().rstrip("/") or None
+    gateway_proxy_path = str(body.get("gateway_proxy_path") or "").strip().strip("/")
     collection_name = str(body.get("collection_name") or "").strip()
     try:
         dimensions = int(body.get("dimensions"))
@@ -1453,14 +1538,29 @@ def _normalize_embedding_profile_payload(
         if not deployment:
             raise ValueError("Azure OpenAI embedding profile requires a deployment")
     if provider == ModelProvider.OPENAI_COMPATIBLE:
-        parsed_base_url = urlparse(base_url or "")
-        if not base_url or parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.netloc:
-            raise ValueError("OpenAI-compatible embedding profile requires an HTTP(S) base URL")
-        if parsed_base_url.username or parsed_base_url.password or parsed_base_url.query or parsed_base_url.fragment:
-            raise ValueError("Embedding base URL must not contain credentials, query parameters, or fragments")
+        if gateway_managed:
+            gateway_settings = get_ai_gateway_settings()
+            if str(gateway_settings.get("mode") or "built_in") != "external":
+                raise ValueError("Enterprise Gateway embedding profiles require External AI Gateway mode")
+            if (
+                not gateway_proxy_path
+                or "://" in gateway_proxy_path
+                or "?" in gateway_proxy_path
+                or "#" in gateway_proxy_path
+                or any(part == ".." for part in gateway_proxy_path.split("/"))
+            ):
+                raise ValueError("Enterprise Gateway embedding profile requires a safe Proxy Path")
+        else:
+            parsed_base_url = urlparse(base_url or "")
+            if not base_url or parsed_base_url.scheme not in {"http", "https"} or not parsed_base_url.netloc:
+                raise ValueError("OpenAI-compatible embedding profile requires an HTTP(S) base URL")
+            if parsed_base_url.username or parsed_base_url.password or parsed_base_url.query or parsed_base_url.fragment:
+                raise ValueError("Embedding base URL must not contain credentials, query parameters, or fragments")
 
     api_key_ciphertext = existing.get("api_key_ciphertext") if existing else None
-    if body.get("clear_api_key"):
+    if gateway_managed:
+        api_key_ciphertext = None
+    elif body.get("clear_api_key"):
         api_key_ciphertext = None
     elif str(body.get("api_key") or "").strip():
         api_key_ciphertext = encrypt_provider_secret(str(body["api_key"]).strip())
@@ -1470,13 +1570,14 @@ def _normalize_embedding_profile_payload(
 
     return {
         "name": name,
-        "provider": provider.value,
+        "provider": "ai_gateway" if gateway_managed else provider.value,
         "model": model,
         "deployment": deployment if provider == ModelProvider.AZURE_OPENAI else None,
         "dimensions": dimensions,
         "collection_name": collection_name,
         "endpoint": endpoint if provider == ModelProvider.AZURE_OPENAI else None,
-        "base_url": base_url if provider == ModelProvider.OPENAI_COMPATIBLE else None,
+        "base_url": base_url if provider == ModelProvider.OPENAI_COMPATIBLE and not gateway_managed else None,
+        "gateway_proxy_path": gateway_proxy_path if gateway_managed else None,
         "api_version": (
             str(body.get("api_version") or "").strip() or "2024-10-21"
             if provider == ModelProvider.AZURE_OPENAI
@@ -1508,6 +1609,9 @@ def _serialize_embedding_profile(document: dict[str, Any], *, environment: bool 
         "collection_name": str(document["collection_name"]),
         "endpoint": public_url(document.get("endpoint")),
         "base_url": public_url(document.get("base_url")),
+        "gateway_proxy_path": (
+            str(document.get("gateway_proxy_path") or "") or None
+        ),
         "api_version": document.get("api_version"),
         "organization": document.get("organization"),
         "enabled": bool(document.get("enabled", True)),
@@ -1538,6 +1642,27 @@ def _environment_embedding_profile() -> dict[str, Any]:
 
 
 def _settings_for_embedding_profile(profile: dict[str, Any]) -> EmbeddingProviderSettings:
+    if str(profile.get("provider") or "") == "ai_gateway":
+        gateway_settings = get_ai_gateway_settings()
+        if str(gateway_settings.get("mode") or "built_in") != "external":
+            raise ValueError(
+                "Enterprise Gateway embedding profile requires External AI Gateway mode"
+            )
+        route = {
+            "proxy_path": str(profile.get("gateway_proxy_path") or ""),
+            "model": str(profile["model"]),
+        }
+        return EmbeddingProviderSettings(
+            provider=ModelProvider.OPENAI_COMPATIBLE,
+            model=str(profile["model"]),
+            deployment=None,
+            dimensions=int(profile["dimensions"]),
+            api_version="",
+            endpoint=None,
+            base_url=gateway_route_base_url(gateway_settings, route),
+            api_key=None,
+            organization=None,
+        )
     return EmbeddingProviderSettings(
         provider=parse_model_provider(str(profile["provider"])),
         model=str(profile["model"]),
@@ -1548,6 +1673,42 @@ def _settings_for_embedding_profile(profile: dict[str, Any]) -> EmbeddingProvide
         base_url=profile.get("base_url"),
         api_key=decrypt_provider_secret(profile.get("api_key_ciphertext")),
         organization=profile.get("organization"),
+    )
+
+
+def _embedding_service_for_profile(
+    profile: dict[str, Any],
+    settings: EmbeddingProviderSettings,
+    credential: Any,
+    *,
+    disable_vectors: bool = False,
+    disable_batch: bool = False,
+):
+    if disable_vectors:
+        return None
+    if str(profile.get("provider") or "") != "ai_gateway":
+        return create_embedding_service(
+            settings,
+            credential,
+            disable_vectors=disable_vectors,
+            disable_batch=disable_batch,
+        )
+    gateway_settings = get_ai_gateway_settings()
+    if str(gateway_settings.get("mode") or "built_in") != "external":
+        raise ValueError(
+            "Enterprise Gateway embedding profile requires External AI Gateway mode"
+        )
+    route = {
+        "id": f"embedding:{profile.get('_id') or 'profile'}",
+        "model": str(profile["model"]),
+        "routing_strategy": "model_based",
+        "proxy_path": str(profile.get("gateway_proxy_path") or ""),
+    }
+    return OpenAIClientEmbeddingService(
+        open_ai_model_name=settings.model,
+        open_ai_dimensions=settings.dimensions,
+        client=create_external_gateway_client(gateway_settings, route),
+        disable_batch=disable_batch,
     )
 
 
@@ -1569,7 +1730,9 @@ async def _probe_embedding_profile(profile_id: str) -> tuple[EmbeddingProviderSe
         if profile_id == ENVIRONMENT_PROFILE_ID
         else _settings_for_embedding_profile(profile)
     )
-    service = create_embedding_service(settings, current_app.config[CONFIG_CREDENTIAL])
+    service = _embedding_service_for_profile(
+        profile, settings, current_app.config[CONFIG_CREDENTIAL]
+    )
     vectors = await service.create_embeddings(["NexoraAI embedding connection test"]) if service else []
     actual_dimensions = len(vectors[0]) if vectors else 0
     if actual_dimensions != settings.dimensions:
@@ -1585,6 +1748,124 @@ async def _probe_embedding_profile(profile_id: str) -> tuple[EmbeddingProviderSe
     )
     await qdrant.ensure_ready()
     return settings, actual_dimensions
+
+
+def _qdrant_collection_sample(collection_name: str, limit: int = 12) -> list[dict[str, Any]]:
+    endpoint = os.getenv("QDRANT_URL", "http://127.0.0.1:6333").rstrip("/")
+    headers = {"Content-Type": "application/json"}
+    api_key = os.getenv("QDRANT_API_KEY", "").strip()
+    if api_key:
+        headers["api-key"] = api_key
+    response = requests.post(
+        f"{endpoint}/collections/{collection_name}/points/scroll",
+        headers=headers,
+        json={"limit": max(1, min(limit, 20)), "with_payload": True, "with_vector": True},
+        timeout=20,
+    )
+    if response.status_code == 404:
+        raise ValueError("Qdrant collection was not found")
+    response.raise_for_status()
+    return list(((response.json().get("result") or {}).get("points") or []))
+
+
+async def _embedding_collection_compatibility(
+    profile: dict[str, Any], collection_name: str
+) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", collection_name):
+        raise ValueError("Qdrant collection must use 1-128 letters, numbers, dots, underscores, or hyphens")
+    conflicting = [
+        item
+        for item in list_embedding_profiles()
+        if str(item.get("_id")) != str(profile.get("_id"))
+        and str(item.get("collection_name") or "") == collection_name
+    ]
+    if conflicting:
+        raise ValueError("Qdrant collection is assigned to another managed embedding profile")
+    points = await asyncio.to_thread(_qdrant_collection_sample, collection_name, 12)
+    samples: list[str] = []
+    stored_vectors: list[list[float]] = []
+    vector_field = os.getenv("AZURE_SEARCH_FIELD_NAME_EMBEDDING", "embedding")
+    for point in points:
+        payload = point.get("payload") if isinstance(point, dict) else None
+        vector = point.get("vector") if isinstance(point, dict) else None
+        if isinstance(vector, dict):
+            vector = vector.get(vector_field) or next(iter(vector.values()), None)
+        content = payload.get("content") if isinstance(payload, dict) else None
+        if isinstance(content, str) and content.strip() and isinstance(vector, list):
+            samples.append(content)
+            stored_vectors.append(vector)
+    if not samples:
+        raise ValueError("Qdrant collection has no text vectors available for compatibility testing")
+    settings = _settings_for_embedding_profile(profile)
+    service = _embedding_service_for_profile(
+        profile, settings, current_app.config[CONFIG_CREDENTIAL]
+    )
+    generated_vectors = await service.create_embeddings(samples) if service else []
+    similarities: list[float] = []
+    for stored, generated in zip(stored_vectors, generated_vectors):
+        if len(stored) != settings.dimensions or len(generated) != settings.dimensions:
+            raise ValueError("Embedding dimensions do not match the existing collection")
+        dot = sum(float(left) * float(right) for left, right in zip(stored, generated))
+        stored_norm = math.sqrt(sum(float(value) ** 2 for value in stored))
+        generated_norm = math.sqrt(sum(float(value) ** 2 for value in generated))
+        similarities.append(
+            dot / (stored_norm * generated_norm)
+            if stored_norm and generated_norm
+            else 0.0
+        )
+    minimum = min(similarities)
+    mean = sum(similarities) / len(similarities)
+    threshold = 0.999
+    return {
+        "compatible": minimum >= threshold,
+        "sample_count": len(similarities),
+        "minimum_cosine_similarity": round(minimum, 9),
+        "mean_cosine_similarity": round(mean, 9),
+        "threshold": threshold,
+        "dimensions": settings.dimensions,
+        "collection_name": collection_name,
+    }
+
+
+def _serialize_embedding_reindex_run(run: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not run:
+        return None
+    progress = embedding_reindex_progress(str(run["_id"]))
+    return {
+        "_id": str(run["_id"]),
+        "profile_id": str(run.get("profile_id") or ""),
+        "profile": dict(run.get("profile_snapshot") or {}),
+        "status": str(run.get("status") or ""),
+        "progress": progress,
+        "created_at": run.get("created_at").isoformat() if run.get("created_at") else None,
+        "started_at": run.get("started_at").isoformat() if run.get("started_at") else None,
+        "completed_at": run.get("completed_at").isoformat() if run.get("completed_at") else None,
+    }
+
+
+async def _embedding_reindex_inventory() -> list[dict[str, Any]]:
+    result = [
+        {
+            "kind": "document",
+            "source_key": f"{job.get('scope')}:{job.get('storage_path')}",
+            "scope": str(job.get("scope") or ""),
+            "source_job_id": str(job.get("_id") or ""),
+        }
+        for job in await asyncio.to_thread(latest_indexed_jobs_for_reindex)
+    ]
+    store = _knowledge_store()
+    for scope in ("web_global", "web_team"):
+        for stored_object in await store.list(scope):
+            if stored_object.tags.get("status") not in {None, "", "indexed", "Pass"}:
+                continue
+            result.append(
+                {
+                    "kind": "web",
+                    "source_key": f"{scope}:{stored_object.key}",
+                    "scope": scope,
+                }
+            )
+    return result
 
 
 def _settings_for_managed_model(provider: dict[str, Any], model: dict[str, Any]) -> LLMProviderSettings:
@@ -1883,6 +2164,9 @@ def _refresh_llm_profile_registry() -> None:
     }
     current_app.config[CONFIG_LLM_PROFILES] = profiles
     current_app.config[CONFIG_LLM_PROFILE_CLIENTS] = clients
+    current_app.config[CONFIG_AI_GATEWAY_MODE] = str(
+        gateway_settings.get("mode") or "built_in"
+    )
     current_app.config[CONFIG_OPENAI_CLIENT] = clients[DEFAULT_LLM_PROFILE_ID]
     if previous_clients:
         close_task = asyncio.create_task(
@@ -2226,23 +2510,35 @@ async def _apply_temporary_attachment_retrieval(
         overrides["use_agentic_retrieval"] = False
 
 
-def _use_langgraph_runtime(agent_id: str | None) -> bool:
+def _use_langgraph_runtime(
+    agent_id: str | None, *, agent_document: dict[str, Any] | None = None
+) -> bool:
     mode = os.getenv("AGENT_RUNTIME_MODE", "per_agent").strip().lower()
     if mode in ("legacy", "langgraph"):
         return mode == "langgraph"
     if agent_id:
-        agent = get_agent_by_id(agent_id)
-        configured = str((agent or {}).get("config", {}).get("runtime") or "").strip().lower() if is_active_agent(agent) else ""
+        agent = agent_document if agent_document is not None else get_agent_by_id(agent_id)
+        agent_available = is_active_agent(agent) or (
+            agent_document is not None
+            and str((agent or {}).get("lifecycle_status") or "active") == "draft"
+        )
+        configured = str((agent or {}).get("config", {}).get("runtime") or "").strip().lower() if agent_available else ""
         if configured in ("legacy", "langgraph"):
             return configured == "langgraph"
     return False
 
 
 def _guardrail_policy_for_agent(
-    agent_id: str | None, team_id: str | None = None
+    agent_id: str | None,
+    team_id: str | None = None,
+    *,
+    agent_document: dict[str, Any] | None = None,
 ) -> GuardrailPolicy:
-    agent = get_agent_by_id(agent_id) if agent_id else None
-    if not is_active_agent(agent):
+    agent = agent_document if agent_document is not None else get_agent_by_id(agent_id) if agent_id else None
+    if not is_active_agent(agent) and not (
+        agent_document is not None
+        and str((agent or {}).get("lifecycle_status") or "active") == "draft"
+    ):
         agent = None
     system_config = get_guardrail_settings()
     team_config = get_guardrail_settings(team_id) if team_id else None
@@ -2259,12 +2555,17 @@ async def _enforce_input_guardrails(
     agent_id: str | None,
     team_id: str | None,
     auth_claims: dict[str, Any],
+    agent_document: dict[str, Any] | None = None,
+    execution_context: str = "runtime",
 ) -> tuple[GuardrailPolicy, AuditTrail]:
-    policy = _guardrail_policy_for_agent(agent_id, team_id)
+    policy = _guardrail_policy_for_agent(
+        agent_id, team_id, agent_document=agent_document
+    )
     audit = AuditTrail(
         agent_id=str(agent_id or "system"),
         team_id=team_id,
         auth_claims=auth_claims,
+        execution_context=execution_context,
     )
     result = evaluate_guardrail_input(messages, policy)
     if result.findings:
@@ -2439,6 +2740,15 @@ async def _run_langgraph_as_chat_stream(
         [event["name"] for event in result.get("tool_trace", [])],
     )
     citations = []
+    model_calls = [
+        call for call in (result.get("model_calls") or []) if isinstance(call, dict)
+    ]
+    token_usage = {
+        "prompt_tokens": sum(int(call.get("prompt_tokens") or 0) for call in model_calls),
+        "completion_tokens": sum(int(call.get("completion_tokens") or 0) for call in model_calls),
+        "reasoning_tokens": sum(int(call.get("reasoning_tokens") or 0) for call in model_calls),
+        "total_tokens": sum(int(call.get("total_tokens") or 0) for call in model_calls),
+    }
     chart_spec = (result.get("artifacts") or {}).get("chart")
     diagram_artifact = (result.get("artifacts") or {}).get("diagram")
     rag_diagnostics = {"called": False, "result_count": 0}
@@ -2464,6 +2774,11 @@ async def _run_langgraph_as_chat_stream(
                         "tools": [event["name"] for event in result.get("tool_trace", [])],
                         "rag": rag_diagnostics,
                         "trace": result.get("trace"),
+                    },
+                    "props": {
+                        "model": str((context.get("overrides") or {}).get("_llm_model") or ""),
+                        "deployment": str((context.get("overrides") or {}).get("_llm_deployment") or ""),
+                        "token_usage": token_usage,
                     },
                 }
             ],
@@ -3325,7 +3640,7 @@ async def _execute_agent_invocation(
 @authenticated
 async def get_team_agent_api_keys(auth_claims: dict[str, Any], team_id: str):
     try:
-        _actor, team = _require_team_access(
+        actor, team = _require_team_access(
             auth_claims, team_id, permission="Manage agents"
         )
         agents = []
@@ -3365,7 +3680,7 @@ async def create_team_agent_api_key(auth_claims: dict[str, Any], team_id: str):
     try:
         if not request.is_json:
             raise AgentInvocationKeyError("request must be json", status_code=415)
-        actor, team = _require_team_access(
+        _actor, team = _require_team_access(
             auth_claims, team_id, permission="Manage agents"
         )
         body = await request.get_json()
@@ -5347,6 +5662,554 @@ async def admin_conformance_ai_gateway(auth_claims: dict[str, Any]):
         ), 400
 
 
+def _private_llm_gateway_candidate(
+    settings: dict[str, Any], *, proxy_id: str, model_name: str
+) -> dict[str, Any]:
+    candidate = copy.deepcopy(settings)
+    route = gateway_model_by_id(candidate, proxy_id)
+    if str(route.get("routing_strategy") or "model_based") != "model_based":
+        raise ValueError("Private LLM rollout requires a model-based gateway proxy")
+    route["model"] = model_name
+    return candidate
+
+
+async def _private_llm_inventory() -> dict[str, Any]:
+    settings = get_private_llm_settings()
+    if not settings.get("base_url"):
+        raise ValueError("Configure the GPUStack control-plane URL first")
+    return await GPUStackControlPlaneClient(settings).inventory()
+
+
+def _private_llm_client() -> GPUStackControlPlaneClient:
+    settings = get_private_llm_settings()
+    if not settings.get("base_url"):
+        raise ValueError("Configure the GPUStack control-plane URL first")
+    return GPUStackControlPlaneClient(settings)
+
+
+def _private_llm_mutation_error(error: Exception, *, operation: str) -> str:
+    if not isinstance(error, httpx.HTTPStatusError):
+        return f"GPUStack {operation} request failed before a response was received"
+    status = error.response.status_code
+    if status in {401, 403}:
+        return "GPUStack management key is not authorized for this model operation"
+    if status == 409:
+        return f"GPUStack reported a conflicting model {operation} operation"
+    if status == 422:
+        return f"GPUStack rejected the {operation} configuration"
+    if status >= 500:
+        return f"GPUStack encountered an internal error during model {operation} (HTTP {status})"
+    return f"GPUStack rejected model {operation} (HTTP {status})"
+
+
+@bp.get("/admin/private-llm")
+@authenticated
+async def admin_get_private_llm(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    return jsonify(serialize_private_llm_settings(get_private_llm_settings()))
+
+
+@bp.put("/admin/private-llm")
+@authenticated
+async def admin_update_private_llm(auth_claims: dict[str, Any]):
+    actor = _require_system_admin(auth_claims)
+    actor_id = str(actor.get("_id") or auth_claims.get("application_user_id") or "")
+    try:
+        normalized = normalize_private_llm_settings(
+            await request.get_json() or {}, existing=get_private_llm_settings()
+        )
+        saved = save_private_llm_settings(normalized, actor_id=actor_id)
+        insert_integration_lifecycle_event(
+            action="private_llm_updated",
+            status="success",
+            connection_id="system",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+        )
+        return jsonify(serialize_private_llm_settings(saved))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        current_app.logger.warning("Private LLM settings update failed: %s", type(error).__name__)
+        insert_integration_lifecycle_event(
+            action="private_llm_updated",
+            status="failed",
+            connection_id="system",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+            error_type=type(error).__name__,
+        )
+        return jsonify({"error": "Private LLM settings could not be applied"}), 400
+
+
+@bp.get("/admin/private-llm/inventory")
+@authenticated
+async def admin_private_llm_inventory(auth_claims: dict[str, Any]):
+    actor = _require_system_admin(auth_claims)
+    actor_id = str(actor.get("_id") or auth_claims.get("application_user_id") or "")
+    try:
+        inventory = await _private_llm_inventory()
+        insert_integration_lifecycle_event(
+            action="private_llm_inventory",
+            status="success",
+            connection_id="system",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+        )
+        return jsonify(inventory)
+    except Exception as error:
+        current_app.logger.warning("GPUStack inventory failed: %s", type(error).__name__)
+        insert_integration_lifecycle_event(
+            action="private_llm_inventory",
+            status="failed",
+            connection_id="system",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+            error_type=type(error).__name__,
+        )
+        status = 400 if isinstance(error, ValueError) else 502
+        return jsonify({"error": "GPUStack inventory is unavailable"}), status
+
+
+@bp.post("/admin/private-llm/models")
+@authenticated
+async def admin_deploy_private_llm_model(auth_claims: dict[str, Any]):
+    actor = _require_system_admin(auth_claims)
+    actor_id = str(actor.get("_id") or auth_claims.get("application_user_id") or "")
+    model_name = ""
+    try:
+        deployment = normalize_model_deploy_request(await request.get_json() or {})
+        model_name = deployment["name"]
+        client = _private_llm_client()
+        evaluation = await client.evaluate_model(deployment)
+        if not evaluation["compatible"]:
+            messages = [
+                evaluation.get("error_message"),
+                *(evaluation.get("compatibility_messages") or []),
+                *(evaluation.get("scheduling_messages") or []),
+            ]
+            detail = next((str(value) for value in messages if value), "GPUStack reported that the model does not fit this cluster")
+            raise ValueError(detail)
+        model = await client.deploy_model(deployment)
+        insert_integration_lifecycle_event(
+            action="private_llm_model_deployed",
+            status="success",
+            connection_id=f"model:{model.get('id') or model_name}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+        )
+        return jsonify(model), 202
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        current_app.logger.warning(
+            "GPUStack model deployment failed: %s", type(error).__name__
+        )
+        insert_integration_lifecycle_event(
+            action="private_llm_model_deployed",
+            status="failed",
+            connection_id=f"model:{model_name}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+            error_type=type(error).__name__,
+        )
+        return jsonify(
+            {"error": _private_llm_mutation_error(error, operation="deployment")}
+        ), 502
+
+
+@bp.get("/admin/private-llm/catalog")
+@authenticated
+async def admin_private_llm_catalog(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        category = str(request.args.get("category") or "llm").strip().lower()
+        search = str(request.args.get("search") or "").strip()
+        models = await _private_llm_client().catalog_models(
+            category=category, search=search
+        )
+        return jsonify({"models": models})
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        current_app.logger.warning(
+            "GPUStack model catalog failed: %s", type(error).__name__
+        )
+        return jsonify({"error": "GPUStack model catalog is unavailable"}), 502
+
+
+@bp.get("/admin/private-llm/catalog/<int:model_set_id>/specs")
+@authenticated
+async def admin_private_llm_catalog_specs(
+    auth_claims: dict[str, Any], model_set_id: int
+):
+    _require_system_admin(auth_claims)
+    try:
+        cluster_id = int(request.args.get("cluster_id") or 0)
+        if cluster_id < 1:
+            raise ValueError("Select a deployment cluster")
+        specs = await _private_llm_client().catalog_specs(
+            model_set_id=model_set_id, cluster_id=cluster_id
+        )
+        return jsonify({"specs": specs})
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        current_app.logger.warning(
+            "GPUStack catalog specs failed: %s", type(error).__name__
+        )
+        return jsonify({"error": "GPUStack catalog variants are unavailable"}), 502
+
+
+@bp.post("/admin/private-llm/models/preflight")
+@authenticated
+async def admin_preflight_private_llm_model(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    try:
+        deployment = normalize_model_deploy_request(await request.get_json() or {})
+        return jsonify(await _private_llm_client().evaluate_model(deployment))
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        current_app.logger.warning(
+            "GPUStack model evaluation failed: %s", type(error).__name__
+        )
+        return jsonify(
+            {"error": _private_llm_mutation_error(error, operation="evaluation")}
+        ), 502
+
+
+@bp.post("/admin/private-llm/models/<int:model_id>/actions")
+@authenticated
+async def admin_manage_private_llm_model(
+    auth_claims: dict[str, Any], model_id: int
+):
+    actor = _require_system_admin(auth_claims)
+    actor_id = str(actor.get("_id") or auth_claims.get("application_user_id") or "")
+    action = ""
+    try:
+        normalized = normalize_model_action_request(
+            await request.get_json() or {}, model_id=model_id
+        )
+        action = normalized["action"]
+        client = _private_llm_client()
+        if action == "restart":
+            result = await client.restart_model(model_id)
+        else:
+            result = await client.scale_model(model_id, normalized["replicas"])
+        insert_integration_lifecycle_event(
+            action=f"private_llm_model_{action}",
+            status="success",
+            connection_id=f"model:{model_id}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+        )
+        return jsonify({"action": action, "model_id": model_id, "result": result}), 202
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        current_app.logger.warning(
+            "GPUStack model action failed: %s", type(error).__name__
+        )
+        insert_integration_lifecycle_event(
+            action=f"private_llm_model_{action or 'unknown'}",
+            status="failed",
+            connection_id=f"model:{model_id}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+            error_type=type(error).__name__,
+        )
+        return jsonify(
+            {"error": _private_llm_mutation_error(error, operation=action or "action")}
+        ), 502
+
+
+@bp.post("/admin/private-llm/models/<int:model_id>/test")
+@authenticated
+async def admin_test_private_llm_model(
+    auth_claims: dict[str, Any], model_id: int
+):
+    actor = _require_system_admin(auth_claims)
+    actor_id = str(actor.get("_id") or auth_claims.get("application_user_id") or "")
+    try:
+        normalized = normalize_model_test_request(await request.get_json() or {})
+        client = _private_llm_client()
+        inventory = await client.inventory()
+        model = next(
+            (item for item in inventory["models"] if item.get("id") == model_id),
+            None,
+        )
+        if model is None:
+            raise ValueError("GPUStack model was not found")
+        if (
+            str(model.get("state") or "").lower() != "running"
+            or int(model.get("ready_replicas") or 0) < 1
+        ):
+            raise ValueError("Start the model and wait for a Ready replica before testing")
+        if "llm" not in (model.get("categories") or []):
+            raise ValueError("Native chat testing is available only for LLM models")
+        result = await client.test_chat_model(model["name"], normalized["prompt"])
+        insert_integration_lifecycle_event(
+            action="private_llm_model_test",
+            status="success",
+            connection_id=f"model:{model_id}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+        )
+        return jsonify(result)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        current_app.logger.warning(
+            "GPUStack model inference test failed: %s", type(error).__name__
+        )
+        insert_integration_lifecycle_event(
+            action="private_llm_model_test",
+            status="failed",
+            connection_id=f"model:{model_id}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+            error_type=type(error).__name__,
+        )
+        return jsonify(
+            {"error": _private_llm_mutation_error(error, operation="inference test")}
+        ), 502
+
+
+@bp.get("/admin/private-llm/rollouts")
+@authenticated
+async def admin_list_private_llm_rollouts(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    return jsonify({"rollouts": [serialize_rollout_plan(item) for item in list_rollout_plans()]})
+
+
+@bp.post("/admin/private-llm/rollouts")
+@authenticated
+async def admin_create_private_llm_rollout(auth_claims: dict[str, Any]):
+    actor = _require_system_admin(auth_claims)
+    actor_id = str(actor.get("_id") or auth_claims.get("application_user_id") or "")
+    proxy_id = ""
+    try:
+        normalized = normalize_rollout_request(await request.get_json() or {})
+        proxy_id = normalized["proxy_id"]
+        gateway_settings = get_ai_gateway_settings()
+        if gateway_settings.get("mode") != "external":
+            raise ValueError("External AI Gateway mode must be active for private LLM rollout")
+        current_route = gateway_model_by_id(gateway_settings, proxy_id)
+        if str(current_route.get("routing_strategy") or "model_based") != "model_based":
+            raise ValueError("Private LLM rollout requires a model-based gateway proxy")
+        inventory = await _private_llm_inventory()
+        preflight = rollout_preflight(
+            inventory,
+            candidate_model=normalized["candidate_model"],
+            min_ready_replicas=normalized["min_ready_replicas"],
+            min_ready_workers=normalized["min_ready_workers"],
+        )
+        plan = create_rollout_plan(
+            normalized,
+            previous_model=str(current_route.get("model") or ""),
+            actor_id=actor_id,
+            preflight=preflight,
+        )
+        insert_integration_lifecycle_event(
+            action="private_llm_rollout_created",
+            status="success",
+            connection_id=f"rollout:{plan['_id']}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+        )
+        return jsonify(serialize_rollout_plan(plan)), 201
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception as error:
+        current_app.logger.warning("Private LLM rollout preflight failed: %s", type(error).__name__)
+        insert_integration_lifecycle_event(
+            action="private_llm_rollout_created",
+            status="failed",
+            connection_id=f"proxy:{proxy_id}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+            error_type=type(error).__name__,
+        )
+        return jsonify({"error": "Private LLM rollout preflight failed"}), 502
+
+
+def _rollout_confirmation(payload: object, plan_id: str) -> None:
+    confirmation = str(payload.get("confirmation") or "") if isinstance(payload, dict) else ""
+    if confirmation != plan_id:
+        raise ValueError("Rollout confirmation does not match the plan id")
+
+
+async def _activate_private_llm_route(
+    plan: dict[str, Any], *, actor_id: str, rollback: bool
+) -> dict[str, Any]:
+    expected_status = "active" if rollback else "pending_approval"
+    if plan.get("status") != expected_status:
+        raise ValueError(
+            "Only an active rollout can be rolled back"
+            if rollback
+            else "Only a pending rollout can be activated"
+        )
+    gateway_settings = get_ai_gateway_settings()
+    if gateway_settings.get("mode") != "external":
+        raise ValueError("External AI Gateway mode must remain active")
+    current_route = gateway_model_by_id(gateway_settings, str(plan["proxy_id"]))
+    expected_model = plan["candidate_model"] if rollback else plan["previous_model"]
+    if current_route.get("model") != expected_model:
+        raise ValueError("Gateway proxy changed after this rollout plan was created")
+
+    target_model = plan["previous_model"] if rollback else plan["candidate_model"]
+    if not rollback:
+        inventory = await _private_llm_inventory()
+        rollout_preflight(
+            inventory,
+            candidate_model=str(target_model),
+            min_ready_replicas=int(plan["min_ready_replicas"]),
+            min_ready_workers=int(plan["min_ready_workers"]),
+        )
+    candidate_settings = _private_llm_gateway_candidate(
+        gateway_settings,
+        proxy_id=str(plan["proxy_id"]),
+        model_name=str(target_model),
+    )
+    report = await run_gateway_conformance(
+        candidate_settings, model_id=str(plan["proxy_id"])
+    )
+    if not report.get("ready"):
+        update_rollout_plan(
+            str(plan["_id"]),
+            actor_id=actor_id,
+            last_error_type="conformance_failed",
+            conformance=report,
+        )
+        raise ValueError("Target model did not pass gateway conformance")
+
+    saved = save_ai_gateway_settings(candidate_settings, actor_id=actor_id)
+    try:
+        _refresh_llm_profile_registry()
+    except Exception:
+        save_ai_gateway_settings(gateway_settings, actor_id=actor_id)
+        _refresh_llm_profile_registry()
+        raise
+
+    now = datetime.now(timezone.utc)
+    transition_times = {"rolled_back_at": now} if rollback else {"activated_at": now}
+    updated = update_rollout_plan(
+        str(plan["_id"]),
+        actor_id=actor_id,
+        status="rolled_back" if rollback else "active",
+        conformance=report,
+        last_error_type="",
+        **transition_times,
+    )
+    # Keep the variable alive until registry refresh completes and make the
+    # intended mutation explicit for reviewers.
+    _ = saved
+    return updated
+
+
+@bp.post("/admin/private-llm/rollouts/<plan_id>/activate")
+@authenticated
+async def admin_activate_private_llm_rollout(auth_claims: dict[str, Any], plan_id: str):
+    actor = _require_system_admin(auth_claims)
+    actor_id = str(actor.get("_id") or auth_claims.get("application_user_id") or "")
+    try:
+        _rollout_confirmation(await request.get_json() or {}, plan_id)
+        plan = get_rollout_plan(plan_id)
+        if plan is None:
+            return jsonify({"error": "Rollout plan was not found"}), 404
+        updated = await _activate_private_llm_route(plan, actor_id=actor_id, rollback=False)
+        insert_integration_lifecycle_event(
+            action="private_llm_rollout_activated",
+            status="success",
+            connection_id=f"rollout:{plan_id}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+        )
+        return jsonify(serialize_rollout_plan(updated))
+    except ValueError as error:
+        insert_integration_lifecycle_event(
+            action="private_llm_rollout_activated",
+            status="failed",
+            connection_id=f"rollout:{plan_id}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+            error_type=type(error).__name__,
+        )
+        return jsonify({"error": str(error)}), 409
+    except Exception as error:
+        current_app.logger.warning("Private LLM rollout activation failed: %s", type(error).__name__)
+        insert_integration_lifecycle_event(
+            action="private_llm_rollout_activated",
+            status="failed",
+            connection_id=f"rollout:{plan_id}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+            error_type=type(error).__name__,
+        )
+        return jsonify({"error": "Private LLM rollout activation failed"}), 502
+
+
+@bp.post("/admin/private-llm/rollouts/<plan_id>/rollback")
+@authenticated
+async def admin_rollback_private_llm_rollout(auth_claims: dict[str, Any], plan_id: str):
+    actor = _require_system_admin(auth_claims)
+    actor_id = str(actor.get("_id") or auth_claims.get("application_user_id") or "")
+    try:
+        _rollout_confirmation(await request.get_json() or {}, plan_id)
+        plan = get_rollout_plan(plan_id)
+        if plan is None:
+            return jsonify({"error": "Rollout plan was not found"}), 404
+        updated = await _activate_private_llm_route(plan, actor_id=actor_id, rollback=True)
+        insert_integration_lifecycle_event(
+            action="private_llm_rollout_rolled_back",
+            status="success",
+            connection_id=f"rollout:{plan_id}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+        )
+        return jsonify(serialize_rollout_plan(updated))
+    except ValueError as error:
+        insert_integration_lifecycle_event(
+            action="private_llm_rollout_rolled_back",
+            status="failed",
+            connection_id=f"rollout:{plan_id}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+            error_type=type(error).__name__,
+        )
+        return jsonify({"error": str(error)}), 409
+    except Exception as error:
+        current_app.logger.warning("Private LLM rollback failed: %s", type(error).__name__)
+        insert_integration_lifecycle_event(
+            action="private_llm_rollout_rolled_back",
+            status="failed",
+            connection_id=f"rollout:{plan_id}",
+            team_id="",
+            actor_id=actor_id,
+            vendor="gpustack",
+            error_type=type(error).__name__,
+        )
+        return jsonify({"error": "Private LLM rollback failed"}), 502
+
+
 @bp.get("/admin/embedding-profiles")
 @authenticated
 async def admin_list_embedding_profiles(auth_claims: dict[str, Any]):
@@ -5462,12 +6325,170 @@ async def admin_test_embedding_profile(auth_claims: dict[str, Any], profile_id: 
 async def admin_complete_embedding_reindex(auth_claims: dict[str, Any], profile_id: str):
     _require_system_admin(auth_claims)
     try:
+        run = latest_embedding_reindex_run(profile_id)
+        progress = embedding_reindex_progress(str(run["_id"])) if run else {}
+        if (
+            not run
+            or run.get("status") != "completed"
+            or int(progress.get("failed") or 0) > 0
+            or int(progress.get("succeeded") or 0) != int(progress.get("total") or 0)
+        ):
+            raise ValueError(
+                "Full re-index must complete successfully before it can be marked complete"
+            )
         state = mark_embedding_reindex_complete(profile_id)
         return jsonify({"settings": {
             **state,
             "activated_at": state["activated_at"].isoformat() if state.get("activated_at") else None,
             "runtime_started_at": state["runtime_started_at"].isoformat() if state.get("runtime_started_at") else None,
         }})
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 409
+
+
+@bp.get("/admin/embedding-profiles/<profile_id>/reindex-plan")
+@authenticated
+async def admin_embedding_reindex_plan(auth_claims: dict[str, Any], profile_id: str):
+    _require_system_admin(auth_claims)
+    profile = get_embedding_profile(profile_id)
+    if not profile:
+        return jsonify({"error": "Embedding profile not found"}), 404
+    state = get_embedding_settings()
+    if state["active_profile_id"] != profile_id or state["runtime_profile_id"] != profile_id:
+        return jsonify({"error": "The selected embedding profile must be running"}), 409
+    inventory = await _embedding_reindex_inventory()
+    counts: dict[str, int] = {}
+    for item in inventory:
+        key = str(item.get("scope") or item.get("kind") or "unknown")
+        counts[key] = counts.get(key, 0) + 1
+    return jsonify({
+        "profile_id": profile_id,
+        "profile_name": str(profile.get("name") or ""),
+        "model": str(profile.get("model") or ""),
+        "dimensions": int(profile.get("dimensions") or 0),
+        "collection_name": str(profile.get("collection_name") or ""),
+        "total": len(inventory),
+        "counts": counts,
+        "confirmation": f"REINDEX {profile.get('name') or profile_id}",
+    })
+
+
+@bp.post("/admin/embedding-profiles/<profile_id>/reindex")
+@authenticated
+async def admin_start_embedding_reindex(auth_claims: dict[str, Any], profile_id: str):
+    actor = _require_system_admin(auth_claims)
+    try:
+        profile = get_embedding_profile(profile_id)
+        if not profile:
+            return jsonify({"error": "Embedding profile not found"}), 404
+        state = get_embedding_settings()
+        if state["active_profile_id"] != profile_id or state["runtime_profile_id"] != profile_id:
+            raise ValueError("The selected embedding profile must be running")
+        if not state["reindex_required"]:
+            raise ValueError("This embedding profile does not require a full re-index")
+        body = await request.get_json(silent=True) or {}
+        expected = f"REINDEX {profile.get('name') or profile_id}"
+        if str(body.get("confirmation") or "") != expected:
+            raise ValueError("Full re-index confirmation did not match")
+        inventory = await _embedding_reindex_inventory()
+        if not inventory:
+            raise ValueError("No indexed Knowledge sources are available for re-indexing")
+        run = await asyncio.to_thread(
+            create_embedding_reindex_run,
+            profile_id=profile_id,
+            actor_id=str(actor.get("_id") or ""),
+            profile_snapshot={
+                "name": str(profile.get("name") or ""),
+                "model": str(profile.get("model") or ""),
+                "dimensions": int(profile.get("dimensions") or 0),
+                "collection_name": str(profile.get("collection_name") or ""),
+            },
+            source_items=inventory,
+        )
+        _schedule_embedding_reindex(str(run["_id"]))
+        return jsonify({"run": _serialize_embedding_reindex_run(run)}), 202
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 409
+
+
+@bp.get("/admin/embedding-reindex-runs/latest")
+@authenticated
+async def admin_latest_embedding_reindex(auth_claims: dict[str, Any]):
+    _require_system_admin(auth_claims)
+    profile_id = str(request.args.get("profile_id") or "")
+    run = latest_embedding_reindex_run(profile_id)
+    return jsonify({"run": _serialize_embedding_reindex_run(run)})
+
+
+@bp.post("/admin/embedding-profiles/<profile_id>/adopt-collection/preview")
+@authenticated
+async def admin_preview_embedding_collection_adoption(
+    auth_claims: dict[str, Any], profile_id: str
+):
+    _require_system_admin(auth_claims)
+    try:
+        profile = get_embedding_profile(profile_id)
+        if not profile:
+            return jsonify({"error": "Embedding profile not found"}), 404
+        state = get_embedding_settings()
+        if state["active_profile_id"] != profile_id or state["runtime_profile_id"] != profile_id:
+            raise ValueError("The selected embedding profile must be running")
+        body = await request.get_json(silent=True) or {}
+        result = await _embedding_collection_compatibility(
+            profile, str(body.get("collection_name") or "").strip()
+        )
+        return jsonify(result)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 409
+    except Exception as error:
+        current_app.logger.warning(
+            "Embedding collection compatibility test failed: %s", type(error).__name__
+        )
+        return jsonify({"error": "Embedding collection compatibility test failed"}), 400
+
+
+@bp.post("/admin/embedding-profiles/<profile_id>/adopt-collection")
+@authenticated
+async def admin_adopt_embedding_collection(auth_claims: dict[str, Any], profile_id: str):
+    actor = _require_system_admin(auth_claims)
+    try:
+        profile = get_embedding_profile(profile_id)
+        if not profile:
+            return jsonify({"error": "Embedding profile not found"}), 404
+        state = get_embedding_settings()
+        if state["active_profile_id"] != profile_id or state["runtime_profile_id"] != profile_id:
+            raise ValueError("The selected embedding profile must be running")
+        body = await request.get_json(silent=True) or {}
+        collection_name = str(body.get("collection_name") or "").strip()
+        if str(body.get("confirmation") or "") != f"ADOPT {collection_name}":
+            raise ValueError("Collection adoption confirmation did not match")
+        evidence = await _embedding_collection_compatibility(profile, collection_name)
+        if not evidence["compatible"]:
+            raise ValueError("Embedding vectors are not compatible with the existing collection")
+        update_embedding_profile(profile_id, {"collection_name": collection_name})
+        state = mark_embedding_collection_adopted(
+            profile_id,
+            collection_name=collection_name,
+            evidence=evidence,
+        )
+        get_database()["embedding_profile_audit"].insert_one({
+            "_id": str(uuid.uuid4()),
+            "event_type": "embedding_collection_adopted",
+            "profile_id": profile_id,
+            "collection_name": collection_name,
+            "actor_id": str(actor.get("_id") or ""),
+            "evidence": evidence,
+            "created_at": datetime.now(timezone.utc),
+        })
+        return jsonify({
+            "profile": _serialize_embedding_profile(get_embedding_profile(profile_id)),
+            "settings": {
+                **state,
+                "activated_at": state["activated_at"].isoformat() if state.get("activated_at") else None,
+                "runtime_started_at": state["runtime_started_at"].isoformat() if state.get("runtime_started_at") else None,
+            },
+            "evidence": evidence,
+        })
     except ValueError as error:
         return jsonify({"error": str(error)}), 409
 
@@ -7322,6 +8343,7 @@ BACKGROUND_TASKS = set()
 ATTACHMENT_EXTRACTION_TASKS: set[asyncio.Task] = set()
 INGESTION_TASKS: set[asyncio.Task] = set()
 WEB_SOURCE_INDEX_TASKS: set[asyncio.Task] = set()
+EMBEDDING_REINDEX_TASKS: set[asyncio.Task] = set()
 AGENT_INVOCATION_JOB_TASKS: set[asyncio.Task] = set()
 AGENT_INVOCATION_JOB_IDS: set[str] = set()
 ATTACHMENT_EXTRACTION_WORKER_ID = f"attachment-{uuid.uuid4()}"
@@ -7496,6 +8518,7 @@ class _NamedAttachmentBytesIO(BytesIO):
         self.name = filename
 INGEST_SEM = asyncio.Semaphore(3)
 INGESTION_WORKER_ID = str(uuid.uuid4())
+EMBEDDING_REINDEX_WORKER_ID = f"embedding-reindex-{uuid.uuid4()}"
 
 
 def _file_size(stream: io.BufferedReader) -> int:
@@ -7839,6 +8862,133 @@ async def _run_ingestion_job(job_id: str) -> None:
             worker_id=INGESTION_WORKER_ID,
         )
         await _set_job_blob_status(job, "Failed")
+
+
+async def _reindex_web_object(scope: str, storage_key: str) -> None:
+    stored = await _knowledge_store().read(scope, storage_key)
+    metadata = stored.metadata or {}
+    tags = stored.tags or {}
+    source_url = unquote(str(metadata.get("SourceUrl") or "")) or stored.url
+    data_group_ids = list(
+        filter(None, str(tags.get("data_groups") or "").split("/"))
+    )
+    buffer = NamedBytesIO(stored.data, os.path.basename(storage_key))
+    folder = os.path.dirname(storage_key)
+    folder = f"{folder}{os.sep}" if folder else ""
+    acls = (
+        {"groups": data_group_ids, "oids": []}
+        if scope == "web_team"
+        else {"oids": []}
+    )
+    ingester: UploadUserFileStrategy = current_app.config[CONFIG_INGESTER]
+    await ingester.add_global_file(
+        File(content=buffer, acls=acls, url=source_url), folder
+    )
+
+
+async def _embedding_reindex_heartbeat(run_id: str) -> None:
+    while True:
+        await asyncio.sleep(30)
+        owns_run = await asyncio.to_thread(
+            heartbeat_embedding_reindex_run,
+            run_id,
+            EMBEDDING_REINDEX_WORKER_ID,
+        )
+        if not owns_run:
+            return
+
+
+async def _run_embedding_reindex(run_id: str) -> None:
+    claimed = await asyncio.to_thread(
+        claim_embedding_reindex_run,
+        run_id,
+        EMBEDDING_REINDEX_WORKER_ID,
+    )
+    if not claimed:
+        return
+    heartbeat = asyncio.create_task(_embedding_reindex_heartbeat(run_id))
+    try:
+        for item in await asyncio.to_thread(pending_embedding_reindex_items, run_id):
+            await asyncio.to_thread(
+                update_embedding_reindex_item,
+                str(item["_id"]),
+                status="running",
+            )
+            try:
+                if item.get("kind") == "document":
+                    ingestion_job_id = str(item.get("ingestion_job_id") or "")
+                    if not ingestion_job_id:
+                        job = await asyncio.to_thread(
+                            clone_ingestion_job_for_reindex,
+                            str(item.get("source_job_id") or ""),
+                            reindex_run_id=run_id,
+                        )
+                        ingestion_job_id = str(job["_id"])
+                        await asyncio.to_thread(
+                            update_embedding_reindex_item,
+                            str(item["_id"]),
+                            status="running",
+                            ingestion_job_id=ingestion_job_id,
+                        )
+                    job = await asyncio.to_thread(get_ingestion_job, ingestion_job_id)
+                    if job and job.get("status") not in {"indexed", "failed"}:
+                        await _run_ingestion_job(ingestion_job_id)
+                        job = await asyncio.to_thread(get_ingestion_job, ingestion_job_id)
+                    if not job or job.get("status") != "indexed":
+                        error_code = str(((job or {}).get("error") or {}).get("code") or "ingestion_failed")
+                        raise RuntimeError(error_code)
+                else:
+                    _kind, storage_key = str(item["source_key"]).split(":", 1)
+                    await _reindex_web_object(str(item["scope"]), storage_key)
+                await asyncio.to_thread(
+                    update_embedding_reindex_item,
+                    str(item["_id"]),
+                    status="succeeded",
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                current_app.logger.warning(
+                    "Embedding re-index item failed: run=%s kind=%s error=%s",
+                    run_id,
+                    str(item.get("kind") or ""),
+                    type(error).__name__,
+                )
+                await asyncio.to_thread(
+                    update_embedding_reindex_item,
+                    str(item["_id"]),
+                    status="failed",
+                    error_code=type(error).__name__,
+                )
+        await asyncio.to_thread(
+            complete_embedding_reindex_run,
+            run_id,
+            EMBEDDING_REINDEX_WORKER_ID,
+        )
+    except asyncio.CancelledError:
+        await asyncio.to_thread(
+            release_embedding_reindex_run,
+            run_id,
+            EMBEDDING_REINDEX_WORKER_ID,
+        )
+        raise
+    finally:
+        heartbeat.cancel()
+        await asyncio.gather(heartbeat, return_exceptions=True)
+
+
+def _schedule_embedding_reindex(run_id: str) -> None:
+    task = asyncio.create_task(_run_embedding_reindex(run_id))
+    BACKGROUND_TASKS.add(task)
+    task.add_done_callback(BACKGROUND_TASKS.discard)
+    EMBEDDING_REINDEX_TASKS.add(task)
+    task.add_done_callback(EMBEDDING_REINDEX_TASKS.discard)
+
+
+async def _recover_embedding_reindex_runs() -> None:
+    runs = await asyncio.to_thread(list_recoverable_embedding_reindex_runs)
+    for run in runs:
+        _schedule_embedding_reindex(str(run["_id"]))
 
 
 async def _recover_ingestion_jobs() -> None:
@@ -9227,64 +10377,68 @@ async def get_fixed_prompt(auth_claims: dict[str, Any]):
     return jsonify(prompts[0]), 200
 
 
+def _usage_report_context(
+    auth_claims: dict[str, Any],
+) -> tuple[str, dict[str, Any], datetime, datetime, str]:
+    scope = str(request.args.get("scope") or "system").strip().lower()
+    team_id = str(request.args.get("team_id") or "").strip()
+    requested_user_id = str(request.args.get("user_id") or "").strip()
+    actor = _application_user_for_claims(auth_claims)
+    if not actor or actor.get("active", True) is not True:
+        raise AccessControlError("The signed-in application user is unavailable")
+    query: dict[str, Any] = {"delete_at": None}
+    if scope == "system":
+        _require_system_permission(auth_claims, "View system dashboard")
+        if team_id:
+            query["group._id"] = team_id
+        if requested_user_id:
+            query["user._id"] = requested_user_id
+    elif scope == "team":
+        if not team_id:
+            raise AccessControlError("team_id is required for team scope", status_code=400)
+        _require_team_access(auth_claims, team_id, permission="View team dashboard")
+        query["group._id"] = team_id
+        if requested_user_id:
+            team = get_team_by_id(team_id) or {}
+            if requested_user_id not in {str(item) for item in (team.get("user_id") or [])}:
+                raise AccessControlError("The selected user is not a member of this team", status_code=400)
+            query["user._id"] = requested_user_id
+    elif scope == "personal":
+        query["user._id"] = str(actor.get("_id") or "")
+    else:
+        raise AccessControlError("scope must be system, team or personal", status_code=400)
+    now = datetime.now(timezone.utc)
+    default_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=29)
+
+    def parse_date(value: str, fallback: datetime, *, end_of_day: bool = False) -> datetime:
+        if not value:
+            return fallback
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise AccessControlError("from and to must be ISO-8601 dates", status_code=400) from error
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        if len(value) == 10 and end_of_day:
+            parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return parsed.astimezone(timezone.utc)
+
+    start = parse_date(str(request.args.get("from") or ""), default_start)
+    end = parse_date(str(request.args.get("to") or ""), now, end_of_day=True)
+    if end < start or (end - start).days > 366:
+        raise AccessControlError("The reporting period must be between 0 and 366 days", status_code=400)
+    query["create_at"] = {"$gte": start, "$lte": end}
+    bucket = str(request.args.get("bucket") or "day").strip().lower()
+    if bucket not in {"day", "week", "month"}:
+        raise AccessControlError("bucket must be day, week or month", status_code=400)
+    return scope, query, start, end, bucket
+
+
 @bp.get("/usage-analytics")
 @authenticated
 async def usage_analytics(auth_claims: dict[str, Any]):
     try:
-        scope = str(request.args.get("scope") or "system").strip().lower()
-        team_id = str(request.args.get("team_id") or "").strip()
-        requested_user_id = str(request.args.get("user_id") or "").strip()
-        actor = _application_user_for_claims(auth_claims)
-        if not actor or actor.get("active", True) is not True:
-            raise AccessControlError("The signed-in application user is unavailable")
-
-        query: dict[str, Any] = {"delete_at": None}
-        if scope == "system":
-            _require_system_permission(auth_claims, "View system dashboard")
-            if team_id:
-                query["group._id"] = team_id
-            if requested_user_id:
-                query["user._id"] = requested_user_id
-        elif scope == "team":
-            if not team_id:
-                raise AccessControlError("team_id is required for team scope", status_code=400)
-            _require_team_access(auth_claims, team_id, permission="View team dashboard")
-            query["group._id"] = team_id
-            if requested_user_id:
-                team = get_team_by_id(team_id) or {}
-                if requested_user_id not in {str(item) for item in (team.get("user_id") or [])}:
-                    raise AccessControlError("The selected user is not a member of this team", status_code=400)
-                query["user._id"] = requested_user_id
-        elif scope == "personal":
-            query["user._id"] = str(actor.get("_id") or "")
-        else:
-            raise AccessControlError("scope must be system, team or personal", status_code=400)
-
-        now = datetime.now(timezone.utc)
-        default_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=29)
-
-        def parse_date(value: str, fallback: datetime, *, end: bool = False) -> datetime:
-            if not value:
-                return fallback
-            try:
-                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            except ValueError as error:
-                raise AccessControlError("from and to must be ISO-8601 dates", status_code=400) from error
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            if len(value) == 10 and end:
-                parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
-            return parsed.astimezone(timezone.utc)
-
-        start = parse_date(str(request.args.get("from") or ""), default_start)
-        end = parse_date(str(request.args.get("to") or ""), now, end=True)
-        if end < start or (end - start).days > 366:
-            raise AccessControlError("The reporting period must be between 0 and 366 days", status_code=400)
-        query["create_at"] = {"$gte": start, "$lte": end}
-
-        bucket = str(request.args.get("bucket") or "day").strip().lower()
-        if bucket not in {"day", "week", "month"}:
-            raise AccessControlError("bucket must be day, week or month", status_code=400)
+        scope, query, start, end, bucket = _usage_report_context(auth_claims)
         data = await asyncio.to_thread(
             get_usage_analytics,
             query,
@@ -9293,6 +10447,7 @@ async def usage_analytics(auth_claims: dict[str, Any]):
             provider=str(request.args.get("provider") or "").strip(),
             model=str(request.args.get("model") or "").strip(),
             profile_id=str(request.args.get("profile_id") or "").strip(),
+            route_type=str(request.args.get("route_type") or "").strip(),
             file_type=str(request.args.get("file_type") or "").strip(),
             document_scope=str(request.args.get("document_scope") or "").strip(),
         )
@@ -9301,6 +10456,83 @@ async def usage_analytics(auth_claims: dict[str, Any]):
         return jsonify(data), 200
     except Exception as error:
         return error_response(error, "/usage-analytics")
+
+
+@bp.get("/usage-analytics/export.csv")
+@authenticated
+async def export_usage_analytics_csv(auth_claims: dict[str, Any]):
+    try:
+        _scope, query, start, end, _bucket = _usage_report_context(auth_claims)
+        content = await asyncio.to_thread(
+            usage_cost_csv,
+            query,
+            agent_id=str(request.args.get("agent_id") or "").strip(),
+            provider=str(request.args.get("provider") or "").strip(),
+            model=str(request.args.get("model") or "").strip(),
+            route_type=str(request.args.get("route_type") or "").strip(),
+        )
+        response = await make_response("\ufeff" + content)
+        response.headers["Content-Type"] = "text/csv; charset=utf-8"
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="usage-cost-{start.date()}-{end.date()}.csv"'
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except Exception as error:
+        return error_response(error, "/usage-analytics/export.csv")
+
+
+@bp.get("/usage-price-catalog")
+@authenticated
+async def get_usage_price_catalog(auth_claims: dict[str, Any]):
+    try:
+        if not _is_system_admin(auth_claims):
+            raise AccessControlError("System administrator access is required", status_code=403)
+        profiles = await asyncio.to_thread(list_price_profiles)
+        return jsonify({"profiles": [serialize_price_profile(item) for item in profiles]}), 200
+    except Exception as error:
+        return error_response(error, "/usage-price-catalog")
+
+
+@bp.post("/usage-price-catalog")
+@authenticated
+async def add_usage_price_profile(auth_claims: dict[str, Any]):
+    try:
+        actor = _application_user_for_claims(auth_claims)
+        if not actor or actor.get("is_sys_admin") is not True:
+            raise AccessControlError("System administrator access is required", status_code=403)
+        body = await request.get_json(silent=True) or {}
+        if not isinstance(body, dict):
+            raise AccessControlError("Price profile must be an object", status_code=400)
+        profile = await asyncio.to_thread(
+            create_price_profile,
+            body,
+            actor_id=str(actor.get("_id") or ""),
+        )
+        return jsonify({"profile": serialize_price_profile(profile)}), 201
+    except ValueError as error:
+        return error_response(AccessControlError(str(error), status_code=400), "/usage-price-catalog")
+    except Exception as error:
+        return error_response(error, "/usage-price-catalog")
+
+
+@bp.post("/usage-price-catalog/<profile_id>/retire")
+@authenticated
+async def retire_usage_price_profile(auth_claims: dict[str, Any], profile_id: str):
+    try:
+        actor = _application_user_for_claims(auth_claims)
+        if not actor or actor.get("is_sys_admin") is not True:
+            raise AccessControlError("System administrator access is required", status_code=403)
+        retired = await asyncio.to_thread(
+            retire_price_profile,
+            profile_id,
+            actor_id=str(actor.get("_id") or ""),
+        )
+        if not retired:
+            raise AccessControlError("Active price profile not found", status_code=404)
+        return jsonify({"success": "Price profile retired"}), 200
+    except Exception as error:
+        return error_response(error, "/usage-price-catalog/<profile_id>/retire")
 
 
 @bp.get("/get_usage")
@@ -10307,6 +11539,8 @@ async def get_agent_by_team(auth_claims: dict[str, Any]):
         agents = []
         for agent_id in team.get("agent_id") or []:
             agent = get_agent_by_id(str(agent_id))
+            if agent and agent.get("revision_of"):
+                continue
             if agent and not is_expired_agent_draft(agent) and (include_drafts or is_active_agent(agent)):
                 serialized_agent = dict(agent)
                 prompt = dict(agent.get("prompt") or {})
@@ -10335,6 +11569,11 @@ async def edit_agent(auth_claims: dict[str, Any]):
         current_agent = get_agent_by_id(str(agent_id or ""))
         if not current_agent:
             raise AccessControlError("Agent not found", status_code=404)
+        if is_active_agent(current_agent):
+            raise AccessControlError(
+                "Start a private revision before editing an active Agent",
+                status_code=409,
+            )
         agent_name = body.get("agent_name", None)
         agent_config = _validate_agent_model_config(body.get("config", None))
         _validate_agent_mcp_connections(
@@ -10357,6 +11596,109 @@ async def edit_agent(auth_claims: dict[str, Any]):
         return jsonify({"success": f"Edit agent success"}), 200
     except Exception as error_txt:
         return error_response(error_txt, "/edit_agent")
+
+
+@bp.post("/teams/<team_id>/agents/<agent_id>/revision")
+@authenticated
+async def begin_agent_revision(
+    auth_claims: dict[str, Any], team_id: str, agent_id: str
+):
+    try:
+        actor, team = _require_team_access(
+            auth_claims, team_id, permission="Manage agents"
+        )
+        if agent_id not in {str(item) for item in (team.get("agent_id") or [])}:
+            raise AccessControlError("Agent does not belong to this team", status_code=404)
+        active_agent = get_agent_by_id(agent_id)
+        if not is_active_agent(active_agent):
+            raise AccessControlError("Only an active Agent can start a revision", status_code=409)
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            hours=_agent_draft_retention_hours()
+        )
+        revision, created = create_or_resume_agent_revision(
+            active_agent,
+            created_by=str(actor.get("_id") or ""),
+            expires_at=expires_at,
+        )
+        revision_id = str(revision.get("_id") or "")
+        team_agent_ids = [str(item) for item in (team.get("agent_id") or [])]
+        if revision_id not in team_agent_ids:
+            team_agent_ids.append(revision_id)
+            update_team(team_id=team_id, agent_id=team_agent_ids)
+        get_database()["agent_lifecycle_audit"].insert_one(
+            {
+                "_id": str(uuid.uuid4()),
+                "event_type": "agent_revision_created" if created else "agent_revision_resumed",
+                "agent_id": agent_id,
+                "revision_id": revision_id,
+                "actor_id": str(actor.get("_id") or ""),
+                "team_id": team_id,
+                "created_at": datetime.now(timezone.utc),
+            }
+        )
+        return jsonify({"revision": revision, "created": created}), 201 if created else 200
+    except Exception as error_txt:
+        return error_response(error_txt, "/teams/<team_id>/agents/<agent_id>/revision")
+
+
+@bp.post("/teams/<team_id>/agents/<agent_id>/revisions/<revision_id>/publish")
+@authenticated
+async def publish_agent_revision_route(
+    auth_claims: dict[str, Any], team_id: str, agent_id: str, revision_id: str
+):
+    try:
+        actor, team = _require_team_access(
+            auth_claims, team_id, permission="Manage agents"
+        )
+        team_agent_ids = [str(item) for item in (team.get("agent_id") or [])]
+        if agent_id not in team_agent_ids or revision_id not in team_agent_ids:
+            raise AccessControlError("Agent revision does not belong to this team", status_code=404)
+        active_agent = get_agent_by_id(agent_id)
+        revision = get_agent_by_id(revision_id)
+        if not is_active_agent(active_agent):
+            raise AccessControlError("Active Agent not found", status_code=404)
+        if not revision or str(revision.get("lifecycle_status") or "") != "draft":
+            raise AccessControlError("Agent revision not found", status_code=404)
+        if str(revision.get("revision_of") or "") != agent_id:
+            raise AccessControlError("Revision does not belong to this Agent", status_code=409)
+        if is_expired_agent_draft(revision):
+            delete_agent_cascade(revision_id, reason="revision_expired")
+            raise AccessControlError("Agent revision has expired", status_code=410)
+        _validate_agent_model_config(revision.get("config"))
+        _validate_agent_mcp_connections(
+            revision.get("config") or {},
+            team_id,
+            existing_config=active_agent.get("config") or {},
+        )
+        if not str(revision.get("agent_name") or "").strip():
+            raise AccessControlError("Agent name is required", status_code=400)
+        published = publish_agent_revision(revision, active_agent)
+        update_team(
+            team_id=team_id,
+            agent_id=[item for item in team_agent_ids if item != revision_id],
+        )
+        get_database()["agent_lifecycle_audit"].insert_one(
+            {
+                "_id": str(uuid.uuid4()),
+                "event_type": "agent_revision_published",
+                "agent_id": agent_id,
+                "revision_id": revision_id,
+                "actor_id": str(actor.get("_id") or ""),
+                "team_id": team_id,
+                "created_at": datetime.now(timezone.utc),
+            }
+        )
+        return jsonify({"success": "Agent revision published", "agent": published}), 200
+    except ValueError as error_txt:
+        return error_response(
+            AccessControlError(str(error_txt), status_code=409),
+            "/teams/<team_id>/agents/<agent_id>/revisions/<revision_id>/publish",
+        )
+    except Exception as error_txt:
+        return error_response(
+            error_txt,
+            "/teams/<team_id>/agents/<agent_id>/revisions/<revision_id>/publish",
+        )
 
 
 @bp.post("/delete_agent")
@@ -10398,6 +11740,11 @@ async def activate_agent_draft(auth_claims: dict[str, Any]):
             raise AccessControlError("Agent not found", status_code=404)
         if is_active_agent(agent):
             return jsonify({"success": "Agent is already active", "agent": agent}), 200
+        if agent.get("revision_of"):
+            raise AccessControlError(
+                "Publish this revision from the active Agent edit workflow",
+                status_code=409,
+            )
         if is_expired_agent_draft(agent):
             delete_agent_cascade(agent_id, reason="draft_expired")
             raise AccessControlError("Agent draft has expired", status_code=410)
@@ -10419,6 +11766,466 @@ async def activate_agent_draft(auth_claims: dict[str, Any]):
         return jsonify({"success": "Agent activated", "agent": activated}), 200
     except Exception as error_txt:
         return error_response(error_txt, "/activate_agent_draft")
+
+
+def _normalize_agent_playground_messages(value: object) -> list[dict[str, str]]:
+    if not isinstance(value, list) or not value or len(value) > 20:
+        raise AccessControlError(
+            "Playground messages must contain 1 to 20 turns", status_code=400
+        )
+    result: list[dict[str, str]] = []
+    total_characters = 0
+    for item in value:
+        if not isinstance(item, dict):
+            raise AccessControlError("Each Playground message must be an object", status_code=400)
+        role = str(item.get("role") or "").strip().lower()
+        content = item.get("content")
+        if role not in {"user", "assistant"} or not isinstance(content, str):
+            raise AccessControlError(
+                "Playground messages support user and assistant text only",
+                status_code=400,
+            )
+        normalized_content = content.strip()
+        if not normalized_content or len(normalized_content) > 32_768:
+            raise AccessControlError(
+                "Each Playground message must contain 1 to 32768 characters",
+                status_code=400,
+            )
+        total_characters += len(normalized_content)
+        result.append({"role": role, "content": normalized_content})
+    if result[-1]["role"] != "user":
+        raise AccessControlError("The final Playground message must be from the user", status_code=400)
+    if total_characters > 131_072:
+        raise AccessControlError("Playground conversation is too large", status_code=413)
+    return result
+
+
+def _playground_token_usage_from_response(response: dict[str, Any]) -> dict[str, int]:
+    context = response.get("context") if isinstance(response.get("context"), dict) else {}
+    for thought in context.get("thoughts") or []:
+        if not isinstance(thought, dict):
+            continue
+        details = thought.get("props") or thought.get("description") or {}
+        usage = details.get("token_usage") if isinstance(details, dict) else None
+        if isinstance(usage, dict):
+            return {
+                "prompt_tokens": max(0, int(usage.get("prompt_tokens") or 0)),
+                "completion_tokens": max(0, int(usage.get("completion_tokens") or 0)),
+                "reasoning_tokens": max(0, int(usage.get("reasoning_tokens") or 0)),
+                "total_tokens": max(0, int(usage.get("total_tokens") or 0)),
+            }
+    return {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 0,
+    }
+
+
+def _playground_data_points(response: dict[str, Any]) -> list[str]:
+    context = response.get("context") if isinstance(response.get("context"), dict) else {}
+    data_points = context.get("data_points")
+    values = data_points.get("text") if isinstance(data_points, dict) else data_points
+    if not isinstance(values, list):
+        return []
+    return [str(item) for item in values[:50] if str(item or "").strip()]
+
+
+def _playground_trace_step(
+    kind: str,
+    label: str,
+    *,
+    status: str = "success",
+    duration_ms: float | None = None,
+    summary: str = "",
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    step = {
+        "kind": str(kind)[:30],
+        "label": str(label)[:120],
+        "status": status if status in {"success", "error", "blocked", "info"} else "info",
+        "summary": str(summary)[:300],
+    }
+    if duration_ms is not None:
+        step["duration_ms"] = max(0, round(float(duration_ms), 2))
+    if details:
+        step["details"] = details
+    return step
+
+
+def _playground_runtime_trace(events: object) -> list[dict[str, Any]]:
+    """Return a bounded, allowlisted trace without prompts, arguments or tool output."""
+    if not isinstance(events, list):
+        return []
+    steps: list[dict[str, Any]] = []
+    for event in events[:40]:
+        if not isinstance(event, dict):
+            continue
+        kind = str(event.get("kind") or "tool")
+        details: dict[str, Any] = {}
+        for key in ("iteration", "model", "source", "risk_level", "automatic"):
+            value = event.get(key)
+            if isinstance(value, (str, int, float, bool)):
+                details[key] = value.split(":", 1)[0] if key == "source" and isinstance(value, str) else value
+        argument_keys = event.get("argument_keys")
+        if isinstance(argument_keys, list):
+            details["argument_keys"] = [str(item)[:80] for item in argument_keys[:30]]
+        requested_tools = event.get("requested_tools")
+        if isinstance(requested_tools, list):
+            details["requested_tools"] = [str(item)[:100] for item in requested_tools[:20]]
+        usage = event.get("token_usage")
+        if isinstance(usage, dict):
+            details["token_usage"] = {
+                key: max(0, int(usage.get(key) or 0))
+                for key in ("prompt_tokens", "completion_tokens", "reasoning_tokens", "total_tokens")
+            }
+        steps.append(
+            _playground_trace_step(
+                kind,
+                str(event.get("label") or kind.replace("_", " ").title()),
+                status=str(event.get("status") or "info"),
+                duration_ms=float(event.get("duration_ms") or 0),
+                summary=str(event.get("decision") or ""),
+                details=details,
+            )
+        )
+    return steps
+
+
+def _playground_configuration_snapshot(
+    agent: dict[str, Any], context: dict[str, Any], access: Any
+) -> dict[str, Any]:
+    config = agent.get("config") if isinstance(agent.get("config"), dict) else {}
+    tool_settings = config.get("tool_settings") if isinstance(config.get("tool_settings"), dict) else {}
+    prompt = _agent_invocation_prompt(agent)
+    return {
+        "prompt_revision": hashlib.sha256(prompt.encode("utf-8")).hexdigest()[:12],
+        "temperature": config.get("temperature", 0.2),
+        "max_tokens": config.get("max_tokens", 1024),
+        "knowledge_search": tool_settings.get("knowledge_search", "auto"),
+        "max_search_results": config.get("max_search_results", 2),
+        "min_search_score": config.get("min_search_score", 0),
+        "selected_scopes": list(access.selected_scopes),
+        "data_group_count": len(access.selected_data_group_ids),
+        "model": str(context["overrides"].get("_llm_model") or "unknown"),
+        "route_type": str(context["overrides"].get("_llm_route_type") or "unknown"),
+    }
+
+
+@bp.post("/teams/<team_id>/agents/<agent_id>/playground")
+@authenticated
+async def run_agent_playground(
+    auth_claims: dict[str, Any], team_id: str, agent_id: str
+):
+    context: dict[str, Any] = {}
+    trace_steps: list[dict[str, Any]] = []
+    run_id = ""
+    runtime = "legacy"
+    configuration_snapshot: dict[str, Any] = {}
+    started = time.perf_counter()
+    failure_stage = "setup"
+    try:
+        body = await request.get_json(silent=True) or {}
+        if not isinstance(body, dict):
+            raise AccessControlError("Playground request must be an object", status_code=400)
+        if body.get("safe_mode", True) is not True:
+            raise AccessControlError(
+                "Live write-tool testing is not available in this Playground release",
+                status_code=409,
+            )
+        _actor, team = _require_team_access(
+            auth_claims, team_id, permission="Manage agents"
+        )
+        if agent_id not in {str(item) for item in (team.get("agent_id") or [])}:
+            raise AccessControlError("Agent does not belong to this team", status_code=404)
+        agent = get_agent_by_id(agent_id)
+        if not agent:
+            raise AccessControlError("Agent not found", status_code=404)
+        if is_active_agent(agent):
+            raise AccessControlError(
+                "Phase 1 Playground runs private Agent drafts only", status_code=409
+            )
+        if is_expired_agent_draft(agent):
+            raise AccessControlError("Agent draft has expired", status_code=410)
+
+        messages = _normalize_agent_playground_messages(body.get("messages"))
+        access = _effective_access_for_request(
+            auth_claims,
+            team_id=team_id,
+            data_group_ids=body.get("data_groups_id"),
+            selected_scopes=body.get("selected_scopes"),
+            agent_id=agent_id,
+        )
+        trusted_claims = dict(auth_claims)
+        trusted_claims.update(
+            {
+                "team_id": access.team_id,
+                "data_groups_id": list(access.selected_data_group_ids),
+                "selected_scopes": list(access.selected_scopes),
+                "application_user_id": access.user_id,
+            }
+        )
+        config = agent.get("config") or {}
+        overrides = {
+            "prompt_template": _agent_invocation_prompt(agent),
+            "top": config.get("max_search_results", 2),
+            "temperature": config.get("temperature", 0.2),
+            "minimum_search_score": config.get("min_search_score", 0),
+            "max_tokens": config.get("max_tokens", 1024),
+            **({"seed": config.get("seed")} if config.get("seed") is not None else {}),
+        }
+        context = {"auth_claims": trusted_claims, "overrides": overrides}
+        request_payload = {"messages": messages, "usage_request_id": body.get("usage_request_id")}
+        _prepare_usage_request(request_payload, context)
+        _apply_agent_llm_profile(context, agent_id, agent_document=agent)
+        configuration_snapshot = _playground_configuration_snapshot(agent, context, access)
+        await _enforce_llm_quota(
+            trusted_claims, context, request_payload, workload="chat"
+        )
+        failure_stage = "input_guardrail"
+        guardrail_started = time.perf_counter()
+        guardrail_policy, guardrail_audit = await _enforce_input_guardrails(
+            messages=messages,
+            agent_id=agent_id,
+            team_id=team_id,
+            auth_claims=trusted_claims,
+            agent_document=agent,
+            execution_context="playground",
+        )
+        approach = cast(Approach, current_app.config[CONFIG_CHAT_APPROACH])
+        runtime = "langgraph" if _use_langgraph_runtime(
+            agent_id, agent_document=agent
+        ) else "legacy"
+        trace_steps = [
+            _playground_trace_step(
+                "input", "User input", summary=f"{len(messages)} conversation turn(s)"
+            ),
+            _playground_trace_step(
+                "guardrail",
+                "Input guardrail",
+                duration_ms=(time.perf_counter() - guardrail_started) * 1000,
+                summary="Input policy checks passed",
+                details={"enabled": bool(guardrail_policy.enabled)},
+            ),
+        ]
+        tools: list[dict[str, Any]] = []
+        citations: list[str] = []
+        iterations = 1
+        run_id = str(uuid.uuid4())
+        failure_stage = "agent_runtime"
+
+        if runtime == "langgraph":
+            agent_runtime = await create_agent_runtime(
+                agent_id=agent_id,
+                team_id=team_id,
+                auth_claims=trusted_claims,
+                approach=approach,
+                overrides=context["overrides"],
+                system_prompt=_agent_invocation_prompt(agent),
+                runtime_metadata={
+                    "run_id": run_id,
+                    "execution_context": "playground",
+                    "agent_lifecycle": "draft",
+                },
+                agent_document=agent,
+                allow_draft=True,
+                allowed_risk_levels=frozenset({"read", "render"}),
+            )
+            result = await agent_runtime.run(messages)
+            trace_steps.extend(_playground_runtime_trace(result.get("execution_trace")))
+            iterations = int(result.get("iterations") or 0)
+            model_calls = [
+                item for item in (result.get("model_calls") or []) if isinstance(item, dict)
+            ]
+            token_usage = {
+                key: sum(int(item.get(key) or 0) for item in model_calls)
+                for key in (
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "reasoning_tokens",
+                    "total_tokens",
+                )
+            }
+            for event in result.get("tool_trace") or []:
+                if not isinstance(event, dict):
+                    continue
+                tools.append(
+                    {
+                        "name": str(event.get("name") or "")[:100],
+                        "source": str(event.get("source") or "").split(":", 1)[0][:50],
+                        "risk_level": str(event.get("risk_level") or "read")[:20],
+                        "status": (
+                            "blocked"
+                            if event.get("policy_denied")
+                            else "error"
+                            if event.get("is_error")
+                            else "success"
+                        ),
+                        "duration_ms": float(event.get("duration_ms") or 0),
+                    }
+                )
+                if event.get("source") == "rag" and not event.get("is_error"):
+                    try:
+                        rag_result = json.loads(str(event.get("output") or "{}"))
+                        citations.extend(str(item) for item in rag_result.get("citations") or [])
+                    except (json.JSONDecodeError, AttributeError, TypeError):
+                        current_app.logger.warning(
+                            "Unable to parse Playground RAG citations for Agent %s",
+                            agent_id,
+                        )
+            response_payload = {
+                "message": {"role": "assistant", "content": str(result.get("content") or "")},
+                "context": {
+                    "data_points": {"text": citations, "images": []},
+                    "thoughts": [
+                        {
+                            "title": "Playground model usage",
+                            "props": {"token_usage": token_usage},
+                        }
+                    ],
+                },
+                "session_state": None,
+            }
+            failure_stage = "output_guardrail"
+            response_payload = await _apply_guardrails_to_response(
+                response_payload, guardrail_policy, guardrail_audit
+            )
+            trace_steps.append(
+                _playground_trace_step(
+                    "guardrail", "Output guardrail", summary="Output policy checks completed"
+                )
+            )
+        else:
+            legacy_audit = AuditTrail(
+                agent_id=agent_id,
+                team_id=team_id,
+                auth_claims=trusted_claims,
+                run_id=run_id,
+                execution_context="playground",
+            )
+            await legacy_audit.emit(
+                "agent_run_started", details={"message_count": len(messages)}
+            )
+            response_payload = await approach.run(
+                messages, context=context, session_state=None
+            )
+            trace_steps.extend(
+                [
+                    _playground_trace_step(
+                        "knowledge",
+                        "Knowledge retrieval",
+                        status="info",
+                        summary="Legacy runtime reports retrieval and model execution as one boundary",
+                    ),
+                    _playground_trace_step(
+                        "llm",
+                        "LLM response",
+                        status="info",
+                        summary="Legacy runtime does not expose per-iteration timing",
+                    ),
+                ]
+            )
+            failure_stage = "output_guardrail"
+            response_payload = await _apply_guardrails_to_response(
+                response_payload, guardrail_policy, guardrail_audit
+            )
+            trace_steps.append(
+                _playground_trace_step(
+                    "guardrail", "Output guardrail", summary="Output policy checks completed"
+                )
+            )
+            citations = _playground_data_points(response_payload)
+            token_usage = _playground_token_usage_from_response(response_payload)
+            await legacy_audit.emit(
+                "agent_run_completed",
+                details={
+                    "iterations": 1,
+                    "tool_calls": 0,
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                    "safe_test_boundary": "prompt_rag_only",
+                },
+            )
+
+        failure_stage = "usage_recording"
+        metadata = _usage_metadata(
+            context,
+            agent_id,
+            "playground",
+            agent_document=agent,
+        )
+        await _persist_user_usage(
+            trusted_claims, response_payload, "playground", metadata, context
+        )
+        trace_steps.append(
+            _playground_trace_step(
+                "answer", "Answer returned", summary="Response delivered to Playground"
+            )
+        )
+        diagnostics = {
+            "runtime": runtime,
+            "safe_mode": True,
+            "legacy_boundary": "prompt_rag_only" if runtime == "legacy" else None,
+            "model": str(context["overrides"].get("_llm_model") or "unknown"),
+            "profile_id": str(context["overrides"].get("_llm_profile_id") or ""),
+            "route_type": str(context["overrides"].get("_llm_route_type") or "unknown"),
+            "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            "iterations": iterations,
+            "token_usage": token_usage,
+            "tools": tools,
+            "steps": trace_steps[:50],
+            "configuration": configuration_snapshot,
+            "run_id": run_id,
+        }
+        response = jsonify(
+            {
+                "answer": str((response_payload.get("message") or {}).get("content") or ""),
+                "citations": citations,
+                "diagnostics": diagnostics,
+            }
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response, 200
+    except Exception as error_txt:
+        await _finish_usage_reservation(context, state="released")
+        if trace_steps and run_id:
+            trace_steps.append(
+                _playground_trace_step(
+                    "llm" if failure_stage == "agent_runtime" else "system",
+                    "LLM request failed" if failure_stage == "agent_runtime" else "Playground run failed",
+                    status="error",
+                    summary=f"{failure_stage.replace('_', ' ').title()} · {type(error_txt).__name__}",
+                )
+            )
+            payload = {
+                **error_dict(error_txt),
+                "diagnostics": {
+                    "runtime": runtime,
+                    "safe_mode": True,
+                    "legacy_boundary": "prompt_rag_only" if runtime == "legacy" else None,
+                    "model": str(context.get("overrides", {}).get("_llm_model") or "unknown"),
+                    "profile_id": str(context.get("overrides", {}).get("_llm_profile_id") or ""),
+                    "route_type": str(context.get("overrides", {}).get("_llm_route_type") or "unknown"),
+                    "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+                    "iterations": 0,
+                    "token_usage": {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "reasoning_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                    "tools": [],
+                    "steps": trace_steps[:50],
+                    "configuration": configuration_snapshot,
+                    "run_id": run_id,
+                },
+            }
+            current_app.logger.exception(
+                "Playground run %s failed during %s", run_id, failure_stage
+            )
+            response = jsonify(payload)
+            response.headers["Cache-Control"] = "no-store"
+            return response, 500
+        return error_response(error_txt, "/teams/<team_id>/agents/<agent_id>/playground")
 
 
 def _catalog_text(value: object, field: str, maximum: int, *, required: bool = False) -> str:
@@ -11807,6 +13614,7 @@ async def setup_clients():
     # the new provider-specific LLM_*/EMBEDDING_* variables.
     runtime_settings = RuntimeSettings.from_env(os.environ)
     active_embedding_profile_id = ENVIRONMENT_PROFILE_ID
+    active_embedding_profile = _environment_embedding_profile()
     if os.getenv("SKIP_MANAGED_EMBEDDING_PROFILE_LOAD", "").lower() != "true":
         try:
             embedding_state = get_embedding_settings()
@@ -11823,6 +13631,7 @@ async def setup_clients():
                 )
                 QDRANT_COLLECTION = str(selected_profile["collection_name"])
                 active_embedding_profile_id = selected_profile_id
+                active_embedding_profile = selected_profile
         except Exception:
             current_app.logger.exception(
                 "Unable to load the active managed embedding profile; using environment configuration"
@@ -11938,6 +13747,7 @@ async def setup_clients():
     SKIP_STARTUP_BOOTSTRAP = os.getenv("SKIP_STARTUP_BOOTSTRAP", "").lower() == "true"
     if not SKIP_STARTUP_BOOTSTRAP:
         ensure_usage_quota_indexes()
+        ensure_usage_pricing_indexes()
         ensure_license_indexes()
         ensure_agent_catalog_indexes()
         ensure_agent_indexes()
@@ -12160,7 +13970,8 @@ async def setup_clients():
         search_has_auth_fields=True if KNOWLEDGE_SEARCH_PROVIDER == "qdrant" else None,
     )
 
-    text_embeddings_service = create_embedding_service(
+    text_embeddings_service = _embedding_service_for_profile(
+        active_embedding_profile,
         runtime_settings.embedding,
         azure_credential,
         disable_vectors=os.getenv("USE_VECTORS", "").lower() == "false",
@@ -12198,6 +14009,9 @@ async def setup_clients():
             search_field_name_embedding=AZURE_SEARCH_FIELD_NAME_EMBEDDING,
         )
         current_app.config[CONFIG_INGESTER] = ingester
+        if not SKIP_STARTUP_BOOTSTRAP:
+            await asyncio.to_thread(ensure_embedding_reindex_indexes)
+            await _recover_embedding_reindex_runs()
         if os.getenv("DISABLE_INGESTION_JOB_RECOVERY", "").lower() != "true":
             recovery_task = asyncio.create_task(_recover_ingestion_jobs())
             BACKGROUND_TASKS.add(recovery_task)
@@ -12250,6 +14064,9 @@ async def setup_clients():
     current_app.config[CONFIG_RUNTIME_SETTINGS] = runtime_settings
     current_app.config[CONFIG_LLM_PROFILES] = llm_profiles
     current_app.config[CONFIG_LLM_PROFILE_CLIENTS] = llm_profile_clients
+    current_app.config[CONFIG_AI_GATEWAY_MODE] = str(
+        gateway_settings.get("mode") or "built_in"
+    )
     current_app.config[CONFIG_SEARCH_CLIENT] = search_client
     current_app.config[CONFIG_SEARCH_INDEX_CLIENT] = search_index_stats
     current_app.config[CONFIG_AGENT_CLIENT] = agent_client
@@ -12577,6 +14394,12 @@ Don’t combine sources, list each source separately, for example [info1.txt][in
 
 @bp.after_app_serving
 async def close_clients():
+    for reindex_task in tuple(EMBEDDING_REINDEX_TASKS):
+        reindex_task.cancel()
+    if EMBEDDING_REINDEX_TASKS:
+        await asyncio.gather(
+            *tuple(EMBEDDING_REINDEX_TASKS), return_exceptions=True
+        )
     if recovery_task := current_app.config.get(
         "agent_invocation_job_recovery_task"
     ):

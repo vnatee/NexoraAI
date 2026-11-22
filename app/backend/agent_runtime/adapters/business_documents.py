@@ -51,7 +51,7 @@ def register_business_document_tools(registry: ToolRegistry, agent_id: str) -> N
                 },
                 handler=search_handler,
                 source=source,
-                risk_level="external",
+                risk_level="read",
             ))
             registry.register(ToolSpec(
                 name=f"documents_{alias}_read_{suffix}",
@@ -65,7 +65,7 @@ def register_business_document_tools(registry: ToolRegistry, agent_id: str) -> N
                 handler=read_handler,
                 source=source,
                 timeout_seconds=75,
-                risk_level="external",
+                risk_level="read",
             ))
 
         if "create" in permissions and connection.get("operation_mode") == "read_write":

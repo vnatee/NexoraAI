@@ -84,11 +84,13 @@ class ToolRegistry:
         policy: ToolExecutionPolicy | None = None,
         audit: AuditTrail | None = None,
         guardrail_policy: GuardrailPolicy | None = None,
+        allowed_risk_levels: frozenset[str] | None = None,
     ):
         self.context = context
         self.policy = policy or ToolExecutionPolicy()
         self.audit = audit
         self.guardrail_policy = guardrail_policy
+        self.allowed_risk_levels = allowed_risk_levels
         self._tools: dict[str, ToolSpec] = {}
         self.execution_log: list[dict[str, Any]] = []
         self._total_calls = 0
@@ -210,6 +212,16 @@ class ToolRegistry:
             rendered = json.dumps(
                 {"error": f"Unknown tool '{name}'"}, ensure_ascii=False
             )
+            self.execution_log.append(
+                {
+                    "name": normalized_name,
+                    "source": "unknown",
+                    "risk_level": "unknown",
+                    "is_error": True,
+                    "argument_keys": sorted(str(key) for key in arguments),
+                    "duration_ms": 0,
+                }
+            )
             if self.audit:
                 await self.audit.emit(
                     "tool_execution",
@@ -221,6 +233,13 @@ class ToolRegistry:
         started = time.perf_counter()
         argument_size = 0
         try:
+            if (
+                self.allowed_risk_levels is not None
+                and spec.risk_level not in self.allowed_risk_levels
+            ):
+                raise ToolPolicyViolation(
+                    f"Tool '{spec.name}' is unavailable in safe test mode because its risk level is '{spec.risk_level}'"
+                )
             argument_size = self.policy.validate(
                 tool_name=spec.name,
                 source=spec.source,
@@ -283,9 +302,11 @@ class ToolRegistry:
                 {
                     "name": spec.name,
                     "source": spec.source,
+                    "risk_level": spec.risk_level,
                     "output": rendered,
                     "raw_output": value,
                     "is_error": False,
+                    "argument_keys": sorted(str(key) for key in arguments),
                     "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                 }
             )
@@ -312,9 +333,11 @@ class ToolRegistry:
                 {
                     "name": spec.name,
                     "source": spec.source,
+                    "risk_level": spec.risk_level,
                     "output": rendered,
                     "is_error": True,
                     "policy_denied": True,
+                    "argument_keys": sorted(str(key) for key in arguments),
                     "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                 }
             )
@@ -345,8 +368,10 @@ class ToolRegistry:
                 {
                     "name": spec.name,
                     "source": spec.source,
+                    "risk_level": spec.risk_level,
                     "output": rendered,
                     "is_error": True,
+                    "argument_keys": sorted(str(key) for key in arguments),
                     "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                 }
             )

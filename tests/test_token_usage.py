@@ -37,6 +37,34 @@ def test_agent_api_usage_summary_accepts_langgraph_dictionary_context():
     }
 
 
+def test_agent_api_usage_summary_reads_langgraph_model_usage():
+    result = save_tokens_usage.summarize_turn_for_ask(
+        {
+            "message": {"role": "assistant", "content": "Safe answer"},
+            "context": {
+                "thoughts": [{
+                    "title": "LangGraph agent runtime",
+                    "description": {"iterations": 2},
+                    "props": {
+                        "model": "private/model",
+                        "token_usage": {
+                            "prompt_tokens": 120,
+                            "completion_tokens": 30,
+                            "reasoning_tokens": 4,
+                            "total_tokens": 150,
+                        },
+                    },
+                }]
+            },
+        }
+    )
+
+    assert result["tokens_prompt_sum"] == 120
+    assert result["tokens_completion_sum"] == 30
+    assert result["tokens_reasoning_sum"] == 4
+    assert result["tokens_total_sum"] == 150
+
+
 def test_insert_user_usage_supports_request_without_team(monkeypatch):
     collection = MagicMock()
     monkeypatch.setattr(save_tokens_usage, "usage_collection", collection)
@@ -114,6 +142,7 @@ def test_insert_user_usage_persists_safe_analytics_dimensions(monkeypatch):
             "provider": "openai",
             "model": "gpt-4.1-mini",
             "runtime": "langgraph",
+            "route_type": "external_gateway",
         },
     )
 
@@ -121,6 +150,8 @@ def test_insert_user_usage_persists_safe_analytics_dimensions(monkeypatch):
     assert stored["schema_version"] == 3
     assert stored["metadata"]["agent_id"] == "agent-1"
     assert stored["metadata"]["provider"] == "openai"
+    assert stored["metadata"]["route_type"] == "external_gateway"
+    assert stored["model_calls"][0]["route_type"] == "external_gateway"
     assert stored["model_calls"][0]["total_tokens"] == 17
     assert "raw response" not in str(stored)
 

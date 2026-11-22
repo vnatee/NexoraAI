@@ -3,18 +3,18 @@ import KeyboardArrowDownRoundedIcon from "@mui/icons-material/KeyboardArrowDownR
 
 type AgentSelectionSummaryProps = {
     agentName?: string;
-    modelName?: string;
+    agentDescription?: string;
     teamName?: string;
     selectedScopes: string[];
     selectedDataGroups: string[];
     onClick: (element: HTMLButtonElement) => void;
 };
 
-const scopeLabel = (scope: string) => scope.charAt(0).toUpperCase() + scope.slice(1);
+const scopeLabel = (scope: string) => scope === "global" ? "Company" : scope.charAt(0).toUpperCase() + scope.slice(1);
 
 export const AgentSelectionSummary = ({
     agentName,
-    modelName,
+    agentDescription,
     teamName,
     selectedScopes,
     selectedDataGroups,
@@ -27,7 +27,7 @@ export const AgentSelectionSummary = ({
     const visibleEntries = entries.slice(0, 3);
     const hiddenCount = Math.max(entries.length - visibleEntries.length, 0);
     const fullSelection = entries.length > 0 ? entries.map(entry => entry.label).join(", ") : "No data selected";
-    const contextDescription = `${teamName ? `Team ${teamName}. ` : ""}Data scope ${fullSelection}`;
+    const contextDescription = `${agentDescription?.trim() ? `${agentDescription.trim()} ` : ""}${teamName ? `Team ${teamName}. ` : ""}Data scope ${fullSelection}`;
 
     return (
         <Tooltip title={contextDescription} arrow placement="bottom-start">
@@ -35,7 +35,7 @@ export const AgentSelectionSummary = ({
                 variant="outlined"
                 size="small"
                 onClick={event => onClick(event.currentTarget)}
-                aria-label={`${agentName ?? "Select Agent"}. Model ${modelName ?? "not selected"}. ${contextDescription}`}
+                aria-label={`${agentName ?? "Select Agent"}. ${contextDescription}`}
                 sx={{
                     textTransform: "none",
                     borderRadius: 2.5,
@@ -57,15 +57,10 @@ export const AgentSelectionSummary = ({
                 }}
             >
                 <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-start", minWidth: 0, flex: 1, gap: 0.55 }}>
-                    <Box sx={{ display: "flex", alignItems: "baseline", gap: 0.75, minWidth: 0, maxWidth: "100%" }}>
+                    <Box sx={{ display: "flex", alignItems: "baseline", minWidth: 0, maxWidth: "100%" }}>
                         <Typography component="span" variant="body2" fontWeight={600} noWrap>
                             🤖 {agentName ?? "Select Agent"}
                         </Typography>
-                        {agentName && modelName && (
-                            <Typography component="span" variant="caption" color="text.secondary" noWrap sx={{ minWidth: 0 }}>
-                                · {modelName}
-                            </Typography>
-                        )}
                     </Box>
 
                     {agentName && (

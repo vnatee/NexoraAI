@@ -375,7 +375,12 @@ async def register_mcp_tools(
                     handler=call_mcp,
                     source=f"mcp:{server.server_id or server.name}:{server.vendor}:{server.name}",
                     timeout_seconds=server.timeout_seconds,
-                    risk_level="external",
+                    risk_level=(
+                        "read"
+                        if server.operation_mode == "read_only"
+                        or is_read_only_mcp_tool(remote_tool.name)
+                        else "write"
+                    ),
                 )
             )
 

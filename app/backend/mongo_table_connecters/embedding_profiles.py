@@ -119,3 +119,30 @@ def mark_embedding_reindex_complete(profile_id: str) -> dict[str, Any]:
         upsert=True,
     )
     return get_embedding_settings()
+
+
+def mark_embedding_collection_adopted(
+    profile_id: str, *, collection_name: str, evidence: dict[str, Any]
+) -> dict[str, Any]:
+    current = get_embedding_settings()
+    if current["active_profile_id"] != profile_id:
+        raise ValueError("Only the selected embedding profile can adopt a collection")
+    now = datetime.now(timezone.utc)
+    settings.update_one(
+        {"_id": SETTINGS_ID},
+        {
+            "$set": {
+                "restart_required": True,
+                "reindex_required": False,
+                "collection_adoption": {
+                    "profile_id": profile_id,
+                    "collection_name": collection_name,
+                    "evidence": dict(evidence),
+                    "adopted_at": now,
+                },
+                "updated_at": now,
+            }
+        },
+        upsert=True,
+    )
+    return get_embedding_settings()

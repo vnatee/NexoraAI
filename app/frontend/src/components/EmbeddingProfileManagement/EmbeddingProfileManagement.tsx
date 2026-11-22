@@ -33,16 +33,24 @@ import { useMsal } from "@azure/msal-react";
 
 import {
     activateEmbeddingProfileApi,
+    adoptEmbeddingCollectionApi,
     completeEmbeddingReindexApi,
     createEmbeddingProfileApi,
     deleteEmbeddingProfileApi,
+    getEmbeddingReindexPlanApi,
+    getLatestEmbeddingReindexApi,
     listEmbeddingProfilesApi,
+    previewEmbeddingCollectionAdoptionApi,
+    startEmbeddingReindexApi,
     testEmbeddingProfileApi,
     updateEmbeddingProfileApi
 } from "../../api";
 import {
     EmbeddingProfilePayload,
     EmbeddingProfileSettings,
+    EmbeddingCollectionCompatibility,
+    EmbeddingReindexPlan,
+    EmbeddingReindexRun,
     EmbeddingProviderAdapter,
     ManagedEmbeddingProfile
 } from "../../api/models";
@@ -55,6 +63,7 @@ const emptyPayload = (): EmbeddingProfilePayload => ({
     dimensions: 1024,
     collection_name: "nexora-knowledge-custom",
     base_url: "http://ollama:11434/v1",
+    gateway_proxy_path: "",
     endpoint: "",
     deployment: "",
     api_version: "2024-10-21",
@@ -76,6 +85,13 @@ export function EmbeddingProfileManagement() {
     const [search, setSearch] = useState("");
     const [actionAnchor, setActionAnchor] = useState<HTMLElement | null>(null);
     const [actionProfile, setActionProfile] = useState<ManagedEmbeddingProfile | null>(null);
+    const [reindexPlan, setReindexPlan] = useState<EmbeddingReindexPlan | null>(null);
+    const [reindexConfirmation, setReindexConfirmation] = useState("");
+    const [latestRun, setLatestRun] = useState<EmbeddingReindexRun | null>(null);
+    const [adoptProfile, setAdoptProfile] = useState<ManagedEmbeddingProfile | null>(null);
+    const [adoptCollection, setAdoptCollection] = useState("");
+    const [adoptConfirmation, setAdoptConfirmation] = useState("");
+    const [compatibility, setCompatibility] = useState<EmbeddingCollectionCompatibility | null>(null);
 
     const filteredProfiles = useMemo(() => {
         const query = search.trim().toLowerCase();
@@ -104,6 +120,32 @@ export function EmbeddingProfileManagement() {
 
     useEffect(() => { void load(); }, [instance]);
 
+    useEffect(() => {
+        const profileId = settings?.active_profile_id;
+        if (!profileId) return;
+        let cancelled = false;
+        let timer: number | undefined;
+        const refreshRun = async () => {
+            try {
+                const token = await getToken(instance);
+                if (!token || cancelled) return;
+                const result = await getLatestEmbeddingReindexApi(profileId, token);
+                if (cancelled) return;
+                setLatestRun(result.run);
+                if (result.run?.status === "queued" || result.run?.status === "running") {
+                    timer = window.setTimeout(refreshRun, 3000);
+                }
+            } catch (error) {
+                if (!cancelled) console.error("load embedding re-index progress failed", error);
+            }
+        };
+        void refreshRun();
+        return () => {
+            cancelled = true;
+            if (timer !== undefined) window.clearTimeout(timer);
+        };
+    }, [instance, settings?.active_profile_id, latestRun?.status]);
+
     const openCreate = () => {
         setEditing(null);
         setForm(emptyPayload());
@@ -121,6 +163,7 @@ export function EmbeddingProfileManagement() {
             collection_name: profile.collection_name,
             endpoint: profile.endpoint ?? "",
             base_url: profile.base_url ?? "",
+            gateway_proxy_path: profile.gateway_proxy_path ?? "",
             api_version: profile.api_version ?? "2024-10-21",
             organization: profile.organization ?? "",
             enabled: profile.enabled,
@@ -177,6 +220,74 @@ export function EmbeddingProfileManagement() {
         }
     };
 
+    const openReindex = async () => {
+        if (!settings) return;
+        setBusyId("reindex-plan");
+        try {
+            const token = await getToken(instance);
+            if (!token) throw new Error("No authentication token");
+            const plan = await getEmbeddingReindexPlanApi(settings.active_profile_id, token);
+            setReindexPlan(plan);
+            setReindexConfirmation("");
+        } catch (error) {
+            setNotice({ severity: "error", text: error instanceof Error ? error.message : "Unable to prepare full re-index" });
+        } finally {
+            setBusyId(null);
+        }
+    };
+
+    const startReindex = async () => {
+        if (!reindexPlan) return;
+        setBusyId("reindex-start");
+        try {
+            const token = await getToken(instance);
+            if (!token) throw new Error("No authentication token");
+            const result = await startEmbeddingReindexApi(reindexPlan.profile_id, reindexConfirmation, token);
+            setLatestRun(result.run);
+            setReindexPlan(null);
+            setNotice({ severity: "warning", text: "Full re-index started. Keep the source files available until it completes." });
+        } catch (error) {
+            setNotice({ severity: "error", text: error instanceof Error ? error.message : "Unable to start full re-index" });
+        } finally {
+            setBusyId(null);
+        }
+    };
+
+    const previewAdoption = async () => {
+        if (!adoptProfile || !adoptCollection.trim()) return;
+        setBusyId("adopt-preview");
+        setCompatibility(null);
+        try {
+            const token = await getToken(instance);
+            if (!token) throw new Error("No authentication token");
+            const result = await previewEmbeddingCollectionAdoptionApi(adoptProfile._id, adoptCollection.trim(), token);
+            setCompatibility(result);
+            setAdoptConfirmation("");
+        } catch (error) {
+            setNotice({ severity: "error", text: error instanceof Error ? error.message : "Compatibility test failed" });
+        } finally {
+            setBusyId(null);
+        }
+    };
+
+    const applyCollectionAdoption = async () => {
+        if (!adoptProfile || !compatibility?.compatible) return;
+        setBusyId("adopt-apply");
+        try {
+            const token = await getToken(instance);
+            if (!token) throw new Error("No authentication token");
+            await adoptEmbeddingCollectionApi(adoptProfile._id, compatibility.collection_name, adoptConfirmation, token);
+            setAdoptProfile(null);
+            setCompatibility(null);
+            setNotice({ severity: "warning", text: "Existing collection adopted. Restart the application to use it." });
+            await load();
+        } catch (error) {
+            setNotice({ severity: "error", text: error instanceof Error ? error.message : "Unable to adopt collection" });
+        } finally {
+            setBusyId(null);
+        }
+    };
+
     const completeReindex = async () => {
         if (!settings || !window.confirm("Confirm only after every Knowledge source has been re-indexed successfully.")) return;
         setBusyId("reindex");
@@ -226,17 +337,35 @@ export function EmbeddingProfileManagement() {
             )}
             {settings?.reindex_required && (
                 <Alert severity="warning">
-                    <Stack direction={{ xs: "column", sm: "row" }} alignItems={{ sm: "center" }} justifyContent="space-between" gap={1}>
-                        <span>Full re-index required. Re-upload or re-index all Personal, Team, Global, and web Knowledge into the selected collection.</span>
-                        <Button
-                            size="small"
-                            color="warning"
-                            variant="outlined"
-                            disabled={settings.restart_required || busyId === "reindex"}
-                            onClick={() => void completeReindex()}
-                        >
-                            Mark re-index complete
-                        </Button>
+                    <Stack spacing={1}>
+                        <Typography variant="body2">Full re-index required. Stored Personal, Team, Company, and web sources can be reprocessed into the selected collection.</Typography>
+                        {latestRun && (
+                            <Typography variant="body2">
+                                Run {latestRun.status}: {latestRun.progress.succeeded}/{latestRun.progress.total} succeeded
+                                {latestRun.progress.running > 0 ? ` · ${latestRun.progress.running} running` : ""}
+                                {latestRun.progress.failed > 0 ? ` · ${latestRun.progress.failed} failed` : ""}
+                            </Typography>
+                        )}
+                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                            <Button
+                                size="small"
+                                color="warning"
+                                variant="contained"
+                                disabled={settings.restart_required || latestRun?.status === "queued" || latestRun?.status === "running" || busyId !== null}
+                                onClick={() => void openReindex()}
+                            >
+                                Start full re-index
+                            </Button>
+                            <Button
+                                size="small"
+                                color="warning"
+                                variant="outlined"
+                                disabled={latestRun?.status !== "completed" || latestRun.progress.failed > 0 || busyId === "reindex"}
+                                onClick={() => void completeReindex()}
+                            >
+                                Mark re-index complete
+                            </Button>
+                        </Stack>
                     </Stack>
                 </Alert>
             )}
@@ -316,6 +445,17 @@ export function EmbeddingProfileManagement() {
                         <PowerSettingsNewIcon fontSize="small" sx={{ mr: 1.5 }} /> Activate
                     </MenuItem>
                 )}
+                {actionProfile && !actionProfile.environment && settings?.active_profile_id === actionProfile._id && settings?.runtime_profile_id === actionProfile._id && (
+                    <MenuItem onClick={() => {
+                        setAdoptProfile(actionProfile);
+                        setAdoptCollection("");
+                        setAdoptConfirmation("");
+                        setCompatibility(null);
+                        closeActionMenu();
+                    }}>
+                        <GrainIcon fontSize="small" sx={{ mr: 1.5 }} /> Adopt existing collection
+                    </MenuItem>
+                )}
                 {actionProfile && !actionProfile.environment && (
                     <MenuItem disabled={settings?.active_profile_id === actionProfile._id || settings?.runtime_profile_id === actionProfile._id} onClick={() => { openEdit(actionProfile); closeActionMenu(); }}>
                         <EditIcon fontSize="small" sx={{ mr: 1.5 }} /> Edit
@@ -328,6 +468,79 @@ export function EmbeddingProfileManagement() {
                 )}
             </Menu>
 
+            <Dialog open={Boolean(reindexPlan)} onClose={() => busyId === null && setReindexPlan(null)} fullWidth maxWidth="sm">
+                <DialogTitle>Confirm full Knowledge re-index</DialogTitle>
+                <DialogContent dividers>
+                    {reindexPlan && (
+                        <Stack spacing={2}>
+                            <Alert severity="warning">
+                                This reprocesses stored source files and approved web pages into <strong>{reindexPlan.collection_name}</strong>. It may consume provider capacity and take time.
+                            </Alert>
+                            <Typography>Profile: {reindexPlan.profile_name}</Typography>
+                            <Typography>Model: {reindexPlan.model} · {reindexPlan.dimensions} dimensions</Typography>
+                            <Typography>Total sources: {reindexPlan.total}</Typography>
+                            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>
+                                {Object.entries(reindexPlan.counts).map(([scope, count]) => <Chip key={scope} size="small" label={`${scope}: ${count}`} />)}
+                            </Stack>
+                            <TextField
+                                label={`Type ${reindexPlan.confirmation} to confirm`}
+                                value={reindexConfirmation}
+                                onChange={event => setReindexConfirmation(event.target.value)}
+                                autoComplete="off"
+                            />
+                        </Stack>
+                    )}
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setReindexPlan(null)} disabled={busyId !== null}>Cancel</Button>
+                    <Button color="warning" variant="contained" onClick={() => void startReindex()} disabled={!reindexPlan || reindexConfirmation !== reindexPlan.confirmation || busyId !== null}>Start re-index</Button>
+                </DialogActions>
+            </Dialog>
+
+            <Dialog open={Boolean(adoptProfile)} onClose={() => busyId === null && setAdoptProfile(null)} fullWidth maxWidth="sm">
+                <DialogTitle>Adopt existing vector collection</DialogTitle>
+                <DialogContent dividers>
+                    <Stack spacing={2}>
+                        <Alert severity="info">
+                            Use this only when the embedding model was moved without changing its vector space. The server compares fresh vectors with stored vectors before allowing adoption.
+                        </Alert>
+                        <TextField
+                            label="Existing Qdrant Collection"
+                            required
+                            value={adoptCollection}
+                            onChange={event => { setAdoptCollection(event.target.value); setCompatibility(null); setAdoptConfirmation(""); }}
+                            disabled={busyId !== null}
+                        />
+                        <Button variant="outlined" onClick={() => void previewAdoption()} disabled={!adoptCollection.trim() || busyId !== null}>
+                            Test vector compatibility
+                        </Button>
+                        {compatibility && (
+                            <Alert severity={compatibility.compatible ? "success" : "error"}>
+                                {compatibility.compatible ? "Compatible" : "Not compatible"}: minimum cosine {compatibility.minimum_cosine_similarity.toFixed(6)}, mean {compatibility.mean_cosine_similarity.toFixed(6)} across {compatibility.sample_count} samples.
+                            </Alert>
+                        )}
+                        {compatibility?.compatible && (
+                            <TextField
+                                label={`Type ADOPT ${compatibility.collection_name} to confirm`}
+                                value={adoptConfirmation}
+                                onChange={event => setAdoptConfirmation(event.target.value)}
+                                autoComplete="off"
+                            />
+                        )}
+                    </Stack>
+                </DialogContent>
+                <DialogActions>
+                    <Button onClick={() => setAdoptProfile(null)} disabled={busyId !== null}>Cancel</Button>
+                    <Button
+                        variant="contained"
+                        onClick={() => void applyCollectionAdoption()}
+                        disabled={!compatibility?.compatible || adoptConfirmation !== `ADOPT ${compatibility?.collection_name ?? ""}` || busyId !== null}
+                    >
+                        Adopt and require restart
+                    </Button>
+                </DialogActions>
+            </Dialog>
+
             <Dialog open={dialogOpen} onClose={() => busyId === null && setDialogOpen(false)} fullWidth maxWidth="sm">
                 <DialogTitle>{editing ? "Edit Embedding Profile" : "Add Embedding Profile"}</DialogTitle>
                 <DialogContent dividers>
@@ -335,6 +548,7 @@ export function EmbeddingProfileManagement() {
                         <TextField label="Profile Name" required value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} />
                         <TextField select label="Provider" value={form.provider} onChange={event => setForm({ ...form, provider: event.target.value as EmbeddingProviderAdapter })}>
                             <MenuItem value="openai_compatible">OpenAI-compatible / Ollama</MenuItem>
+                            <MenuItem value="ai_gateway">Enterprise AI Gateway</MenuItem>
                             <MenuItem value="azure_openai">Azure OpenAI</MenuItem>
                             <MenuItem value="openai">OpenAI</MenuItem>
                         </TextField>
@@ -342,6 +556,15 @@ export function EmbeddingProfileManagement() {
                         {form.provider === "azure_openai" && <TextField label="Deployment" required value={form.deployment ?? ""} onChange={event => setForm({ ...form, deployment: event.target.value })} />}
                         {form.provider === "azure_openai" && <TextField label="Azure Endpoint" required value={form.endpoint ?? ""} onChange={event => setForm({ ...form, endpoint: event.target.value })} />}
                         {form.provider === "openai_compatible" && <TextField label="Base URL" required value={form.base_url ?? ""} onChange={event => setForm({ ...form, base_url: event.target.value })} helperText="Use http://ollama:11434/v1 for the bundled Docker service." />}
+                        {form.provider === "ai_gateway" && (
+                            <TextField
+                                label="Embedding Proxy Path"
+                                required
+                                value={form.gateway_proxy_path ?? ""}
+                                onChange={event => setForm({ ...form, gateway_proxy_path: event.target.value })}
+                                helperText="Appended to the configured Enterprise Gateway Base URL. Authentication and TLS policy are reused; credentials are not copied."
+                            />
+                        )}
                         <TextField label="Dimensions" required type="number" value={form.dimensions} onChange={event => setForm({ ...form, dimensions: Number(event.target.value) })} />
                         <TextField label="Qdrant Collection" required value={form.collection_name} onChange={event => setForm({ ...form, collection_name: event.target.value })} helperText="Use a unique collection for every embedding vector space." />
                         <TextField label={editing?.has_api_key ? "Replace API Key (optional)" : "API Key (if required)"} type="password" value={form.api_key ?? ""} onChange={event => setForm({ ...form, api_key: event.target.value })} />

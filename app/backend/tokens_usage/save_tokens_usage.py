@@ -1,11 +1,12 @@
 import json
-from collections import defaultdict
-import uuid
-from datetime import datetime, timezone
-from mongo_table_connecters.mongo_connector import get_database
-from mongo_table_connecters.users import get_user_by_ad_email
-from mongo_table_connecters.teams import get_team_by_id
 import re
+import uuid
+from collections import defaultdict
+from datetime import datetime, timezone
+
+from mongo_table_connecters.mongo_connector import get_database
+from mongo_table_connecters.teams import get_team_by_id
+from mongo_table_connecters.users import get_user_by_ad_email
 
 db = get_database()
 usage_collection = db["users_usage"]
@@ -57,6 +58,8 @@ def extract_token_usage(obj: dict):
         prompt = int(tu.get("prompt_tokens", 0) or 0)
         completion = int(tu.get("completion_tokens", 0) or 0)
         reasoning = int(tu.get("reasoning_tokens", 0) or 0)
+        prompt_details = tu.get("prompt_tokens_details") if isinstance(tu.get("prompt_tokens_details"), dict) else {}
+        cached_input = int(tu.get("cached_input_tokens", prompt_details.get("cached_tokens", 0)) or 0)
         total = int(tu.get("total_tokens", prompt + completion + reasoning))
 
         per_stage.append({
@@ -64,6 +67,7 @@ def extract_token_usage(obj: dict):
             "model": props.get("model"),
             "deployment": props.get("deployment"),
             "prompt_tokens": prompt,
+            "cached_input_tokens": cached_input,
             "completion_tokens": completion,
             "reasoning_tokens": reasoning,
             "total_tokens": total,
@@ -179,7 +183,9 @@ def insert_user_usage(auth_claims, response, mode="chat", metadata=None):
             "deployment": str(call.get("deployment") or metadata.get("deployment") or "")[:200],
             "provider": str(metadata.get("provider") or "unknown")[:100],
             "provider_id": str(metadata.get("provider_id") or "")[:200],
+            "route_type": str(metadata.get("route_type") or "unknown")[:50],
             "prompt_tokens": max(0, int(call.get("prompt_tokens") or 0)),
+            "cached_input_tokens": max(0, int(call.get("cached_input_tokens") or 0)),
             "completion_tokens": max(0, int(call.get("completion_tokens") or 0)),
             "reasoning_tokens": max(0, int(call.get("reasoning_tokens") or 0)),
             "total_tokens": max(0, int(call.get("total_tokens") or 0)),
@@ -213,6 +219,7 @@ def insert_user_usage(auth_claims, response, mode="chat", metadata=None):
             "model": str(metadata.get("model") or "unknown")[:200],
             "deployment": str(metadata.get("deployment") or "")[:200],
             "profile_id": str(metadata.get("profile_id") or "")[:100],
+            "route_type": str(metadata.get("route_type") or "unknown")[:50],
             "runtime": str(metadata.get("runtime") or "legacy")[:50],
             "request_mode": str(mode or "chat")[:20],
             "workload": str(metadata.get("workload") or mode or "chat")[:20],

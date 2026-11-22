@@ -228,6 +228,23 @@ class OpenAIEmbeddingService(OpenAIEmbeddings):
         return AsyncOpenAI(api_key=self.credential, organization=self.organization, base_url=self.base_url)
 
 
+class OpenAIClientEmbeddingService(OpenAIEmbeddings):
+    """Embedding service backed by a governed, preconfigured OpenAI client."""
+
+    def __init__(
+        self,
+        open_ai_model_name: str,
+        open_ai_dimensions: int,
+        client: AsyncOpenAI,
+        disable_batch: bool = False,
+    ):
+        super().__init__(open_ai_model_name, open_ai_dimensions, disable_batch)
+        self.client = client
+
+    async def create_client(self) -> AsyncOpenAI:
+        return self.client
+
+
 class ImageEmbeddings:
     """
     Class for using image embeddings from Azure AI Vision

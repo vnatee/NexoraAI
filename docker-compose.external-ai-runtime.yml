@@ -1,0 +1,8 @@
+services:
+  # These profiles keep the legacy bundled Ollama runtime available without
+  # starting it in deployments that use a private or external AI gateway.
+  ollama:
+    profiles: ["local-ai"]
+
+  ollama-models:
+    profiles: ["local-ai"]

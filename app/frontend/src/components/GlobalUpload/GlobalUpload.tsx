@@ -7,7 +7,6 @@ import {
     Dialog,
     DialogTitle,
     DialogContent,
-    DialogActions,
     Typography,
     IconButton,
     TextField,
@@ -15,6 +14,7 @@ import {
     Alert,
     CircularProgress,
     Chip,
+    Stack,
     Tabs,
     Tab,
     Skeleton
@@ -22,6 +22,7 @@ import {
 import DeleteIcon from "@mui/icons-material/Delete";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import FolderOpenIcon from "@mui/icons-material/FolderOpen";
+import CloseIcon from "@mui/icons-material/Close";
 import { DataGrid, GridColDef, GridPaginationModel, GridValueFormatter } from "@mui/x-data-grid";
 import { useMsal } from "@azure/msal-react";
 import { useTranslation } from "react-i18next";
@@ -656,8 +657,8 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
     });
 
     const tabs = [
-        ...(canGlobal ? [{ key: "global", label: "Public Files Management" }] : []),
-        ...(canGroup ? [{ key: "group", label: "Team Files Management" }] : [])
+        ...(canGroup ? [{ key: "group", label: "Team Files Management" }] : []),
+        ...(canGlobal ? [{ key: "global", label: "Company Files Management" }] : [])
     ];
 
     return (
@@ -674,13 +675,32 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
                     Files Management
                 </Button>
             </div>
-            <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="lg">
+            <Dialog
+                open={open}
+                onClose={(_event, reason) => {
+                    if (reason === "backdropClick") return;
+                    setOpen(false);
+                }}
+                fullWidth
+                maxWidth="lg"
+            >
                 <DialogTitle>
-                    <Tabs value={tab} onChange={handleTabChange}>
-                        {tabs.map(t => (
-                            <Tab key={t.key} label={t.label} />
-                        ))}
-                    </Tabs>
+                    <Stack direction="row" alignItems="center" justifyContent="space-between" gap={2}>
+                        <Tabs value={tab} onChange={handleTabChange} sx={{ minWidth: 0, flex: 1 }}>
+                            {tabs.map(t => (
+                                <Tab key={t.key} label={t.label} />
+                            ))}
+                        </Tabs>
+                        <Button2
+                            startIcon={<CloseIcon />}
+                            onClick={() => {
+                                setOpen(false);
+                                setConfirmingDelete(null);
+                            }}
+                        >
+                            Close
+                        </Button2>
+                    </Stack>
                 </DialogTitle>
                 <DialogContent>
                     {!userData || !selectTeamData ? (
@@ -890,16 +910,6 @@ export const GlobalUpload: React.FC<Props> = ({ disabled, dialogRef, className }
                         </>
                     )}
                 </DialogContent>
-                <DialogActions>
-                    <Button2
-                        onClick={() => {
-                            setOpen(false);
-                            setConfirmingDelete(null);
-                        }}
-                    >
-                        Close
-                    </Button2>
-                </DialogActions>
             </Dialog>
         </Box>
     );

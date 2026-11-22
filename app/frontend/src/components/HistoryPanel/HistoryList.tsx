@@ -5,9 +5,8 @@ import { HistoryData, HistoryItem } from "../HistoryItem";
 import { Answers, HistoryProviderOptions } from "../HistoryProviders/IProvider";
 import { useHistoryManager, HistoryMetaData } from "../HistoryProviders";
 import { useTranslation } from "react-i18next";
-import { Button, Skeleton } from "@mui/material";
+import { Skeleton } from "@mui/material";
 import styles from "./HistoryPanel.module.css";
-import HistoryIcon from "@mui/icons-material/History";
 
 const HISTORY_COUNT_PER_LOAD = 20;
 
@@ -80,14 +79,7 @@ export const HistoryList = ({
 
     return (
         <div className={styles.historyList}>
-            {/* Header + เนื้อหา */}
             <div className={styles.historySection}>
-                <div className={styles.historyHeader}>
-                    <Button variant="text" startIcon={<HistoryIcon />} className={styles.newChatTextButton}>
-                        History
-                    </Button>
-                </div>
-
                 <div className={styles.historyContent}>
                     {Object.entries(groupedHistory).map(([group, items]) => (
                         <div key={group} className={styles.group}>

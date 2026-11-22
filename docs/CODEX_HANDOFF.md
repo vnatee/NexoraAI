@@ -1431,14 +1431,33 @@ described below.
   date, daily/weekly/monthly, Team, user, Agent, provider, and model filters.
   It separates LLM token and document-processing views and shows timelines and
   top breakdowns without returning raw usage records to the browser.
+- The current working tree adds a **Cost (USD)** view and System Admin-only
+  **Price catalog**. Immutable effective-dated versions support cloud input,
+  cached-input, and output token rates or a Local AI TCO calculation based on
+  depreciation, operations, power/PUE, cloud hourly cost, throughput, and
+  utilization. Matching is most-specific then newest-effective. Retiring closes
+  a version's effective period but preserves historical estimates. Missing
+  rates remain explicitly Unpriced rather than becoming zero-cost.
+- **Raw CSV** reuses the same System/Team/Personal authorization and filters and
+  exports call metadata/tokens/cost without prompt or response content. **PDF
+  report** exports the selected period's estimated USD summary, pricing
+  coverage, and top models. THB conversion and provider-billing reconciliation
+  are deferred.
 - Existing records remain visible; historically absent dimensions appear as
   `Unknown`. Legacy OCR rows are excluded from Personal summaries because they
   did not store an immutable application user ID.
-- Focused analytics validation passed (`11 passed`). The complete service-free
-  suite passed (`740 passed, 1 deselected`), and the memory-safe frontend
-  production build passed. An unfiltered run also reached `740 passed` with one
-  unrelated `data_integration` failure caused by a local PDF fixture that
-  yielded no text sections.
+- Current focused cost/analytics/runtime validation passes (`50 passed`) and
+  the memory-safe frontend production build passes. The earlier complete
+  service-free run excluding the two environment-blocked app suites reaches
+  `1072 passed`, `1 deselected`, and the same `7` stale
+  `businessMetadata` ingestion/search expectations already documented below;
+  none exercise usage pricing or exports. The local app image was rebuilt and
+  recreated; container health is healthy, `/health/live` and `/health/ready`
+  return HTTP 200, and the served production bundle contains Cost, Price
+  catalog, Raw CSV, and PDF report controls. PDF generation uses `jspdf 4.2.1`;
+  the initially evaluated 3.x release was rejected after its critical advisory.
+  The final production dependency audit reports zero critical findings (the
+  repository's existing lower-severity dependency backlog remains).
 
 See `docs/usage-analytics.md`.
 
@@ -1749,7 +1768,10 @@ explicit audit-mode comparison slice. See `docs/licensing.md`.
   integration.
 - Extend usage analytics with a versioned pricing catalog, estimated cost,
   budgets/alerts, CSV/Excel export, scheduled reports, tool/error/latency
-  telemetry, retention rollups, and high-volume database indexes.
+  telemetry, retention rollups, and high-volume database indexes. The
+  versioned USD price catalog, estimated cost/coverage, raw CSV, and PDF report
+  are now implemented in the working tree; provider billing reconciliation,
+  THB policy, budgets/alerts, Excel, and scheduled reports remain.
 - Shared time/token budgets across a delegation tree, persisted LangGraph
   checkpoints, and audit retention/index policies.
 
@@ -2350,8 +2372,8 @@ InsightSphere application container.
 `docs/private-model-control-plane.md` defines the supported architecture,
 worker prerequisites, model/capacity sizing inputs, Gateway connection,
 side-by-side rollout and alias rollback, backup/recovery and production
-acceptance. P1.3b remains governed inventory/capacity visibility and tested
-multi-worker rollout/rollback automation.
+acceptance. Governed inventory/capacity visibility and rollout automation are
+implemented in the P1.3b slice recorded below.
 
 P1.3a focused Gateway/System Health/Compose regression passes (`41 passed`).
 Ruff, Python compilation, TypeScript compilation, the memory-safe production
@@ -2424,3 +2446,457 @@ value remains ephemeral browser/backend request data: it is not added to the
 persisted Gateway document, response payload, application log or lifecycle
 audit metadata. Chat, streaming, Tool Calling and Vision checks retain the same
 topic context, while Model-Based proxies keep the bounded default probe.
+
+## 2026-11-21: P1.3b governed private-model inventory and rollout
+
+The **Private LLM Infrastructure** tab now configures a separate encrypted
+GPUStack management credential and reads the official GPUStack v2.3.1
+`/v2/workers`, `/v2/models`, and `/v2/model-instances` APIs. Inventory is
+paginated and normalized to operational capacity only: worker readiness,
+CPU/RAM, GPU names/utilization, total/used/allocated/available VRAM, model
+replicas, and instance placement. Worker IPs, device UUIDs, model paths,
+environment variables, API keys, prompts, and responses are omitted from API
+responses and lifecycle audit metadata.
+
+Model-Based Enterprise Gateway proxies support an approval-gated rollout plan.
+Preflight requires a Running candidate, the configured ready-replica count and
+Running instances across the configured number of distinct workers. Activation
+rechecks capacity, runs full Gateway Conformance against an in-memory candidate
+route, rejects stale plans, and changes only the selected proxy after explicit
+System Admin confirmation. The persisted plan records the exact prior model;
+Rollback validates that route and restores it without editing Agent records.
+Semantic proxies remain gateway-managed and are deliberately ineligible for a
+model-ID rollout.
+
+Focused P1.3b/Gateway/Compose validation passes (`39 passed`). Ruff and Python
+compilation pass, and the memory-safe TypeScript/production frontend build
+passes. The wider service-free run excluding the environment-blocked
+`tests/test_app.py` and `tests/test_app_config.py` reaches `1026 passed`,
+`1 deselected`, `7 failed`; those seven are the already-recorded stale
+`businessMetadata` ingestion/search-field expectations and are unrelated to
+P1.3b. Real multi-worker acceptance still requires at least two GPUStack
+workers and a deployed vLLM candidate; the production acceptance sequence is
+documented in `docs/private-model-control-plane.md`.
+
+## 2026-11-21: deployment-mode launcher for private AI infrastructure
+
+The root `./nexora` launcher now keeps the Compose file set consistent across
+start, infrastructure-only start, recreate, logs, status, validation and stop
+operations. Its ignored `.env.nexora-runtime` selection supports `local-simple`,
+`private-enterprise`, and `external-gateway`, plus optional TLS, OCR and an
+operator-owned Datadog overlay. Secrets remain in the separately protected env
+file and the launcher never renders them during preflight.
+
+`private-enterprise` and `external-gateway` apply
+`docker-compose.external-ai-runtime.yml`, which puts bundled Ollama services
+behind an inactive profile. Private Enterprise then adds the pinned GPUStack
+overlay. `./nexora infra up` starts only data/integration infrastructure and
+the mode-appropriate model control plane; it never starts the Portal/API. This
+allows GPUStack workers and vLLM chat/embedding routes to become Ready before
+the complete InsightSphere stack starts. The original direct base Compose
+command retains Ollama for backward compatibility. Mode changes remove stale
+containers with Compose orphan cleanup but never remove named data volumes.
+
+The Dev Container isolates Docker CLI state through
+`DOCKER_CONFIG=/home/vscode/.docker-nexora`. This prevents stale VS Code
+`dev-containers-*` credential helpers from blocking public image pulls.
+Private-registry login remains an explicit local operator action and no Docker
+credential file is stored in Git.
+
+Private LLM inventory now distinguishes GPUStack's physical VRAM telemetry
+from scheduler capacity. The API and Portal expose physical used/free,
+model-allocated, system-reserved and schedulable VRAM separately, retain the
+legacy bounded available field for compatibility, show GPU compute utilization,
+and timestamp each inventory snapshot. This avoids comparing GPUStack's live
+VRAM utilization percentage with InsightSphere's post-allocation capacity as
+if they were the same metric.
+
+## 2026-11-21: provider-page UI polish and gateway profile labels
+
+The Built-in Providers header now uses a compact responsive **Add Provider**
+button. It remains aligned with the section title on desktop and moves below
+the description on narrow screens without stretching across the page.
+
+Enterprise Gateway runtime profile labels now distinguish the default route
+from an explicitly pinned Model-Based proxy and from a Semantic proxy. Profile
+IDs and routing behavior are unchanged, so existing Agent assignments remain
+compatible. Focused Gateway tests pass (`36 passed` together with the private
+control-plane tests), Ruff and diff checks pass, and the memory-safe production
+frontend build passes.
+
+Model Proxy configuration now uses compact single-open accordions instead of
+rendering every proxy form at full height. The collapsed summary retains the
+proxy name, routing strategy, default assignment, resolved endpoint, unsaved
+state and latest conformance readiness. Adding a proxy opens only the new form;
+removing one keeps the remaining accordion indexes consistent. This is a UI-only
+change and does not alter persisted Gateway documents or runtime routing.
+
+## 2026-11-22: governed route and LangGraph token analytics
+
+LangGraph now carries the OpenAI-compatible completion `usage` returned by each
+model iteration into the existing durable usage event. The persisted record
+contains only bounded model/provider/routing dimensions and token counts; prompt
+and response content remain excluded. Requests are also classified as
+`built_in`, `external_gateway`, or `direct_development` from the effective
+server-side route rather than from user input.
+
+Usage Analytics adds an **LLM route** filter and breakdown with operator-facing
+labels. Historical rows without the new dimension remain visible as
+**Unknown / legacy** instead of being guessed or rewritten. Focused runtime,
+metering, analytics, and Gateway validation passes (`55 passed`), Ruff and diff
+checks pass, and the memory-safe TypeScript/production frontend build passes.
+
+## 2026-11-22: persistent Portal dialogs and analytics refresh
+
+Usage Analytics now has an explicit manual Refresh action, an opt-in 30-second
+Auto refresh action, and a visible Close action. Closing the dialog cancels its
+refresh timer; reopening still performs the normal immediate load.
+
+The Portal also installs one Material UI Dialog-specific backdrop guard. A
+click outside a Dialog no longer discards a form or long-running view. Existing
+explicit Close, Cancel, Save and other intentional actions retain their normal
+behavior, and Escape-key behavior remains owned by each individual Dialog.
+The guard handles both the Backdrop element and Material UI's Dialog container
+click path, and is deliberately scoped to `.MuiDialog-root`; Menu, Select,
+Popover and other ordinary transient backdrops are unchanged. File Management
+also rejects `backdropClick` locally as defense in depth. File Management,
+Personal File Management and Approved Web Sources use the same explicit,
+labelled Close action with a Close icon rather than an icon-only X.
+
+The audit covered all 75 Material UI Dialog instances and found an explicit
+Close, Cancel or other intentional closing action in each Dialog body.
+TypeScript compilation, the memory-safe production frontend build, the rebuilt
+local application image, and live/readiness health checks pass.
+
+## 2026-11-22: GPUStack console access and SSO-ready link
+
+Private LLM Infrastructure now stores a browser-facing GPUStack Console URL
+separately from the internal management API URL. The System-Admin-only Open
+GPUStack Console action opens a new tab without referrer/opener access and never
+places an API key, password or InsightSphere session token in the URL. Console
+URLs accept credential-free HTTPS or HTTP only for loopback/private/internal
+hosts.
+
+Console sign-in is explicitly declared as Local, OIDC SSO or SAML SSO. Local is
+the backward-compatible default. Selecting an SSO mode does not bypass
+GPUStack authentication or copy IdP credentials from InsightSphere; GPUStack
+must be configured independently with its own OIDC client or SAML service
+provider. This preserves a clean move from local administration to shared-IdP
+SSO without changing Agent model routing.
+
+Focused private-control-plane and Gateway validation passes (`37 passed`),
+focused Ruff and diff checks pass, and the memory-safe TypeScript/production
+frontend build passes.
+
+## 2026-11-22: Insights navigation consolidation
+
+Usage Analytics/My Usage and Feedback Dashboard no longer occupy a separate
+Chat-sidebar section. They are grouped under **Insights** inside Admin
+Management, ordered immediately after **System administration** in the
+system-wide workspace. The Team workspace also exposes Insights after its
+governance group. Selecting an Insights entry opens the existing governed
+dashboard directly; closing it returns to Admin Management, where an explicit
+reopen action remains available.
+
+Existing analytics and feedback permission checks are retained. The Admin
+Management launcher also recognizes dashboard-view permissions so a delegated
+viewer does not lose access merely because they lack unrelated management
+permissions. The memory-safe TypeScript/production frontend build passes.
+
+## 2026-11-22: Agent and knowledge selector usability
+
+The Chat and Ask Agent selectors now show only the operator-facing Agent name;
+internal managed profile identifiers, model routing details, temperature and
+token limits are no longer rendered in the selection UI. Hovering an Agent
+shows its configured task/role description. The selected-Agent summary follows
+the same rule and no longer exposes the internal model profile label.
+
+Knowledge scope keeps the existing backend `global` contract but labels it
+**Company**, with Company and Personal presented side by side. Data Groups add
+a selected count, **Select All**, **Clear**, search and explicit empty states.
+Per-group access descriptions are omitted from this compact selector; access
+enforcement is unchanged. Retrieval ACL behavior and persisted Agent UI
+preferences are unchanged. The memory-safe TypeScript/production frontend
+build passes.
+
+File Management presents **Team Files Management** before the organization-wide
+tab and labels the existing backend `global` scope as **Company Files
+Management**. Permission checks and stored scope identifiers are unchanged.
+
+## 2026-11-22: Agent authoring form usability
+
+Agent Create, Edit and View now group Temperature, Seed, token and Knowledge
+retrieval limits in a compact responsive **Model behavior** panel. All five
+Prompt sections are multiline fields that preserve line breaks and provide an
+explicit Expand action for longer authoring or review in a large editor. The
+stored Agent configuration and Prompt contracts are unchanged. Frontend
+TypeScript validation, focused diff checks and the memory-safe production build
+pass; the existing large vendor-chunk warning remains.
+
+## 2026-11-22: Draft Agent Playground — Phase 1
+
+Create/Resume Agent Setup now opens as a full-screen responsive authoring
+workspace. Desktop keeps compact accordion-based Agent configuration beside a
+sticky Playground; smaller screens use the same Playground as a dedicated tab.
+Every run saves the private draft first, uses only the signed-in manager's
+authorized Company/Personal/Data Group scope, and returns the answer, citations
+and bounded diagnostics for runtime, route, model, latency, token counts, tool
+status and run ID. Test conversations remain request-local and are not written
+to ordinary Chat History.
+
+`POST /teams/<team_id>/agents/<agent_id>/playground` requires Team **Manage
+agents**, exact Team ownership and an unexpired private draft. It loads Prompt,
+model and tool bindings only from the server-side draft; active Agents and a
+client request for live mode fail closed. Normal Chat, sub-agent and Agent API
+draft rejection remains unchanged. Playground usage is metered separately as
+`request_mode=playground` while reserving against Chat quota rules, and Agent
+Audit records identify `execution_context=playground` without storing prompt,
+response or tool output.
+
+Safe mode is enforced inside the LangGraph Tool Registry using server-selected
+allowed risk levels. RAG, read-only database/Web/REST/mail/document/MCP tools
+and chart rendering may execute; write, externally ambiguous and delegation
+tools return policy-denied results without invoking their handlers. Adapter
+risk metadata now distinguishes REST GET from non-GET, read versus create
+Business Documents, mail read versus send, and read-only versus write-capable
+MCP tools. Legacy Playground intentionally tests Prompt, model and authorized
+Knowledge only because its older confirmation-based external API flow does not
+use the centralized Tool Registry.
+
+Focused Agent runtime, draft authorization, effective access, MCP, Business
+Documents, usage metering and analytics validation passes (`108 passed`).
+Python compilation, undefined-name Ruff checks, TypeScript compilation and the
+memory-safe production frontend build pass. The full repository Ruff run still
+reports its pre-existing legacy formatting and lint debt; no broad formatter
+was applied. Live provider/Knowledge and browser-level responsive acceptance
+remain manual.
+
+The broader service-free Python run completed with `1088 passed`, `76 failed`
+and `1 deselected`. The failures are existing stale snapshot/schema
+expectations: Ask/Chat snapshots do not include the newer `storageUrl` field,
+and ingestion/search-manager tests do not include the newer processing and
+business-metadata fields. None of the failures exercise the Playground route
+or safe Tool Registry policy; the focused Playground-related suites above
+remain green. The stale baselines were not rewritten as part of this slice.
+
+## 2026-11-22: Enterprise Gateway embedding profiles
+
+Knowledge indexing and retrieval continue to use the single system-wide Active
+Embedding Profile; Agent LLM selection never changes the vector space. Managed
+Embedding Profiles now support an **Enterprise AI Gateway** provider that stores
+only the embedding model alias, proxy path, dimensions, and Qdrant collection.
+Runtime and connection tests reuse the active External Gateway base URL,
+authentication, TLS, and timeout policy without copying its credential into the
+embedding profile. Gateway-backed profiles fail closed when External Gateway
+mode is not active, and activation retains the existing restart and full
+re-index requirements.
+
+Focused Embedding Profile, Enterprise Gateway, and Playground authorization
+validation passes (`73 passed`). Python compilation, undefined-name Ruff,
+TypeScript compilation, and focused diff checks pass. A real embedding proxy
+path/model/dimensions are still required from the Gateway operator before the
+current environment profile can be replaced and live Knowledge retrieval can
+be accepted.
+
+## 2026-11-22: controlled embedding migration workflows
+
+Embedding Profiles now separate two previously missing operator workflows.
+**Start full re-index** inventories stored Personal, Team, Company, and approved
+web sources, requires a typed profile-specific confirmation, creates a durable
+run plus per-source items, and reuses the existing ingestion pipeline so source
+ACLs, business metadata, processing manifests, and deterministic index IDs are
+retained. The Portal polls queued/running/succeeded/failed progress. The backend
+now rejects **Mark re-index complete** until the latest run completed with every
+item successful.
+
+For endpoint-only moves, an active/running managed profile exposes **Adopt
+existing collection** instead of unlocking general edits. The server samples
+stored text vectors, generates fresh vectors with the running profile, validates
+dimensions and a minimum cosine threshold, repeats the test during the confirmed
+write, updates only the collection binding, records bounded evidence, and marks
+restart required while clearing the full re-index requirement. Other managed
+profiles cannot share the adopted collection; the read-only environment
+collection can be adopted through this explicit compatibility gate.
+
+Focused Embedding Profile, Gateway, Playground authorization, and ingestion-job
+validation passes (`88 passed`). Python compilation, undefined-name Ruff,
+TypeScript compilation, focused diff checks, the production frontend build,
+manual-DOCX validation, and the rebuilt local application image pass. The live
+container reports healthy with live/readiness HTTP 200, and the durable run/item
+collections contain their expected indexes. Destructive full re-index execution
+was deliberately not started during acceptance; the current operator can choose
+the confirmed full re-index or the compatible-collection adoption path in the
+Portal.
+
+## 2026-11-22: Playground execution trace
+
+Draft Agent Playground now has **Chat** and **Trace** views. LangGraph emits an
+ordered execution trace from the runtime itself: model iterations are
+interleaved with Knowledge, Tool, MCP, Integration, and Sub-agent execution.
+The route surrounds those runtime events with input/output guardrail and answer
+delivery steps. Each step is bounded to allowlisted metadata: status, duration,
+iteration, model, source, risk level, argument-key names, requested tool names,
+and token counts. It never returns hidden model reasoning, raw Prompt content,
+argument values, tool output, or credentials. Legacy runs explicitly show their
+coarser Prompt/RAG boundary.
+
+The Trace view includes a safe configuration snapshot (Prompt revision hash,
+model route, Temperature, token limit, Knowledge mode, and selected-scope
+count). Blocked/tool-error runs open Trace automatically. If the selected LLM
+or external gateway fails before returning an answer, the error response now
+includes the completed safe steps plus failure stage, exception type, route,
+and run ID; the frontend retains that diagnostic response and opens Trace.
+
+Focused Agent runtime and management-security validation passes (`49 passed`).
+Python compilation and the memory-safe TypeScript/production build pass. Live
+provider execution and browser-level responsive acceptance remain manual.
+The broader service-free run was stopped after `186 passed`, `69 failed`, and
+`1 deselected` because a legacy fixture attempted an unavailable MongoDB
+connection during application startup. All 69 observed failures were the
+already-recorded Ask/Chat `storageUrl` snapshot mismatch; no Trace-focused test
+failed before the stop.
+
+## 2026-11-22: Active Agent private revisions
+
+Editing an active Agent now creates or resumes a separate private revision.
+The revision clones Prompt, configuration, and all six native binding families
+(REST, database, mail, business documents, messaging, and chart), is hidden
+from the main Agent list, and remains unavailable to Chat, Agent API, Catalog,
+and delegation. Its Playground uses the real draft configuration and cloned
+bindings. Discard deletes only the revision; deleting an active Agent also
+removes any child revisions.
+
+**Publish changes** retains the stable active Agent ID used by Chat, API keys,
+Catalog, and sub-agent references. The backend verifies the active Agent has
+not changed since revision creation, acquires a publish lock, promotes the six
+binding families, updates Prompt/configuration, and rolls all binding families
+back if the final Agent update fails. New requests fail closed briefly while
+the publish lock is present. Direct edits to active Agent documents are now
+rejected; callers must use the revision workflow.
+
+Focused revision lifecycle, Agent management security, and runtime validation
+passes (`58 passed`). TypeScript and the memory-safe production build pass.
+The product owner manually accepted the Active Agent private-revision workflow,
+Playground execution Trace, Prompt/Integration publish, revision discard, and
+External Gateway failure diagnostics on 2026-11-22. This slice is complete and
+must not remain listed as pending acceptance.
+The next Playground phases—automated evaluations, Active-versus-revision
+comparison, attachments, approval-gated write-tool testing, and cross-revision
+Trace export/comparison—were explicitly moved to the unscheduled product
+backlog. Do not start them without a new product-owner decision.
+The full external Customer Portal—branded Chat, customer/guest identity,
+Internal/External information separation, rate-limit/abuse analytics,
+feedback/human escalation, and read-only SAP Business One integration—was also
+moved to the unscheduled backlog. The already-implemented External Customer
+API/channel foundation remains in place; do not infer authorization to build
+the Portal from that foundation.
+The live Datadog demo—Agent overlay installation, logs/metrics/traces export,
+dashboards, monitors, telemetry-content inspection, and an end-to-end
+Agent/LLM/RAG/Tool/MCP trace—was moved to the unscheduled backlog. The existing
+provider-neutral OpenTelemetry, JSON logging, health, and content-free span
+foundation remains implemented. Do not install Datadog or add a mandatory
+vendor dependency without a new product-owner decision.
+
+## 2026-11-22: Chat History sidebar alignment
+
+The Chat sidebar History list now follows the primary navigation typography
+and spacing: 14px medium-weight titles, aligned left padding, compact date
+groups, and a consistent hover action area. The duplicate nested History
+heading was removed. Conversation titles retain their full value and use CSS
+ellipsis plus the existing tooltip instead of being cut at a fixed character
+count, which also improves Thai and responsive rendering.
+
+The memory-safe TypeScript/production build passes. The rebuilt application
+container is healthy and both live/readiness endpoints return HTTP 200.
+
+## 2026-11-22: Native Private AI Infrastructure lifecycle
+
+The System-Admin private-model surface is now branded as **Private AI
+Infrastructure**, with a small **Powered by GPUStack** attribution. Connection
+and advanced-console settings are collapsed behind a secondary action, while
+capacity refresh and governed model deployment are first-class InsightSphere
+actions. The guided deployment accepts only a route name, Hugging Face
+repository, LLM/Embedding category, and replica count and pins the backend to
+vLLM with spread placement; it cannot forward arbitrary environment values,
+commands, images, backend arguments, or credentials.
+
+Existing models can be scaled, stopped through scale-to-zero, and restarted
+from the native Models table. Each mutation has a confirmation dialog and an
+exact backend confirmation token, remains System-Admin-only, runs through the
+encrypted server-side GPUStack management credential, and emits an integration
+lifecycle audit event. Manual scale/stop rejects a model owned by an enabled
+GPUStack scaling schedule. Advanced GPUStack capability remains available via
+the separately authenticated Advanced console.
+
+The management contract was checked against the pinned GPUStack v2.3.1 source:
+`POST /v2/models`, `PUT /v2/models/{id}`, and
+`POST /v2/models/{id}/restart`. Focused control-plane, Compose, and System
+Health validation passes (`30 passed`); focused Ruff/undefined-name checks and
+the memory-safe TypeScript/production build pass. The rebuilt local application
+is healthy and its live/readiness endpoints return HTTP 200. Live multi-GPU deployment
+acceptance still requires a configured GPUStack control plane and worker. The
+broader service-free run was stopped after `189 passed`, `69 failed`, and `1
+deselected` when it entered the known slow legacy app-startup path. All 69
+failures were the pre-existing Ask/Chat snapshot mismatch (principally the
+additional `storageUrl: null` field); no Private AI Infrastructure test failed.
+The product owner manually accepted native model Start (scale from zero) and
+Stop (scale to zero) against the configured GPUStack environment on 2026-11-22.
+These lifecycle actions are complete and are no longer awaiting acceptance;
+live Deploy and Restart acceptance remain separate operator checks.
+The Deploy dialog now includes a small test preset verified against the pinned
+GPUStack v2.3.1 vLLM test surface (`Qwen/Qwen3-0.6B`, one replica), plain-language
+field guidance, duplicate-name/format validation, and a review summary before
+confirmation. The preset only fills the form; it never starts a download or
+allocates GPU capacity without the operator selecting Confirm deployment.
+The first live Deploy acceptance exposed a real GPUStack v2.3.1 database
+constraint: `models.cluster_id` is non-null, while the original guided request
+did not select a cluster. GPUStack received `POST /v2/models`, failed its model
+insert with `IntegrityError`, and returned HTTP 500; this was not an API-key or
+GPU-capacity failure, and the transaction created no model. Inventory now also
+reads the bounded `/v2/clusters` view, the form selects a Ready cluster (the
+current environment reports `IS_LocalAI`), and `cluster_id` is required by both
+frontend and backend validation. Mutation errors now report a safe HTTP-status
+diagnostic rather than the former undifferentiated rejection message. Live
+Deploy acceptance must be retried after this correction.
+The corrected live deployment was accepted on 2026-11-22: model id `14`
+(`qwen3-0.6b-demo`) was created on cluster `IS_LocalAI`, scheduled through
+vLLM, reached Running with its GPUStack route Active, and was subsequently
+scaled and stopped successfully through the native lifecycle actions. It is
+currently intentionally stopped at zero replicas. Live Deploy, Start, and Stop
+are accepted; Restart remains a separate acceptance check.
+
+Running LLM rows now expose a native **Test** action. The System-Admin-only
+backend resolves the model by its bounded inventory ID, requires Running with
+at least one Ready replica and the `llm` category, then calls GPUStack's pinned
+`POST /v1/chat/completions` contract through the encrypted server-side key.
+It does not modify or use the active MuleSoft Gateway. Test prompts are bounded
+to 4,000 characters and neither prompt nor output is written to lifecycle
+audit/log metadata; the browser receives only bounded answer text, finish
+reason, latency, and token counts. The product owner manually accepted live
+native inference Test against the configured GPUStack environment on
+2026-11-22.
+
+Guided deployment now reads GPUStack's pinned v2.3.1 model catalog instead of
+requiring the operator to know a repository ID. The searchable selector is
+filtered by LLM/Embedding workload, loads cluster-specific Hugging Face/vLLM
+variants, shows bounded size/capability/license/backend/quantization metadata,
+and fills the stable route name and repository. **Custom model** remains an
+explicit fallback rather than pretending the curated catalog contains every
+Hugging Face model.
+
+The form now requires a GPUStack model-evaluation preflight before Confirm is
+enabled. It shows bounded estimated RAM/VRAM and compatibility/scheduling
+messages; any field change invalidates the result. The backend repeats the
+same evaluation immediately before `POST /v2/models`, preventing a caller from
+bypassing the browser gate. Catalog/evaluation responses are allowlisted and
+do not forward environment values, credentials, prompts, or internal model
+metadata. Focused control-plane, Compose, and System Health validation passes
+(`34 passed`), focused diff checks and Python compilation pass, and the
+memory-safe TypeScript/production build passes. Live Catalog selection and
+resource-fit display remain the operator acceptance check for this slice. A
+read-only live control-plane check resolved `Qwen3-0.6B` from the catalog and
+its single Hugging Face/vLLM variant for `IS_LocalAI`. GPUStack correctly
+reported the requested additional replica as incompatible: the model needs
+approximately 3.68 GiB VRAM (4.09 GiB total at the configured utilization),
+while the currently available GPU had only 1.6 GiB allocatable because existing
+workload capacity was in use. No model was created or changed by this check.

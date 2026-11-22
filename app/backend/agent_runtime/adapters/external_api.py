@@ -141,6 +141,10 @@ def register_external_api_tools(
                 },
                 handler=call_api,
                 source=f"external_api:{integration.get('_id')}",
-                risk_level="external",
+                risk_level=(
+                    "read"
+                    if str(endpoint.get("method") or "GET").upper() == "GET"
+                    else "write"
+                ),
             )
         )

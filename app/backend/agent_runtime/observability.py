@@ -21,11 +21,13 @@ class AuditTrail:
         team_id: str | None,
         run_id: str | None = None,
         parent_run_id: str | None = None,
+        execution_context: str = "runtime",
     ):
         self.agent_id = agent_id
         self.team_id = team_id
         self.run_id = run_id or str(uuid.uuid4())
         self.parent_run_id = parent_run_id
+        self.execution_context = str(execution_context or "runtime")[:50]
         self.actor_id = str(
             auth_claims.get("oid")
             or auth_claims.get("sub")
@@ -54,6 +56,7 @@ class AuditTrail:
             "status": str(status),
             "tool_name": tool_name,
             "source": source,
+            "execution_context": self.execution_context,
             "details": details or {},
             "created_at": datetime.now(timezone.utc),
         }

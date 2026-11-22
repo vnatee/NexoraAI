@@ -83,5 +83,5 @@ def test_document_adapter_registers_read_and_write_tools(monkeypatch):
     register_business_document_tools(registry, "agent-1")
     specs = registry.specs()
     assert len(specs) == 3
-    assert {spec.risk_level for spec in specs} == {"external", "write"}
+    assert {spec.risk_level for spec in specs} == {"read", "write"}
     assert any("create" in spec.name for spec in specs)

@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
     Alert,
+    Accordion,
+    AccordionDetails,
+    AccordionSummary,
     Avatar,
     Box,
     Typography,
@@ -15,6 +18,7 @@ import {
     DialogActions,
     FormControl,
     InputLabel,
+    InputAdornment,
     TextField,
     Chip,
     Skeleton,
@@ -25,7 +29,8 @@ import {
     MenuItem,
     Select,
     Tab,
-    Tabs
+    Tabs,
+    Tooltip
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
@@ -33,11 +38,14 @@ import VisibilityIcon from "@mui/icons-material/Visibility";
 import EditIcon from "@mui/icons-material/Edit";
 import PublishIcon from "@mui/icons-material/Publish";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
+import OpenInFullIcon from "@mui/icons-material/OpenInFull";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { useMsal } from "@azure/msal-react";
 import {
     Agent,
     AgentConfig,
     activate_agent_draft,
+    begin_agent_revision,
     BindingInput,
     configApi,
     create_agent,
@@ -59,7 +67,8 @@ import {
     LLMProfile,
     MessagingConnection,
     MessagingBindingData,
-    IntegrationConnectionSummary
+    IntegrationConnectionSummary,
+    publish_agent_revision
 } from "../../../api";
 import { getToken } from "../../../authConfig";
 import { useNotification } from "../../../utill/NotificationProvider";
@@ -70,6 +79,7 @@ import { BusinessDocumentBindingDialog } from "../dialog/BusinessDocumentBinding
 import { MessagingBindingDialog } from "../dialog/MessagingBindingDialog";
 import { ChartBindingDialog, ChartBindingInput } from "../dialog/ChartBindingDialog";
 import { getIntegrationIcon } from "../utils/integrationIcons";
+import { AgentPlaygroundPanel } from "./AgentPlaygroundPanel";
 import {
     delete_agent_binding_by_id,
     get_agent_bindings_by_agent,
@@ -149,6 +159,14 @@ const DEFAULT_GUARDRAILS = {
     content_safety_output_action: "block" as const,
     blocked_phrases: [] as string[]
 };
+
+const PROMPT_FIELDS: Array<{ key: keyof Prompt; label: string; placeholder: string }> = [
+    { key: "role", label: "Role", placeholder: "Describe who the Agent is and the perspective it should take." },
+    { key: "task", label: "Task", placeholder: "Describe the Agent's responsibilities and primary goals." },
+    { key: "detail_context", label: "Detail Context", placeholder: "Add background, domain context, terminology, and operating guidance." },
+    { key: "output_format", label: "Output Format", placeholder: "Describe the expected structure, tone, sections, or examples." },
+    { key: "constraints", label: "Constraints", placeholder: "List boundaries, required checks, prohibited actions, and escalation rules." }
+];
 
 const normalizeRuntimeToolName = (value: string) => {
     let normalized = value
@@ -267,6 +285,27 @@ export function AgentManagementPage({ team, isSystemAdmin = false, onAgentsChang
         setOpenDialog(true);
     };
 
+    const handleBeginRevision = async (activeAgent: Agent) => {
+        if (!team?._id) return;
+        setSaving(true);
+        try {
+            const token = await getToken(instance);
+            if (!token) throw new Error("Authentication is required");
+            const response = await begin_agent_revision(team._id, activeAgent._id, token);
+            setSelectedAgent(response.revision);
+            setMode("edit");
+            setOpenDialog(true);
+            showNotification(
+                response.created ? "Private revision created" : "Private revision resumed",
+                "info"
+            );
+        } catch (error) {
+            showNotification(error instanceof Error ? error.message : "Failed to start Agent revision", "error");
+        } finally {
+            setSaving(false);
+        }
+    };
+
     const handleSave = async (agent: Agent) => {
         if (!team?._id) return;
 
@@ -325,6 +364,23 @@ export function AgentManagementPage({ team, isSystemAdmin = false, onAgentsChang
         }
     };
 
+    const handleSaveDraftForPlayground = async (agent: Agent): Promise<Agent> => {
+        if (!team?._id || !agent._id) throw new Error("A private Agent draft is required");
+        if (agent.lifecycle_status !== "draft") throw new Error("Playground requires a private setup draft or revision");
+        setSaving(true);
+        try {
+            const token = await getToken(instance);
+            if (!token) throw new Error("Authentication is required");
+            await edit_agent(team._id, agent._id, agent.agent_name, agent.config, agent.prompt, token);
+            const saved = { ...agent, lifecycle_status: "draft" as const };
+            setSelectedAgent(saved);
+            setAgents(previous => previous.map(item => item._id === saved._id ? saved : item));
+            return saved;
+        } finally {
+            setSaving(false);
+        }
+    };
+
     const handleFinishDraft = async (agent: Agent) => {
         if (!team?._id) return;
         setSaving(true);
@@ -332,15 +388,19 @@ export function AgentManagementPage({ team, isSystemAdmin = false, onAgentsChang
             const token = await getToken(instance);
             if (!token) throw new Error("Authentication is required");
             await edit_agent(team._id, agent._id, agent.agent_name, agent.config, agent.prompt, token);
-            await activate_agent_draft(team._id, agent._id, token);
+            if (agent.revision_of) {
+                await publish_agent_revision(team._id, agent.revision_of, agent._id, token);
+            } else {
+                await activate_agent_draft(team._id, agent._id, token);
+            }
             const refreshed = await get_agent_by_team(team._id, token, true);
             setAgents(refreshed ?? []);
             onAgentsChanged?.();
             setOpenDialog(false);
-            showNotification("Agent setup finished", "success");
+            showNotification(agent.revision_of ? "Agent revision published" : "Agent setup finished", "success");
         } catch (error) {
             console.error("finish agent draft failed:", error);
-            showNotification(error instanceof Error ? error.message : "Failed to finish Agent setup", "error");
+            showNotification(error instanceof Error ? error.message : "Failed to publish Agent changes", "error");
         } finally {
             setSaving(false);
         }
@@ -356,7 +416,7 @@ export function AgentManagementPage({ team, isSystemAdmin = false, onAgentsChang
             setAgents(previous => previous.filter(item => item._id !== agent._id));
             setOpenDialog(false);
             setSelectedAgent(null);
-            showNotification("Agent draft discarded", "success");
+            showNotification(agent.revision_of ? "Agent revision discarded" : "Agent draft discarded", "success");
         } catch (error) {
             console.error("discard agent draft failed:", error);
             showNotification(error instanceof Error ? error.message : "Failed to discard Agent draft", "error");
@@ -599,7 +659,13 @@ export function AgentManagementPage({ team, isSystemAdmin = false, onAgentsChang
                 <MenuItem onClick={() => { if (actionAgent) actionAgent.lifecycle_status === "draft" ? openEdit(actionAgent) : openView(actionAgent); closeActionMenu(); }}>
                     <VisibilityIcon fontSize="small" sx={{ mr: 1.5 }} /> {actionAgent?.lifecycle_status === "draft" ? "Resume setup" : "View details"}
                 </MenuItem>
-                <MenuItem onClick={() => { if (actionAgent) openEdit(actionAgent); closeActionMenu(); }}>
+                <MenuItem onClick={() => {
+                    if (actionAgent) {
+                        if (actionAgent.lifecycle_status === "draft") openEdit(actionAgent);
+                        else void handleBeginRevision(actionAgent);
+                    }
+                    closeActionMenu();
+                }}>
                     <EditIcon fontSize="small" sx={{ mr: 1.5 }} /> Edit
                 </MenuItem>
                 <MenuItem disabled={actionAgent?.lifecycle_status === "draft"} onClick={() => { if (actionAgent) openPublishDialog(actionAgent); closeActionMenu(); }}>
@@ -628,9 +694,10 @@ export function AgentManagementPage({ team, isSystemAdmin = false, onAgentsChang
                 agent={selectedAgent}
                 teamId={team?._id}
                 onClose={() => setOpenDialog(false)}
-                onEdit={() => setMode("edit")}
+                onEdit={() => selectedAgent ? handleBeginRevision(selectedAgent) : undefined}
                 onSave={handleSave}
                 onCreateDraft={handleCreateDraft}
+                onSaveDraftForPlayground={handleSaveDraftForPlayground}
                 onFinishDraft={handleFinishDraft}
                 onDiscardDraft={handleDiscardDraft}
                 availableAgents={agents}
@@ -759,6 +826,7 @@ export function AgentDialog({
     onEdit,
     onSave,
     onCreateDraft,
+    onSaveDraftForPlayground,
     onFinishDraft,
     onDiscardDraft,
     availableAgents,
@@ -770,9 +838,10 @@ export function AgentDialog({
     teamId?: string;
     loading: boolean;
     onClose: () => void;
-    onEdit?: () => void;
+    onEdit?: () => void | Promise<void>;
     onSave: (agent: Agent) => void | Promise<void>;
     onCreateDraft?: (agent: Agent) => Promise<Agent>;
+    onSaveDraftForPlayground?: (agent: Agent) => Promise<Agent>;
     onFinishDraft?: (agent: Agent) => void | Promise<void>;
     onDiscardDraft?: (agent: Agent) => void | Promise<void>;
     availableAgents: Agent[];
@@ -784,16 +853,19 @@ export function AgentDialog({
     const isFieldDisabled = isViewMode || isSaving;
     const isCreate = mode === "new";
     const isDraft = agent?.lifecycle_status === "draft";
+    const isRevision = isDraft && Boolean(agent?.revision_of);
 
     // Tab state — always reset to "info" when dialog opens
-    const [activeTab, setActiveTab] = useState<"info" | "integrations">("info");
+    const [activeTab, setActiveTab] = useState<"info" | "integrations" | "playground">("info");
     const [creatingDraft, setCreatingDraft] = useState(false);
     const [integrationSection, setIntegrationSection] = useState<"rest" | "database" | "mail" | "documents" | "messaging" | "mcp" | "visualization">("rest");
+    const [expandedPromptField, setExpandedPromptField] = useState<keyof Prompt | null>(null);
 
     useEffect(() => {
         if (open) {
             setActiveTab("info");
             setIntegrationSection("rest");
+            setExpandedPromptField(null);
         }
     }, [open]);
 
@@ -1102,21 +1174,22 @@ export function AgentDialog({
         prompt,
         lifecycle_status: agent?.lifecycle_status
     });
+    const expandedPromptDefinition = PROMPT_FIELDS.find(field => field.key === expandedPromptField);
 
-    const handleTabChange = async (_event: React.SyntheticEvent, value: "info" | "integrations") => {
-        if (value !== "integrations" || !isCreate) {
+    const handleTabChange = async (_event: React.SyntheticEvent, value: "info" | "integrations" | "playground") => {
+        if (value === "info" || !isCreate) {
             setActiveTab(value);
             return;
         }
         if (!agentName.trim()) {
-            showNotification("Enter an Agent name before configuring integrations", "warning");
+            showNotification(`Enter an Agent name before opening ${value === "playground" ? "Playground" : "Integrations"}`, "warning");
             return;
         }
         if (!onCreateDraft) return;
         try {
             setCreatingDraft(true);
             await onCreateDraft(currentAgent());
-            setActiveTab("integrations");
+            setActiveTab(value);
             showNotification("Draft saved. Finish setup to make this Agent available.", "info");
         } catch {
             setActiveTab("info");
@@ -1130,13 +1203,14 @@ export function AgentDialog({
             open={open}
             onClose={(_event, reason) => { if (reason !== "backdropClick") onClose(); }}
             disableEscapeKeyDown
-            maxWidth="md"
+            fullScreen={!templateOnly}
+            maxWidth={templateOnly ? "md" : "xl"}
             fullWidth
         >
             <DialogTitle>
                 {mode === "new" && (templateOnly ? "Create System Catalog Agent" : "Create New Agent")}
                 {mode === "view" && "View Agent"}
-                {mode === "edit" && (isDraft ? "Finish Agent Setup" : "Edit Agent")}
+                {mode === "edit" && (isRevision ? "Edit Agent Revision" : isDraft ? "Finish Agent Setup" : "Edit Agent")}
             </DialogTitle>
 
             {/* ── Tab bar ── */}
@@ -1149,15 +1223,37 @@ export function AgentDialog({
                         disabled={creatingDraft || isSaving}
                         title={isCreate ? "Creates a private draft before integrations are configured" : undefined}
                     />
+                    <Tab
+                        label="Playground"
+                        value="playground"
+                        disabled={creatingDraft || isSaving}
+                        title={isCreate ? "Creates and safely tests a private draft" : undefined}
+                    />
                 </Tabs>
             </Box>}
 
             <DialogContent dividers>
                 {isDraft && (
                     <Alert severity="info" sx={{ mb: 2 }}>
-                        This private draft is visible only in Agent Management. It cannot be used in Chat or published until you select Finish setup. Cancel setup removes the draft and its integration bindings.
+                        {isRevision
+                            ? "This private revision can be changed and tested without affecting the active Agent. Publish changes replaces the active configuration; discard keeps the active Agent unchanged."
+                            : "This private draft is visible only in Agent Management. It cannot be used in Chat or published until you select Finish setup. Cancel setup removes the draft and its integration bindings."}
                     </Alert>
                 )}
+                <Box
+                    sx={{
+                        display: "grid",
+                        gridTemplateColumns: {
+                            xs: "1fr",
+                            lg: templateOnly || activeTab === "playground"
+                                ? "1fr"
+                                : "minmax(0, 1.15fr) minmax(420px, 0.85fr)"
+                        },
+                        gap: 2,
+                        alignItems: "start"
+                    }}
+                >
+                    <Box sx={{ minWidth: 0, display: activeTab === "playground" ? "none" : "block" }}>
                 {/* ══════════════════════════════════
                     TAB 1 — Agent Info
                 ══════════════════════════════════ */}
@@ -1207,9 +1303,17 @@ export function AgentDialog({
                                     <MenuItem value="legacy">Legacy</MenuItem>
                                     <MenuItem value="langgraph">LangGraph (Tools / MCP)</MenuItem>
                                 </TextField>
-                                <Paper variant="outlined" sx={{ p: 2 }}>
-                                    <Typography fontWeight={600}>Message attachments</Typography>
-                                    <Stack mt={1}>
+                                <Accordion variant="outlined" disableGutters>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                        <Box>
+                                            <Typography fontWeight={600}>Message attachments</Typography>
+                                            <Typography variant="caption" color="text.secondary">
+                                                Image and private document input
+                                            </Typography>
+                                        </Box>
+                                    </AccordionSummary>
+                                    <AccordionDetails>
+                                    <Stack>
                                         <FormControlLabel
                                             control={
                                                 <Switch
@@ -1241,15 +1345,26 @@ export function AgentDialog({
                                             Allows private PDF, Office, text, CSV, and Markdown files when attachment storage is configured.
                                         </Typography>
                                     </Stack>
-                                </Paper>
-                                <Paper variant="outlined" sx={{ p: 2 }}>
-                                    <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ sm: "center" }} spacing={1}>
+                                    </AccordionDetails>
+                                </Accordion>
+                                <Accordion variant="outlined" disableGutters>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                        <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1} width="100%" pr={1}>
                                         <Box>
                                             <Typography fontWeight={600}>AI Guardrails</Typography>
                                             <Typography variant="caption" color="text.secondary">
                                                 Provider-independent checks applied to both Legacy and LangGraph requests.
                                             </Typography>
                                         </Box>
+                                            <Chip
+                                                size="small"
+                                                color={config.guardrails?.enabled === false ? "default" : "success"}
+                                                label={config.guardrails?.enabled === false ? "Disabled" : "Enabled"}
+                                            />
+                                        </Stack>
+                                    </AccordionSummary>
+                                    <AccordionDetails>
+                                    <Stack direction="row" justifyContent="flex-end">
                                         <FormControlLabel
                                             control={
                                                 <Switch
@@ -1270,7 +1385,7 @@ export function AgentDialog({
                                             label={config.guardrails?.enabled === false ? "Disabled" : "Enabled"}
                                         />
                                     </Stack>
-                                    <Stack spacing={2} mt={2}>
+                                    <Stack spacing={2} mt={1}>
                                         <TextField
                                             size="small"
                                             type="number"
@@ -1473,12 +1588,19 @@ export function AgentDialog({
                                             Guardrail audit events store detector names and counts only—not prompts, secrets, or model output.
                                         </Alert>
                                     </Stack>
-                                </Paper>
+                                    </AccordionDetails>
+                                </Accordion>
                                 {config.runtime === "langgraph" && (
-                                    <Paper variant="outlined" sx={{ p: 2 }}>
-                                        <Typography fontWeight={600} mb={2}>
-                                            Built-in Tools
-                                        </Typography>
+                                    <Accordion variant="outlined" disableGutters>
+                                        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                            <Box>
+                                                <Typography fontWeight={600}>Tools &amp; orchestration</Typography>
+                                                <Typography variant="caption" color="text.secondary">
+                                                    RAG, integrations, MCP, sub-agents and execution policy
+                                                </Typography>
+                                            </Box>
+                                        </AccordionSummary>
+                                        <AccordionDetails>
                                         <Stack spacing={1}>
                                             <TextField
                                                 select
@@ -1681,7 +1803,7 @@ export function AgentDialog({
                                                         helperText="Delegation is limited to selected agents in the same team"
                                                     >
                                                         {availableAgents
-                                                            .filter(item => item._id !== agent?._id && item.lifecycle_status !== "draft" && item.config.runtime === "langgraph")
+                                                            .filter(item => item._id !== agent?._id && item._id !== agent?.revision_of && item.lifecycle_status !== "draft" && item.config.runtime === "langgraph")
                                                             .map(item => (
                                                                 <MenuItem key={item._id} value={item._id}>
                                                                     {item.agent_name}
@@ -1827,86 +1949,165 @@ export function AgentDialog({
                                                 helperText="Optional prefixes: rag, mcp, external_api, external_database, subagent, chart"
                                             />
                                         </Stack>
-                                    </Paper>
+                                        </AccordionDetails>
+                                    </Accordion>
                                 )}
-                                <TextField
-                                    label="Temperature"
-                                    type="number"
-                                    disabled={isFieldDisabled}
-                                    value={config.temperature}
-                                    onChange={e => setConfig({ ...config, temperature: Number(e.target.value) })}
-                                />
-                                <TextField
-                                    label="Seed"
-                                    type="number"
-                                    disabled={isFieldDisabled}
-                                    value={config.seed ?? ""}
-                                    onChange={e => setConfig({ ...config, seed: e.target.value ? Number(e.target.value) : null })}
-                                />
-                                <TextField
-                                    label="Min Search Score"
-                                    type="number"
-                                    disabled={isFieldDisabled}
-                                    value={config.min_search_score}
-                                    onChange={e => setConfig({ ...config, min_search_score: Number(e.target.value) })}
-                                />
-                                <TextField
-                                    label="Max Search Results"
-                                    type="number"
-                                    disabled={isFieldDisabled}
-                                    value={config.max_search_results}
-                                    onChange={e => setConfig({ ...config, max_search_results: Number(e.target.value) })}
-                                />
-                                <TextField
-                                    label="Max Tokens"
-                                    type="number"
-                                    disabled={isFieldDisabled}
-                                    value={config.max_tokens}
-                                    onChange={e => setConfig({ ...config, max_tokens: Number(e.target.value) })}
-                                />
+                                <Accordion variant="outlined" disableGutters>
+                                    <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                    <Box>
+                                        <Typography fontWeight={600}>Model behavior</Typography>
+                                        <Typography variant="caption" color="text.secondary">
+                                            Compact generation and retrieval limits for this Agent.
+                                        </Typography>
+                                    </Box>
+                                    </AccordionSummary>
+                                    <AccordionDetails>
+                                    <Box
+                                        sx={{
+                                            display: "grid",
+                                            gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))", md: "repeat(3, minmax(0, 1fr))" },
+                                            gap: 1.5,
+                                            mt: 0
+                                        }}
+                                    >
+                                        <TextField
+                                            size="small"
+                                            label="Temperature"
+                                            type="number"
+                                            disabled={isFieldDisabled}
+                                            value={config.temperature ?? 0.2}
+                                            inputProps={{ min: 0, max: 2, step: 0.1 }}
+                                            onChange={e => setConfig({ ...config, temperature: Number(e.target.value) })}
+                                            helperText="Creativity (0–2)"
+                                        />
+                                        <TextField
+                                            size="small"
+                                            label="Seed"
+                                            type="number"
+                                            disabled={isFieldDisabled}
+                                            value={config.seed ?? ""}
+                                            inputProps={{ step: 1 }}
+                                            onChange={e => setConfig({ ...config, seed: e.target.value ? Number(e.target.value) : null })}
+                                            helperText="Optional repeatability hint"
+                                        />
+                                        <TextField
+                                            size="small"
+                                            label="Max Tokens"
+                                            type="number"
+                                            disabled={isFieldDisabled}
+                                            value={config.max_tokens ?? 1024}
+                                            inputProps={{ min: 1, step: 1 }}
+                                            onChange={e => setConfig({ ...config, max_tokens: Number(e.target.value) })}
+                                            helperText="Maximum response length"
+                                        />
+                                        <TextField
+                                            size="small"
+                                            label="Min Search Score"
+                                            type="number"
+                                            disabled={isFieldDisabled}
+                                            value={config.min_search_score ?? 0}
+                                            inputProps={{ min: 0, max: 1, step: 0.05 }}
+                                            onChange={e => setConfig({ ...config, min_search_score: Number(e.target.value) })}
+                                            helperText="Knowledge relevance threshold"
+                                        />
+                                        <TextField
+                                            size="small"
+                                            label="Max Search Results"
+                                            type="number"
+                                            disabled={isFieldDisabled}
+                                            value={config.max_search_results ?? 2}
+                                            inputProps={{ min: 1, step: 1 }}
+                                            onChange={e => setConfig({ ...config, max_search_results: Number(e.target.value) })}
+                                            helperText="Knowledge results per search"
+                                        />
+                                    </Box>
+                                    </AccordionDetails>
+                                </Accordion>
                             </Stack>
                         </Paper>
 
                         {/* PROMPT */}
-                        <Paper variant="outlined" sx={{ p: 2 }}>
-                            <Typography fontWeight={600}>Prompt</Typography>
-                            <Stack spacing={2} mt={2}>
-                                <TextField
-                                    label="Role"
-                                    disabled={isFieldDisabled}
-                                    value={prompt.role}
-                                    onChange={e => setPrompt({ ...prompt, role: e.target.value })}
-                                />
-                                <TextField
-                                    label="Task"
-                                    disabled={isFieldDisabled}
-                                    value={prompt.task}
-                                    onChange={e => setPrompt({ ...prompt, task: e.target.value })}
-                                />
-                                <TextField
-                                    label="Detail Context"
-                                    multiline
-                                    minRows={3}
-                                    disabled={isFieldDisabled}
-                                    value={prompt.detail_context}
-                                    onChange={e => setPrompt({ ...prompt, detail_context: e.target.value })}
-                                />
-                                <TextField
-                                    label="Output Format"
-                                    disabled={isFieldDisabled}
-                                    value={prompt.output_format}
-                                    onChange={e => setPrompt({ ...prompt, output_format: e.target.value })}
-                                />
-                                <TextField
-                                    label="Constraints"
-                                    disabled={isFieldDisabled}
-                                    value={prompt.constraints}
-                                    onChange={e => setPrompt({ ...prompt, constraints: e.target.value })}
-                                />
+                        <Accordion variant="outlined" disableGutters defaultExpanded>
+                            <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                                <Box>
+                                    <Typography fontWeight={600}>Prompt</Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                        Multiline instructions with expanded authoring
+                                    </Typography>
+                                </Box>
+                            </AccordionSummary>
+                            <AccordionDetails>
+                            <Stack spacing={2}>
+                                {PROMPT_FIELDS.map(field => (
+                                    <TextField
+                                        key={field.key}
+                                        fullWidth
+                                        multiline
+                                        minRows={2}
+                                        maxRows={6}
+                                        label={field.label}
+                                        placeholder={field.placeholder}
+                                        disabled={isFieldDisabled}
+                                        value={prompt[field.key] ?? ""}
+                                        onChange={event => setPrompt({ ...prompt, [field.key]: event.target.value })}
+                                        InputProps={{
+                                            endAdornment: (
+                                                <InputAdornment position="end" sx={{ alignSelf: "flex-start", mt: 0.75 }}>
+                                                    <Tooltip title={`Open a larger ${field.label} editor`}>
+                                                        <Button
+                                                            size="small"
+                                                            startIcon={<OpenInFullIcon fontSize="small" />}
+                                                            disabled={isSaving}
+                                                            onClick={() => setExpandedPromptField(field.key)}
+                                                            sx={{ whiteSpace: "nowrap" }}
+                                                        >
+                                                            Expand
+                                                        </Button>
+                                                    </Tooltip>
+                                                </InputAdornment>
+                                            )
+                                        }}
+                                    />
+                                ))}
                             </Stack>
-                        </Paper>
+                            </AccordionDetails>
+                        </Accordion>
                     </Stack>
                 )}
+
+                <Dialog
+                    open={expandedPromptField !== null}
+                    onClose={(_event, reason) => {
+                        if (reason !== "backdropClick") setExpandedPromptField(null);
+                    }}
+                    fullWidth
+                    maxWidth="md"
+                >
+                    <DialogTitle>{expandedPromptDefinition?.label ?? "Prompt"}</DialogTitle>
+                    <DialogContent dividers>
+                        {expandedPromptField && expandedPromptDefinition && (
+                            <Stack spacing={1}>
+                                <TextField
+                                    autoFocus={!isFieldDisabled}
+                                    fullWidth
+                                    multiline
+                                    minRows={14}
+                                    label={expandedPromptDefinition.label}
+                                    placeholder={expandedPromptDefinition.placeholder}
+                                    disabled={isFieldDisabled}
+                                    value={prompt[expandedPromptField] ?? ""}
+                                    onChange={event => setPrompt({ ...prompt, [expandedPromptField]: event.target.value })}
+                                />
+                                <Typography variant="caption" color="text.secondary" textAlign="right">
+                                    {(prompt[expandedPromptField] ?? "").split("\n").length} lines · {(prompt[expandedPromptField] ?? "").length} characters
+                                </Typography>
+                            </Stack>
+                        )}
+                    </DialogContent>
+                    <DialogActions>
+                        <Button onClick={() => setExpandedPromptField(null)}>Close</Button>
+                    </DialogActions>
+                </Dialog>
 
                 {activeTab === "integrations" && !isCreate && (
                     <Paper variant="outlined" sx={{ mb: 3 }}>
@@ -2773,6 +2974,30 @@ export function AgentDialog({
                         {/* Future: LINE, Google Sheet ฯลฯ เพิ่ม <Paper> block ตรงนี้ */}
                     </Stack>
                 )}
+                    </Box>
+                    <Box
+                        sx={{
+                            minWidth: 0,
+                            display: {
+                                xs: activeTab === "playground" ? "block" : "none",
+                                lg: templateOnly ? "none" : "block"
+                            },
+                            gridColumn: activeTab === "playground" ? "1 / -1" : "auto",
+                            position: { lg: "sticky" },
+                            top: 0
+                        }}
+                    >
+                        <AgentPlaygroundPanel
+                            agent={agent}
+                            teamId={teamId}
+                            disabled={isSaving || creatingDraft || isViewMode}
+                            onPrepareRun={async () => {
+                                if (!onSaveDraftForPlayground) throw new Error("Draft save is unavailable");
+                                return await onSaveDraftForPlayground(currentAgent());
+                            }}
+                        />
+                    </Box>
+                </Box>
             </DialogContent>
 
             <DialogActions>
@@ -2780,19 +3005,21 @@ export function AgentDialog({
                     <Button
                         color="error"
                         onClick={() => {
-                            if (window.confirm("Discard this Agent draft and all integration bindings?")) {
+                            if (window.confirm(isRevision
+                                ? "Discard this private revision? The active Agent will remain unchanged."
+                                : "Discard this Agent draft and all integration bindings?")) {
                                 void onDiscardDraft?.(currentAgent());
                             }
                         }}
                         disabled={isSaving || creatingDraft}
                     >
-                        Cancel setup
+                        {isRevision ? "Discard revision" : "Cancel setup"}
                     </Button>
                 ) : (
                     <Button onClick={onClose} disabled={isSaving || creatingDraft}>Close</Button>
                 )}
                 {isViewMode && onEdit && (
-                    <Button variant="contained" onClick={onEdit}>Edit</Button>
+                    <Button variant="contained" onClick={() => void onEdit()} disabled={isSaving}>Edit</Button>
                 )}
                 {/* Native bindings persist directly; Agent Info and MCP policy remain part of the Agent config. */}
                 {isDraft && !isViewMode ? (
@@ -2801,7 +3028,7 @@ export function AgentDialog({
                         disabled={!agentName.trim() || isSaving || creatingDraft}
                         onClick={() => onFinishDraft?.(currentAgent())}
                     >
-                        {loading ? "Finishing..." : "Finish setup"}
+                        {loading ? (isRevision ? "Publishing..." : "Finishing...") : (isRevision ? "Publish changes" : "Finish setup")}
                     </Button>
                 ) : !isViewMode && (activeTab !== "integrations" || integrationSection === "mcp") && (
                     <Button

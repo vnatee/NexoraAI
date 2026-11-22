@@ -588,9 +588,14 @@ export const ScrapData: React.FC<Props> = ({ disabled, dialogRef, className }) =
                         />
                     )}
 
-                    <IconButton onClick={handleClose} size="small" disabled={isLoading || isIndexing} sx={{ color: "white" }}>
-                        <CloseIcon />
-                    </IconButton>
+                    <MuiButton
+                        startIcon={<CloseIcon />}
+                        onClick={handleClose}
+                        disabled={isLoading || isIndexing}
+                        sx={{ color: "white", borderColor: "rgba(255, 255, 255, 0.7)" }}
+                    >
+                        Close
+                    </MuiButton>
                 </DialogTitle>
 
                 <DialogContent sx={{ pt: 3, pb: 2 }}>

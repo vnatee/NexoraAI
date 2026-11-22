@@ -2,8 +2,11 @@
     "name": "Nexora AI Dev Container.",
     "image": "mcr.microsoft.com/devcontainers/python:3.13-bookworm",
     "containerEnv": {
-        "AZURE_OPENAI_API_KEY": "${localEnv:AZURE_OPENAI_API_KEY}"
-  },
+        "AZURE_OPENAI_API_KEY": "${localEnv:AZURE_OPENAI_API_KEY}",
+        // Isolate Docker from VS Code's short-lived dev-containers-* helper.
+        // Private registry credentials must be created explicitly in-container.
+        "DOCKER_CONFIG": "/home/vscode/.docker-nexora"
+    },
     "features": {
         "ghcr.io/devcontainers/features/node:1": {
             // This should match the version of Node.js in Github Actions workflows

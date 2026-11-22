@@ -2,12 +2,13 @@ from pathlib import Path
 
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_local_runtime_compose_keeps_data_services_private_and_persistent():
-    compose = yaml.safe_load((ROOT / "docker-compose.local-runtime.yml").read_text(encoding="utf-8"))
+    compose = yaml.safe_load(
+        (ROOT / "docker-compose.local-runtime.yml").read_text(encoding="utf-8")
+    )
     services = compose["services"]
 
     assert services["app"]["ports"] == [
@@ -26,7 +27,9 @@ def test_local_runtime_compose_keeps_data_services_private_and_persistent():
 
 
 def test_local_runtime_app_uses_local_provider_endpoints_and_health_dependencies():
-    compose = yaml.safe_load((ROOT / "docker-compose.local-runtime.yml").read_text(encoding="utf-8"))
+    compose = yaml.safe_load(
+        (ROOT / "docker-compose.local-runtime.yml").read_text(encoding="utf-8")
+    )
     app = compose["services"]["app"]
     environment = app["environment"]
 
@@ -46,6 +49,16 @@ def test_local_runtime_app_uses_local_provider_endpoints_and_health_dependencies
         dependency["condition"] in {"service_healthy", "service_completed_successfully"}
         for dependency in app["depends_on"].values()
     )
+    assert app["depends_on"]["ollama-models"]["required"] is False
+
+
+def test_external_ai_overlay_disables_bundled_ollama_without_removing_it():
+    compose = yaml.safe_load(
+        (ROOT / "docker-compose.external-ai-runtime.yml").read_text(encoding="utf-8")
+    )
+
+    assert compose["services"]["ollama"]["profiles"] == ["local-ai"]
+    assert compose["services"]["ollama-models"]["profiles"] == ["local-ai"]
 
 
 def test_local_runtime_template_contains_placeholders_not_real_credentials():

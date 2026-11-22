@@ -18,6 +18,9 @@ class _Collection:
         self.deleted_queries.append(query)
         return SimpleNamespace(deleted_count=self.deleted)
 
+    def find(self, query, projection=None):
+        return []
+
     def update_many(self, query, update):
         self.updated.append((query, update))
         return SimpleNamespace(modified_count=1)
@@ -51,12 +54,15 @@ def test_delete_agent_cascade_removes_bindings_team_reference_and_records_metada
 
     assert counts["agents"] == 1
     assert all(
-        collection.deleted_queries == [{"agent_id": "draft-1"}]
+        collection.deleted_queries == [{"agent_id": {"$in": ["draft-1"]}}]
         for name, collection in database.collections.items()
         if name in agents.AGENT_BINDING_COLLECTIONS
     )
     assert database["teams"].updated == [
-        ({"agent_id": "draft-1"}, {"$pull": {"agent_id": "draft-1"}})
+        (
+            {"agent_id": {"$in": ["draft-1"]}},
+            {"$pull": {"agent_id": {"$in": ["draft-1"]}}},
+        )
     ]
     event = database["agent_lifecycle_audit"].inserted[0]
     assert event["event_type"] == "agent_deleted"

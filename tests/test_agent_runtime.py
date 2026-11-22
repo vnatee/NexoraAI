@@ -15,7 +15,7 @@ from approaches.approach import Document
 from core.attachment_index import AttachmentSearchResult
 
 
-def completion(*, content="", tool_calls=None):
+def completion(*, content="", tool_calls=None, usage=None):
     return ChatCompletion.model_validate(
         {
             "id": "test",
@@ -33,8 +33,39 @@ def completion(*, content="", tool_calls=None):
                     },
                 }
             ],
+            **({"usage": usage} if usage else {}),
         }
     )
+
+
+@pytest.mark.asyncio
+async def test_langgraph_runtime_returns_model_token_usage():
+    registry = ToolRegistry(
+        ToolRuntimeContext(agent_id="agent-1", auth_claims={"oid": "user-1"})
+    )
+    model = AsyncMock(return_value=completion(
+        content="Done",
+        usage={
+            "prompt_tokens": 21,
+            "completion_tokens": 8,
+            "total_tokens": 31,
+            "completion_tokens_details": {"reasoning_tokens": 2},
+        },
+    ))
+
+    result = await AgentRuntime(model, registry).run(
+        [{"role": "user", "content": "summarize"}]
+    )
+
+    assert result["model_calls"] == [{
+        "title": "Model iteration 1",
+        "model": "test-model",
+        "prompt_tokens": 21,
+            "cached_input_tokens": 0,
+        "completion_tokens": 8,
+        "reasoning_tokens": 2,
+        "total_tokens": 31,
+    }]
 
 
 def test_agent_mcp_allowlist_cannot_expand_admin_allowlist():
@@ -91,6 +122,15 @@ async def test_langgraph_runtime_executes_registered_tool():
 
     assert result["content"] == "The answer is 42"
     assert result["iterations"] == 2
+    assert [step["kind"] for step in result["execution_trace"]] == [
+        "llm",
+        "tool",
+        "llm",
+    ]
+    assert result["execution_trace"][0]["requested_tools"] == ["calculator"]
+    assert result["execution_trace"][1]["argument_keys"] == ["value"]
+    assert "args" not in result["execution_trace"][1]
+    assert "output" not in result["execution_trace"][1]
     handler.assert_awaited_once()
     assert handler.await_args.args[0] == {"value": 41}
     assert "search_knowledge" in model.await_args_list[0].args[0][0]["content"]
@@ -106,6 +146,30 @@ async def test_langgraph_runtime_executes_registered_tool():
         for message in second_messages
     )
     assert result["artifacts"] == {}
+
+
+@pytest.mark.asyncio
+async def test_safe_test_registry_blocks_write_tools_server_side():
+    registry = ToolRegistry(
+        ToolRuntimeContext(agent_id="draft-1", auth_claims={"oid": "admin-1"}),
+        allowed_risk_levels=frozenset({"read", "render"}),
+    )
+    handler = AsyncMock(return_value={"sent": True})
+    registry.register(
+        ToolSpec(
+            name="send_message",
+            description="Send a message",
+            input_schema={"type": "object", "properties": {}},
+            handler=handler,
+            risk_level="write",
+        )
+    )
+
+    result = await registry.execute("send_message", {})
+
+    assert json.loads(result)["policy_denied"] is True
+    assert "safe test mode" in json.loads(result)["error"]
+    handler.assert_not_awaited()
 
 
 @pytest.mark.asyncio

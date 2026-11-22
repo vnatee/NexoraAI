@@ -27,6 +27,9 @@ import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import PolicyOutlinedIcon from "@mui/icons-material/PolicyOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
+import InsightsOutlinedIcon from "@mui/icons-material/InsightsOutlined";
+import AnalyticsOutlinedIcon from "@mui/icons-material/AnalyticsOutlined";
+import FeedbackOutlinedIcon from "@mui/icons-material/FeedbackOutlined";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import CloseIcon from "@mui/icons-material/Close";
 import { useMsal } from "@azure/msal-react";
@@ -56,6 +59,8 @@ import { SystemHealthManagement } from "../SystemHealthManagement/SystemHealthMa
 import { LicenseSettingsPage } from "./Tabs/LicenseSettingsPage";
 import { AgentCatalogPage } from "../AgentCatalog/AgentCatalogPage";
 import { IdentityManagementPage } from "./Tabs/IdentityManagementPage";
+import { Dashboard } from "../DashBoard/Dashboard";
+import FeedbackDashboardDialog from "../FeedbackDashboard/FeedbackDashboardDialog";
 
 interface Props {
     open: boolean;
@@ -67,7 +72,7 @@ interface Props {
     onTeamChanged?: (team: TeamProfile) => void;
 }
 
-type MenuGroup = "people" | "workspace" | "governance" | "user-team" | "system";
+type MenuGroup = "people" | "workspace" | "governance" | "user-team" | "system" | "insights";
 
 interface SettingsPage {
     id: string;
@@ -86,7 +91,8 @@ const GROUP_DETAILS: Record<MenuGroup, { label: string; icon: React.ReactNode }>
     workspace: { label: "AI workspace", icon: <SmartToyOutlinedIcon fontSize="small" /> },
     governance: { label: "Governance", icon: <PolicyOutlinedIcon fontSize="small" /> },
     "user-team": { label: "Organization", icon: <GroupsOutlinedIcon fontSize="small" /> },
-    system: { label: "System administration", icon: <AdminPanelSettingsOutlinedIcon fontSize="small" /> }
+    system: { label: "System administration", icon: <AdminPanelSettingsOutlinedIcon fontSize="small" /> },
+    insights: { label: "Insights", icon: <InsightsOutlinedIcon fontSize="small" /> }
 };
 
 const COLLAPSED_GROUPS: Record<MenuGroup, boolean> = {
@@ -94,7 +100,8 @@ const COLLAPSED_GROUPS: Record<MenuGroup, boolean> = {
     workspace: false,
     governance: false,
     "user-team": false,
-    system: false
+    system: false,
+    insights: false
 };
 
 export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTeamData, sys_permissions, onAgentsChanged, onTeamChanged }: Props) {
@@ -107,6 +114,8 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
     const [renameOpen, setRenameOpen] = useState(false);
     const [teamNameDraft, setTeamNameDraft] = useState("");
     const [renaming, setRenaming] = useState(false);
+    const [usageAnalyticsOpen, setUsageAnalyticsOpen] = useState(false);
+    const [feedbackDashboardOpen, setFeedbackDashboardOpen] = useState(false);
     const [expandedGroups, setExpandedGroups] = useState<Record<MenuGroup, boolean>>(() => ({ ...COLLAPSED_GROUPS }));
 
     useEffect(() => {
@@ -154,6 +163,12 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
         sys_permissions: sys_permissions ?? [],
         requiredPermissions: ["Manage external channels"]
     });
+    const canViewSystemDashboard = Boolean(
+        is_sys_admin || sys_permissions?.some(permission => permission.toLowerCase() === "view system dashboard")
+    );
+    const canViewTeamDashboard = Boolean(
+        is_sys_admin || managedTeam?.permissions?.some(permission => permission.toLowerCase() === "view team dashboard")
+    );
 
 
     const saveTeamName = async () => {
@@ -378,6 +393,22 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             scope: "system",
             systemAdminOnly: true,
             element: <AuthenticationSettingsPage />
+        },
+        {
+            id: "usage-analytics",
+            label: canViewSystemDashboard || canViewTeamDashboard ? "Usage Analytics" : "My Usage",
+            permission: [],
+            group: "insights",
+            scope: "both",
+            element: <Stack spacing={2} alignItems="flex-start"><Typography variant="h6">{canViewSystemDashboard || canViewTeamDashboard ? "Usage Analytics" : "My Usage"}</Typography><Typography color="text.secondary">Review governed LLM-token and document-processing activity without storing prompt or response content.</Typography><Button variant="contained" startIcon={<AnalyticsOutlinedIcon />} onClick={() => setUsageAnalyticsOpen(true)}>Open {canViewSystemDashboard || canViewTeamDashboard ? "Usage Analytics" : "My Usage"}</Button></Stack>
+        },
+        {
+            id: "feedback-dashboard",
+            label: "Feedback Dashboard",
+            permission: ["View feedback dashboard"],
+            group: "insights",
+            scope: "both",
+            element: <Stack spacing={2} alignItems="flex-start"><Typography variant="h6">Feedback Dashboard</Typography><Typography color="text.secondary">Review user feedback, trends and submitted details.</Typography><Button variant="contained" startIcon={<FeedbackOutlinedIcon />} onClick={() => setFeedbackDashboardOpen(true)}>Open Feedback Dashboard</Button></Stack>
         }
     ];
 
@@ -395,8 +426,8 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             })
     );
     const groupOrder: MenuGroup[] = managedTeam
-        ? ["people", "workspace", "governance"]
-        : ["user-team", "governance", "system"];
+        ? ["people", "workspace", "governance", "insights"]
+        : ["user-team", "governance", "system", "insights"];
     const groupDetails: Record<MenuGroup, { label: string; icon: React.ReactNode }> = {
         ...GROUP_DETAILS,
         people: {
@@ -425,6 +456,8 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
     const selectPage = (page: SettingsPage) => {
         setSelectedPageId(page.id);
         setExpandedGroups(current => ({ ...current, [page.group]: true }));
+        if (page.id === "usage-analytics") setUsageAnalyticsOpen(true);
+        if (page.id === "feedback-dashboard") setFeedbackDashboardOpen(true);
     };
 
     const keepOpenUnlessCloseButton = (_event: object, reason: "backdropClick" | "escapeKeyDown") => {
@@ -432,6 +465,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
     };
 
     return (
+        <>
         <Dialog
             open={open}
             onClose={keepOpenUnlessCloseButton}
@@ -612,5 +646,20 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
                 </DialogActions>
             </Dialog>
         </Dialog>
+        <Dashboard
+            hideLauncher
+            controlledOpen={usageAnalyticsOpen}
+            onControlledClose={() => setUsageAnalyticsOpen(false)}
+            teamId={managedTeam?._id}
+            teamName={managedTeam?.name}
+            canViewSystem={canViewSystemDashboard}
+            canViewTeam={canViewTeamDashboard}
+            canManagePricing={is_sys_admin}
+        />
+        <FeedbackDashboardDialog
+            open={feedbackDashboardOpen}
+            onClose={() => setFeedbackDashboardOpen(false)}
+        />
+        </>
     );
 }

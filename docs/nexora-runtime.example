@@ -1,0 +1,11 @@
+# Copy this file to .env.nexora-runtime. It contains no application secrets.
+# Secrets remain in the env file selected below.
+MODE=private-enterprise
+FEATURES=
+ENV_FILE=.env.local-runtime
+
+# Set only when FEATURES includes datadog.
+DATADOG_COMPOSE_FILE=
+
+# Use "sudo docker" on hosts where the operator is not in the docker group.
+DOCKER_COMMAND=docker

@@ -1,4 +1,5 @@
 import json
+import operator
 import re
 import time
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ from core.observability import (
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     iterations: int
+    model_calls: Annotated[list[dict[str, Any]], operator.add]
+    execution_trace: Annotated[list[dict[str, Any]], operator.add]
 
 
 @dataclass(frozen=True)
@@ -180,6 +183,29 @@ class AgentRuntime:
                 if completion.usage is not None
                 else None
             )
+            model_call = []
+            if usage:
+                completion_details = usage.get("completion_tokens_details")
+                prompt_details = usage.get("prompt_tokens_details")
+                reasoning_tokens = (
+                    completion_details.get("reasoning_tokens", 0)
+                    if isinstance(completion_details, dict)
+                    else 0
+                )
+                cached_input_tokens = (
+                    prompt_details.get("cached_tokens", 0)
+                    if isinstance(prompt_details, dict)
+                    else 0
+                )
+                model_call = [{
+                    "title": f"Model iteration {state.get('iterations', 0) + 1}",
+                    "model": str(completion.model or ""),
+                    "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                    "cached_input_tokens": int(cached_input_tokens or 0),
+                    "completion_tokens": int(usage.get("completion_tokens") or 0),
+                    "reasoning_tokens": int(reasoning_tokens or 0),
+                    "total_tokens": int(usage.get("total_tokens") or 0),
+                }]
             calls = []
             for call in response.tool_calls or []:
                 try:
@@ -211,11 +237,30 @@ class AgentRuntime:
                         "duration_ms": round((time.perf_counter() - started) * 1000, 2),
                     },
                 )
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
             return {
                 "messages": [
                     AIMessage(content=response.content or "", tool_calls=calls)
                 ],
                 "iterations": state.get("iterations", 0) + 1,
+                "model_calls": model_call,
+                "execution_trace": [
+                    {
+                        "kind": "llm",
+                        "label": f"LLM iteration {state.get('iterations', 0) + 1}",
+                        "status": "success",
+                        "iteration": state.get("iterations", 0) + 1,
+                        "duration_ms": duration_ms,
+                        "model": str(completion.model or ""),
+                        "requested_tools": [call["name"] for call in calls],
+                        "decision": (
+                            f"Requested {len(calls)} tool call(s)"
+                            if calls
+                            else "Produced an answer"
+                        ),
+                        "token_usage": usage or {},
+                    }
+                ],
             }
 
         async def execute_tools(state: AgentState) -> dict[str, Any]:
@@ -223,14 +268,54 @@ class AgentRuntime:
             if not isinstance(message, AIMessage):
                 return {"messages": []}
             outputs = []
+            executed_events: list[tuple[dict[str, Any], dict[str, Any]]] = []
             for call in message.tool_calls:
+                log_index = len(self.tools.execution_log)
                 content = await self.tools.execute(call["name"], call["args"])
+                event = (
+                    self.tools.execution_log[log_index]
+                    if len(self.tools.execution_log) > log_index
+                    else {}
+                )
+                executed_events.append((call, event))
                 outputs.append(
                     ToolMessage(
                         content=content, tool_call_id=call["id"], name=call["name"]
                     )
                 )
-            return {"messages": outputs}
+            trace = []
+            for call, event in executed_events:
+                source = str(event.get("source") or "builtin")
+                source_type = source.split(":", 1)[0]
+                trace.append(
+                    {
+                        "kind": (
+                            "knowledge"
+                            if source_type == "rag"
+                            else "mcp"
+                            if source_type == "mcp"
+                            else "subagent"
+                            if source_type == "subagent"
+                            else "integration"
+                            if source_type not in {"builtin", "chart"}
+                            else "tool"
+                        ),
+                        "label": str(event.get("name") or call.get("name") or "Tool"),
+                        "status": (
+                            "blocked"
+                            if event.get("policy_denied")
+                            else "error"
+                            if event.get("is_error")
+                            else "success"
+                        ),
+                        "iteration": state.get("iterations", 0),
+                        "duration_ms": float(event.get("duration_ms") or 0),
+                        "source": source,
+                        "risk_level": str(event.get("risk_level") or "read"),
+                        "argument_keys": sorted(str(key) for key in call.get("args", {})),
+                    }
+                )
+            return {"messages": outputs, "execution_trace": trace}
 
         async def route(state: AgentState) -> Literal["tools", "__end__"]:
             last = state["messages"][-1]
@@ -302,6 +387,7 @@ class AgentRuntime:
                 graph_messages[0] = SystemMessage(
                     content=f"{self.config.system_prompt}\nKnowledge Search is executed automatically for each question. Use its results; call it again only to refine the query."
                 )
+                automatic_log_index = len(self.tools.execution_log)
                 graph_messages.append(
                     AIMessage(
                         content="",
@@ -324,16 +410,39 @@ class AgentRuntime:
                         name="search_knowledge",
                     )
                 )
+                automatic_event = self.tools.execution_log[automatic_log_index]
+                automatic_trace = [{
+                    "kind": "knowledge",
+                    "label": "search_knowledge",
+                    "status": "error" if automatic_event.get("is_error") else "success",
+                    "iteration": 0,
+                    "duration_ms": float(automatic_event.get("duration_ms") or 0),
+                    "source": "rag",
+                    "risk_level": str(automatic_event.get("risk_level") or "read"),
+                    "argument_keys": ["query"],
+                    "automatic": True,
+                }]
+            else:
+                automatic_trace = []
+        else:
+            automatic_trace = []
         try:
             state = await self.graph.ainvoke(
-                {"messages": graph_messages, "iterations": 0}
+                {
+                    "messages": graph_messages,
+                    "iterations": 0,
+                    "model_calls": [],
+                    "execution_trace": automatic_trace,
+                }
             )
             last = state["messages"][-1]
             result = {
                 "content": str(last.content),
                 "role": "assistant",
                 "iterations": state.get("iterations", 0),
+                "model_calls": list(state.get("model_calls") or []),
                 "tool_trace": list(self.tools.execution_log),
+                "execution_trace": list(state.get("execution_trace") or []),
                 "artifacts": dict(self.tools.context.metadata),
                 "trace": self.tools.audit.public_summary()
                 if self.tools.audit

@@ -310,6 +310,43 @@ Abandoned drafts expire after 24 hours by default and are removed by the
 background cleanup worker. Operators may set `AGENT_DRAFT_RETENTION_HOURS`
 (1–168) and `AGENT_DRAFT_CLEANUP_INTERVAL_SECONDS` (minimum 60).
 
+The Agent workspace shows configuration and a sticky **Playground** side by
+side on desktop; smaller screens use the **Playground** tab. Opening Playground
+for a new Agent creates its private draft. Each test saves the latest draft
+before invoking the real selected model, authorized Knowledge, inherited
+guardrails, quota enforcement, usage metering, and metadata-only audit. Select
+Company, Personal, or permitted Data Groups under **Test data access**. The run
+diagnostics show runtime, model, route, latency, token counts, safe tool status,
+citations, and run ID without exposing internal reasoning or raw tool output.
+Use the **Chat** and **Trace** tabs to switch between the answer and its ordered
+execution flow. Trace shows input and output guardrails, each LangGraph model
+iteration, Knowledge, Tool, MCP, Integration, or Sub-agent calls, status,
+duration, safe argument-key names, and a configuration snapshot with a
+non-reversible Prompt revision. It does not show hidden chain-of-thought, raw
+Prompt text, argument values, tool output, or credentials. A blocked or failed
+step opens Trace automatically. Gateway/model failures also return a bounded
+failure step with the stage, error type, route, and run ID for log correlation.
+Legacy Agents show a coarser boundary because that runtime does not expose
+per-iteration events.
+
+For an active Agent, select **View details → Edit**. NexoraAI creates or resumes
+a private revision containing a copy of the active configuration, Prompt, and
+native integration bindings. Changes and Playground runs use the revision ID,
+so the active Agent remains available with its previous behavior. Select
+**Publish changes** to retain the active Agent ID while promoting the revision;
+select **Discard revision** to remove it without changing the active Agent. A
+revision is rejected at publish time if the active Agent changed after the
+revision was created. Publishing uses a short server-side lock and restores the
+previous bindings if promotion fails.
+
+Playground Phase 1 is **Safe test** only. LangGraph permits read-only Knowledge,
+database, Web Search, REST GET, mail-read, document-read, read-only MCP, and
+chart rendering while server-side policy blocks write and delegation tools.
+Legacy testing covers Prompt, model, and Knowledge retrieval but does not run
+its external API confirmation workflow. Playground conversations are not added
+to normal Chat History. Attachments, live write-tool testing, automated
+evaluation sets, and side-by-side revision comparison remain later phases.
+
 For MCP Agents configure:
 
 | Field | Description | Recommended value |
@@ -509,6 +546,36 @@ Use Agent audit to investigate controlled metadata such as actor, Agent, tool,
 action, status, and timestamp. It must not contain raw prompts, tool output, or
 credentials. Treat audit access as privileged.
 
+### 8.5 Usage Analytics cost and price catalog
+
+Open **Usage Analytics** from Chat navigation. System and Team views require
+their dashboard permissions; **My Usage** is always restricted to the signed-in
+user. Select **Cost (USD)** to review estimated cost, pricing coverage, and
+unpriced tokens/calls. An unpriced call is intentionally excluded from the cost
+total and must not be interpreted as free.
+
+Only a System Administrator sees **Price catalog**. Select **Add price version**
+and choose:
+
+- **Provider token rates** for separate input, cached-input, and output USD per
+  one million tokens; or
+- **Local AI TCO** for hardware depreciation, maintenance/operations, power and
+  PUE, electricity, optional cloud GPU hourly cost, measured aggregate token
+  throughput, and expected utilization.
+
+Enter at least one match dimension. Prefer provider plus resolved model for
+normal providers, or gateway/provider ID plus resolved model when an enterprise
+gateway serves multiple models. Record the source URL, contract version, or
+assumption note without credentials. Create a new effective-dated version when
+rates change; do not alter history. **Retire** closes the version for future
+usage while retaining historical calculations.
+
+Use **Raw CSV** for ACL-scoped call-level token/cost data and **PDF report** for
+the current period summary. Neither export includes prompts, responses,
+Knowledge, tool data, or credentials. Values are estimates in USD, not provider
+invoices. THB display and provider-billing reconciliation are not part of this
+release.
+
 ## 9. LLM providers
 
 Use **System administration → LLM providers → Add Provider**.
@@ -531,6 +598,29 @@ Select **Test** for every configured model. Connection success alone does not
 prove tool calling or vision support. Containerized local providers must use a
 container-reachable host such as `ollama:11434` or `host.docker.internal`, not
 container-local `localhost` unless the model server runs in that same container.
+
+### 9.1 Embedding profiles
+
+Use one active Embedding Profile for all Knowledge indexing and retrieval. If
+Enterprise AI Gateway mode is enabled, add a profile with provider
+**Enterprise AI Gateway**, then enter the embedding model alias, proxy path,
+dimensions, and a unique Qdrant collection. The profile reuses the Gateway
+credential and TLS policy. Test the profile before activation; after activation
+restart the application and re-index all Knowledge before marking the migration
+complete. Agent LLM Profile selection does not override this system profile.
+
+After restart, select **Start full re-index**, review the source counts and
+target collection, then type the displayed confirmation phrase. The system
+reuses stored Personal, Team, Company, and approved web sources and shows
+durable queued/running/succeeded/failed progress. **Mark re-index complete** is
+enabled only after the run succeeds without failures.
+
+If the same embedding model was moved to a different server, open the running
+profile's actions and select **Adopt existing collection**. Enter the existing
+Qdrant collection, run the compatibility test, review the sampled cosine
+similarity, and type the adoption confirmation. Restart the application after
+adoption. Do not use this path when model weights, dimensions, normalization,
+or encoding behavior changed.
 
 See [Runtime and model provider configuration](model_provider_configuration.md).
 

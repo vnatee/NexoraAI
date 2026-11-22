@@ -95,10 +95,11 @@ models, and a protected environment file.
 ```bash
 cp docs/local-runtime.env.example .env.local-runtime
 # Replace every replace_with_* value and generate a stable Fernet key.
+cp docs/nexora-runtime.example .env.nexora-runtime
+# Choose local-simple, private-enterprise, or external-gateway.
 
-docker compose --env-file .env.local-runtime \
-  -f docker-compose.local-runtime.yml \
-  up -d --build --wait
+./nexora preflight
+./nexora up
 ```
 
 Open `http://127.0.0.1:50505` for host-local setup. Before allowing remote

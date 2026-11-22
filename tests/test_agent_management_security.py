@@ -1,4 +1,7 @@
+import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -137,6 +140,84 @@ async def test_edit_agent_rejects_agent_from_another_team(client, monkeypatch):
 
     assert response.status_code == 404
     assert (await response.get_json())["error"] == "Agent does not belong to this team"
+
+
+@pytest.mark.asyncio
+async def test_edit_agent_requires_private_revision_for_active_agent(client, monkeypatch):
+    monkeypatch.setattr(
+        backend_app,
+        "_require_team_access",
+        lambda *args, **kwargs: ({"_id": "manager-1"}, {"_id": "team-1", "agent_id": ["active-1"]}),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "get_agent_by_id",
+        lambda _agent_id: {"_id": "active-1", "lifecycle_status": "active"},
+    )
+
+    response = await client.post(
+        "/edit_agent",
+        json={
+            "team_id": "team-1",
+            "agent_id": "active-1",
+            "agent_name": "Unsafe direct edit",
+            "config": {},
+            "prompt": {},
+        },
+    )
+
+    assert response.status_code == 409
+    assert "private revision" in (await response.get_json())["error"]
+
+
+@pytest.mark.asyncio
+async def test_begin_agent_revision_adds_private_revision_to_team(client, monkeypatch):
+    updates = []
+    audits = []
+    active = {
+        "_id": "active-1",
+        "agent_name": "Active",
+        "lifecycle_status": "active",
+        "update_at": datetime.now(timezone.utc),
+    }
+    revision = {
+        "_id": "revision-1",
+        "agent_name": "Active",
+        "lifecycle_status": "draft",
+        "draft_kind": "revision",
+        "revision_of": "active-1",
+        "draft_expires_at": datetime.now(timezone.utc) + timedelta(hours=24),
+    }
+    monkeypatch.setattr(
+        backend_app,
+        "_require_team_access",
+        lambda *args, **kwargs: ({"_id": "manager-1"}, {"_id": "team-1", "agent_id": ["active-1"]}),
+    )
+    monkeypatch.setattr(backend_app, "get_agent_by_id", lambda _agent_id: active)
+    monkeypatch.setattr(
+        backend_app,
+        "create_or_resume_agent_revision",
+        lambda *_args, **_kwargs: (revision, True),
+    )
+    monkeypatch.setattr(backend_app, "update_team", lambda **kwargs: updates.append(kwargs))
+
+    class AuditCollection:
+        def insert_one(self, document):
+            audits.append(document)
+
+    class Database:
+        def __getitem__(self, _name):
+            return AuditCollection()
+
+    monkeypatch.setattr(backend_app, "get_database", lambda: Database())
+
+    response = await client.post("/teams/team-1/agents/active-1/revision")
+
+    payload = await response.get_json()
+    assert response.status_code == 201
+    assert payload["revision"]["_id"] == "revision-1"
+    assert updates == [{"team_id": "team-1", "agent_id": ["active-1", "revision-1"]}]
+    assert audits[0]["event_type"] == "agent_revision_created"
 
 
 @pytest.mark.asyncio
@@ -323,6 +404,168 @@ def test_draft_agent_is_rejected_before_chat_authorization(monkeypatch):
             {"oid": "user-1"},
             agent_id="draft-1",
         )
+
+
+@pytest.mark.asyncio
+async def test_playground_rejects_active_agent_without_running_model(client, monkeypatch):
+    monkeypatch.setattr(
+        backend_app,
+        "_require_team_access",
+        lambda *_args, **_kwargs: (
+            {"_id": "manager-1"},
+            {"_id": "team-1", "agent_id": ["agent-1"]},
+        ),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "get_agent_by_id",
+        lambda _agent_id: {"_id": "agent-1", "lifecycle_status": "active"},
+    )
+
+    response = await client.post(
+        "/teams/team-1/agents/agent-1/playground",
+        json={"messages": [{"role": "user", "content": "test"}]},
+    )
+
+    assert response.status_code == 409
+    assert "private Agent drafts only" in (await response.get_json())["error"]
+
+
+@pytest.mark.asyncio
+async def test_playground_runs_team_draft_with_server_safe_tool_policy(client, monkeypatch):
+    captured = {}
+    agent = {
+        "_id": "draft-1",
+        "agent_name": "Draft Agent",
+        "lifecycle_status": "draft",
+        "prompt": {"role": "Assistant", "task": "Answer safely"},
+        "config": {"runtime": "langgraph", "llm_profile_id": "system"},
+    }
+    monkeypatch.setattr(
+        backend_app,
+        "_require_team_access",
+        lambda _claims, team_id, *, permission=None: (
+            {"_id": "manager-1"},
+            {"_id": team_id, "agent_id": ["draft-1"]},
+        ),
+    )
+    monkeypatch.setattr(backend_app, "get_agent_by_id", lambda _agent_id: agent)
+    monkeypatch.setattr(backend_app, "is_expired_agent_draft", lambda _agent: False)
+    monkeypatch.setattr(
+        backend_app,
+        "_effective_access_for_request",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            team_id="team-1",
+            selected_data_group_ids=(),
+            selected_scopes=("global",),
+            user_id="manager-1",
+        ),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_apply_agent_llm_profile",
+        lambda context, *_args, **_kwargs: context["overrides"].update(
+            {
+                "_llm_model": "test-model",
+                "_llm_profile_id": "system",
+                "_llm_route_type": "built_in",
+            }
+        ),
+    )
+    monkeypatch.setattr(backend_app, "_enforce_llm_quota", AsyncMock())
+    monkeypatch.setattr(
+        backend_app,
+        "_enforce_input_guardrails",
+        AsyncMock(
+            return_value=(
+                backend_app.GuardrailPolicy(enabled=False),
+                backend_app.AuditTrail(
+                    agent_id="draft-1",
+                    team_id="team-1",
+                    auth_claims={"oid": "manager-1"},
+                    execution_context="playground",
+                ),
+            )
+        ),
+    )
+    monkeypatch.setattr(backend_app, "_persist_user_usage", AsyncMock())
+    monkeypatch.setattr(
+        backend_app, "_apply_guardrails_to_response", AsyncMock(side_effect=lambda response, *_args: response)
+    )
+    monkeypatch.setattr(backend_app, "_use_langgraph_runtime", lambda *_args, **_kwargs: True)
+
+    class Runtime:
+        async def run(self, runtime_messages):
+            if runtime_messages[-1]["content"] == "fail":
+                raise RuntimeError("private upstream detail")
+            return {
+                "content": "Safe answer",
+                "iterations": 1,
+                "model_calls": [],
+                "tool_trace": [],
+                "execution_trace": [
+                    {
+                        "kind": "mcp",
+                        "label": "lookup_customer",
+                        "status": "success",
+                        "duration_ms": 12.5,
+                        "source": "mcp:private-server",
+                        "risk_level": "read",
+                        "argument_keys": ["customer_id"],
+                        "args": {"customer_id": "secret-value"},
+                        "output": "secret-output",
+                    }
+                ],
+            }
+
+    async def create_runtime(**kwargs):
+        captured.update(kwargs)
+        return Runtime()
+
+    monkeypatch.setattr(backend_app, "create_agent_runtime", create_runtime)
+
+    response = await client.post(
+        "/teams/team-1/agents/draft-1/playground",
+        json={
+            "messages": [{"role": "user", "content": "test"}],
+            "selected_scopes": ["global"],
+            "safe_mode": True,
+        },
+    )
+
+    payload = await response.get_json()
+    assert response.status_code == 200
+    assert payload["answer"] == "Safe answer"
+    assert payload["diagnostics"]["safe_mode"] is True
+    assert [step["kind"] for step in payload["diagnostics"]["steps"]] == [
+        "input",
+        "guardrail",
+        "mcp",
+        "guardrail",
+        "answer",
+    ]
+    serialized_trace = json.dumps(payload["diagnostics"]["steps"])
+    assert "secret-value" not in serialized_trace
+    assert "secret-output" not in serialized_trace
+    assert payload["diagnostics"]["configuration"]["prompt_revision"]
+    assert payload["diagnostics"]["configuration"]["model"] == "test-model"
+    assert captured["agent_document"] is agent
+    assert captured["allow_draft"] is True
+    assert captured["allowed_risk_levels"] == frozenset({"read", "render"})
+
+    failed_response = await client.post(
+        "/teams/team-1/agents/draft-1/playground",
+        json={
+            "messages": [{"role": "user", "content": "fail"}],
+            "selected_scopes": ["global"],
+            "safe_mode": True,
+        },
+    )
+    failed_payload = await failed_response.get_json()
+    assert failed_response.status_code == 500
+    assert failed_payload["diagnostics"]["steps"][-1]["label"] == "LLM request failed"
+    assert failed_payload["diagnostics"]["steps"][-1]["summary"].endswith("RuntimeError")
+    assert "private upstream detail" not in json.dumps(failed_payload)
 
 
 @pytest.mark.asyncio

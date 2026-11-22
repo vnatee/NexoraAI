@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import {
+    Accordion,
+    AccordionDetails,
+    AccordionSummary,
     Alert,
     Box,
     Button,
@@ -14,6 +17,7 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import HubIcon from "@mui/icons-material/Hub";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import SaveIcon from "@mui/icons-material/Save";
@@ -159,6 +163,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
     const [savedProxyIds, setSavedProxyIds] = useState<Set<string>>(new Set());
     const [savedFingerprint, setSavedFingerprint] = useState("");
     const [semanticProbePrompts, setSemanticProbePrompts] = useState<Record<string, string>>({});
+    const [expandedProxyIndex, setExpandedProxyIndex] = useState<number | false>(false);
     const [notice, setNotice] = useState<{ severity: "success" | "warning" | "error"; text: string } | null>(null);
 
     const load = async () => {
@@ -171,6 +176,7 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
             setForm(loadedForm);
             setSavedFingerprint(configurationFingerprint(loadedForm));
             setSavedProxyIds(new Set((settings.proxies || settings.models || []).map(proxy => proxy.id)));
+            setExpandedProxyIndex(false);
         } catch (error) {
             setNotice({ severity: "error", text: error instanceof Error ? error.message : "Unable to load AI Gateway settings" });
         } finally {
@@ -199,6 +205,22 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                 : current.auth_type === "mulesoft_client_id_enforcement" ? "none" : current.auth_type
         }));
         setConformanceByProxy({});
+    };
+
+    const addProxy = () => {
+        setExpandedProxyIndex(form.proxies.length);
+        setForm(current => ({ ...current, proxies: [...current.proxies, emptyProxy()] }));
+    };
+
+    const removeProxy = (index: number) => {
+        setForm(current => ({
+            ...current,
+            proxies: current.proxies.filter((_, proxyIndex) => proxyIndex !== index)
+        }));
+        setExpandedProxyIndex(current => {
+            if (current === false || current === index) return false;
+            return current > index ? current - 1 : current;
+        });
     };
 
     const save = async () => {
@@ -472,23 +494,59 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                                 <Typography fontWeight={600}>Model Proxies</Typography>
                                 <Typography variant="caption" color="text.secondary">Each MuleSoft proxy has its own path, routing strategy, capability contract, and test result.</Typography>
                             </Box>
-                            <Button startIcon={<AddIcon />} onClick={() => setForm({ ...form, proxies: [...form.proxies, emptyProxy()] })}>Add Proxy</Button>
+                            <Button size="small" startIcon={<AddIcon />} onClick={addProxy}>Add Proxy</Button>
                         </Box>
                         {form.proxies.map((proxy, index) => {
                             const report = conformanceByProxy[proxy.id];
                             const saved = configurationSaved && savedProxyIds.has(proxy.id);
                             const endpointPreview = proxyEndpointPreview(form.base_url, proxy);
                             return (
-                            <Paper key={index} variant="outlined" sx={{ p: 2 }}>
-                                <Stack spacing={1.25}>
-                                    <Box display="flex" justifyContent="space-between" alignItems="center" gap={1} flexWrap="wrap">
-                                        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                            <Accordion
+                                key={index}
+                                variant="outlined"
+                                disableGutters
+                                expanded={expandedProxyIndex === index}
+                                onChange={(_, expanded) => setExpandedProxyIndex(expanded ? index : false)}
+                                sx={{
+                                    borderRadius: 1,
+                                    "&:before": { display: "none" },
+                                    "&.Mui-expanded": { m: 0 }
+                                }}
+                            >
+                                <AccordionSummary
+                                    expandIcon={<ExpandMoreIcon />}
+                                    sx={{
+                                        px: 2,
+                                        minHeight: 64,
+                                        "&.Mui-expanded": { minHeight: 64 },
+                                        "& .MuiAccordionSummary-content": { my: 1.25, minWidth: 0 },
+                                        "& .MuiAccordionSummary-content.Mui-expanded": { my: 1.25 }
+                                    }}
+                                >
+                                    <Stack
+                                        direction={{ xs: "column", md: "row" }}
+                                        spacing={{ xs: 0.75, md: 1.5 }}
+                                        alignItems={{ xs: "flex-start", md: "center" }}
+                                        sx={{ minWidth: 0, width: "100%", pr: 1 }}
+                                    >
+                                        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
                                             <Typography fontWeight={700}>{proxy.label || proxy.id || `Model Proxy ${index + 1}`}</Typography>
                                             <Chip size="small" label={(proxy.routing_strategy || "model_based").replace("_", "-")} />
                                             {form.default_proxy_id === proxy.id && <Chip size="small" color="primary" label="Default" />}
+                                            {report && <Chip size="small" color={report.ready ? "success" : "warning"} label={report.ready ? "Ready" : "Not ready"} />}
+                                            {!saved && <Chip size="small" color="warning" variant="outlined" label="Unsaved" />}
                                         </Stack>
-                                        <Button color="error" startIcon={<DeleteIcon />} onClick={() => setForm({ ...form, proxies: form.proxies.filter((_, i) => i !== index) })}>Remove</Button>
-                                    </Box>
+                                        <Typography
+                                            variant="caption"
+                                            color="text.secondary"
+                                            sx={{ ml: { md: "auto !important" }, overflowWrap: "anywhere" }}
+                                        >
+                                            {endpointPreview || "Endpoint not configured"}
+                                        </Typography>
+                                    </Stack>
+                                </AccordionSummary>
+                                <AccordionDetails sx={{ px: 2, pb: 2, pt: 0.5, borderTop: 1, borderColor: "divider" }}>
+                                <Stack spacing={1.25}>
                                     <Stack direction={{ xs: "column", md: "row" }} spacing={1.25}>
                                         <TextField fullWidth required label="Proxy ID" value={proxy.id} onChange={event => updateProxy(index, "id", event.target.value)} helperText="Stable InsightSphere identifier" />
                                         <TextField fullWidth label="Display Name" value={proxy.label} onChange={event => updateProxy(index, "label", event.target.value)} />
@@ -569,6 +627,9 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                                         </Button>
                                         {!saved && <Typography variant="caption" color="warning.main" alignSelf="center">Save all Gateway changes before testing this proxy.</Typography>}
                                     </Stack>
+                                    <Box>
+                                        <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => removeProxy(index)}>Remove Proxy</Button>
+                                    </Box>
                                     {report && (
                                         <Box sx={{ pt: 1, borderTop: 1, borderColor: "divider" }}>
                                             <Box display="flex" justifyContent="space-between" alignItems="center" gap={1}>
@@ -595,7 +656,8 @@ export function AIGatewayManagement({ onChanged }: { onChanged?: () => void }) {
                                         </Box>
                                     )}
                                 </Stack>
-                            </Paper>
+                                </AccordionDetails>
+                            </Accordion>
                             );
                         })}
                         <TextField

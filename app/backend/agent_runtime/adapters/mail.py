@@ -83,7 +83,7 @@ def register_mail_tools(registry: ToolRegistry, agent_id: str) -> None:
                     },
                     handler=read_mail,
                     source=f"mail:{connection['_id']}",
-                    risk_level="external",
+                    risk_level="read",
                 )
             )
         if "send" in permissions:

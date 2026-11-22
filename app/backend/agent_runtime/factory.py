@@ -76,9 +76,15 @@ async def create_agent_runtime(
     overrides: dict[str, Any],
     system_prompt: str,
     runtime_metadata: dict[str, Any] | None = None,
+    agent_document: dict[str, Any] | None = None,
+    allow_draft: bool = False,
+    allowed_risk_levels: frozenset[str] | None = None,
 ) -> AgentRuntime:
-    agent = get_agent_by_id(agent_id) or {}
-    if not is_active_agent(agent):
+    agent = agent_document if agent_document is not None else get_agent_by_id(agent_id) or {}
+    if str(agent.get("_id") or agent_id) != str(agent_id):
+        raise ValueError("Agent document does not match the requested Agent")
+    is_draft = str(agent.get("lifecycle_status") or "active") == "draft"
+    if not is_active_agent(agent) and not (allow_draft and is_draft):
         raise ValueError("Agent is unavailable until setup is finished")
     tool_settings = (agent.get("config") or {}).get("tool_settings") or {}
     external_channel = auth_claims.get("external_channel") is True
@@ -91,6 +97,7 @@ async def create_agent_runtime(
         auth_claims=auth_claims,
         run_id=run_id,
         parent_run_id=runtime_metadata.get("parent_run_id"),
+        execution_context=str(runtime_metadata.get("execution_context") or "runtime"),
     )
     registry = ToolRegistry(
         ToolRuntimeContext(
@@ -105,6 +112,7 @@ async def create_agent_runtime(
         guardrail_policy=effective_guardrail_policy(
             (agent.get("config") or {}).get("guardrails"), team_id=team_id
         ),
+        allowed_risk_levels=allowed_risk_levels,
     )
     has_temporary_attachments = bool(overrides.get("_temporary_attachment_ids"))
     attachment_evidence_scope = str(overrides.get("_attachment_evidence_scope") or "")

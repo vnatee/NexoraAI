@@ -25,20 +25,6 @@ export function HistoryItem({ item, onSelect, onDelete }: HistoryItemProps) {
         onDelete(item.id);
     }, [item.id, onDelete]);
 
-    const truncateText = (text: any, maxLength: any) => {
-        if (text.length <= maxLength) {
-            return text;
-        }
-        return text.substring(0, maxLength) + "...";
-    };
-
-    const formatMultilineText = (text: string) => {
-        // แปลงข้อความยาวให้ตัดบรรทัดทุก ๆ 40 ตัวอักษร
-        const chunkSize = 40;
-        const regex = new RegExp(`(.{1,${chunkSize}})`, "g");
-        return text.match(regex)?.join("\n") ?? text;
-    };
-
     return (
         <>
             <div className={styles.historyItem}>
@@ -87,7 +73,7 @@ export function HistoryItem({ item, onSelect, onDelete }: HistoryItemProps) {
                     }}
                 >
                     <button onClick={() => onSelect(item.id)} className={styles.historyItemButton}>
-                        <div className={styles.historyItemTitle}>{truncateText(item.title, 25)}</div>
+                        <span className={styles.historyItemTitle}>{item.title}</span>
                     </button>
                 </Tooltip>
 

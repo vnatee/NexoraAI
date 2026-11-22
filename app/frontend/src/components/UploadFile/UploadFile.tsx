@@ -11,7 +11,6 @@ import {
     Dialog,
     DialogTitle,
     DialogContent,
-    DialogActions,
     Button as Button2,
     Typography,
     Box,
@@ -24,6 +23,7 @@ import {
 } from "@mui/material";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import CancelIcon from "@mui/icons-material/Cancel";
+import CloseIcon from "@mui/icons-material/Close";
 import Tooltip from "@mui/material/Tooltip";
 import { DocumentProcessingUploadSelector } from "../DocumentProcessingUploadSelector/DocumentProcessingUploadSelector";
 import { IngestionJobStatus } from "../IngestionJobStatus";
@@ -221,8 +221,29 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
                     {t("upload.manageFileUploads")}
                 </Button>
 
-                <Dialog open={isOpen} onClose={() => setIsOpen(false)} fullWidth maxWidth="sm">
-                    <DialogTitle>{t("upload.manageFileUploads")}</DialogTitle>
+                <Dialog
+                    open={isOpen}
+                    onClose={(_event, reason) => {
+                        if (reason === "backdropClick") return;
+                        setIsOpen(false);
+                    }}
+                    fullWidth
+                    maxWidth="sm"
+                >
+                    <DialogTitle>
+                        <Stack direction="row" alignItems="center" justifyContent="space-between" gap={2}>
+                            <Typography variant="h6">{t("upload.manageFileUploads")}</Typography>
+                            <Button2
+                                startIcon={<CloseIcon />}
+                                onClick={() => {
+                                    setIsOpen(false);
+                                    setConfirmingDelete(null);
+                                }}
+                            >
+                                Close
+                            </Button2>
+                        </Stack>
+                    </DialogTitle>
 
                     <DialogContent dividers>
                         <Stack spacing={2}>
@@ -408,18 +429,6 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
                         </Stack>
                     </DialogContent>
 
-                    <DialogActions>
-                        <Button2
-                            onClick={() => {
-                                setIsOpen(false);
-                                setConfirmingDelete(null);
-                            }}
-                            color="secondary"
-                            variant="outlined"
-                        >
-                            {t("close")}
-                        </Button2>
-                    </DialogActions>
                 </Dialog>
             </div>
         </div>
