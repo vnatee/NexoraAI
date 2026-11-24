@@ -401,9 +401,20 @@ export function PrivateLLMManagement({ onConfigureGateway }: { onConfigureGatewa
                                 <Typography variant="caption" color="text.secondary">Powered by GPUStack</Typography>
                             </Box>
                         </Box>
-                        <Stack direction="row" spacing={1}>
+                        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
                             <Button variant="outlined" startIcon={<RefreshIcon />} disabled={busy || !settings?.base_url} onClick={() => void load(true)}>Refresh</Button>
                             <Button variant="outlined" startIcon={<SettingsOutlinedIcon />} onClick={() => setShowConnectionSettings(value => !value)}>Connection</Button>
+                            <Button
+                                component="a"
+                                href={settings?.console_url || undefined}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                variant="outlined"
+                                startIcon={<OpenInNewIcon />}
+                                disabled={!settings?.console_url}
+                            >
+                                Advanced console
+                            </Button>
                             <Button variant="contained" startIcon={<AddCircleOutlineIcon />} disabled={busy || !settings?.base_url} onClick={() => setDeployOpen(true)}>Deploy model</Button>
                         </Stack>
                     </Box>
@@ -457,17 +468,6 @@ export function PrivateLLMManagement({ onConfigureGateway }: { onConfigureGatewa
                     )}
                     <Stack direction="row" spacing={1}>
                         <Button variant="contained" startIcon={<SaveIcon />} disabled={busy || !baseUrl} onClick={() => void save()}>Save</Button>
-                        <Button
-                            component="a"
-                            href={settings?.console_url || undefined}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            variant="outlined"
-                            startIcon={<OpenInNewIcon />}
-                            disabled={!settings?.console_url}
-                        >
-                            Advanced console
-                        </Button>
                         <Button variant="text" onClick={onConfigureGateway}>Configure gateway proxies</Button>
                     </Stack>
                     </Stack>

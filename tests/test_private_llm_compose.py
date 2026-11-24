@@ -34,3 +34,30 @@ def test_private_llm_environment_template_contains_no_credentials():
     assert "API_KEY=" not in template
     assert "TOKEN=" not in template
 
+
+def test_gpustack_branding_overlay_builds_a_separate_rollback_safe_image():
+    compose = yaml.safe_load(
+        (ROOT / "docker-compose.gpustack-branding.yml").read_text(encoding="utf-8")
+    )
+    gpustack = compose["services"]["gpustack"]
+
+    assert gpustack["image"] == (
+        "${GPUSTACK_BRANDED_IMAGE:-nexoraai-gpustack:v2.3.1-insightsphere}"
+    )
+    assert gpustack["build"]["dockerfile"] == "services/gpustack-ui/Dockerfile"
+    assert gpustack["build"]["args"]["GPUSTACK_UI_VERSION"] == "v2.3.1"
+    assert len(gpustack["build"]["args"]["GPUSTACK_UI_SHA256"]) == 64
+
+
+def test_gpustack_branding_build_keeps_attribution_and_pinned_upstream_source():
+    dockerfile = (ROOT / "services/gpustack-ui/Dockerfile").read_text(encoding="utf-8")
+    branding = (ROOT / "services/gpustack-ui/apply-branding.mjs").read_text(
+        encoding="utf-8"
+    )
+
+    assert "FROM gpustack/gpustack:v2.3.1" in dockerfile
+    assert "sha256sum --check --strict" in dockerfile
+    assert "COPY --from=ui-build /work/LICENSE" in dockerfile
+    assert "Powered by GPUStack" in branding
+    assert "Back to InsightSphere" in branding
+

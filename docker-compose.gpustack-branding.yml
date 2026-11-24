@@ -1,0 +1,9 @@
+services:
+  gpustack:
+    image: ${GPUSTACK_BRANDED_IMAGE:-nexoraai-gpustack:v2.3.1-insightsphere}
+    build:
+      context: .
+      dockerfile: services/gpustack-ui/Dockerfile
+      args:
+        GPUSTACK_UI_VERSION: v2.3.1
+        GPUSTACK_UI_SHA256: a8c0fe680605951a5069a33c1db8f8d1c62d7dbdecdc5fab1284b34228bbf04b

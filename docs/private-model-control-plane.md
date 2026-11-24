@@ -169,6 +169,45 @@ controlled Gateway rollout without receiving the GPUStack management key in
 the browser. Every lifecycle action requires explicit confirmation and records
 an integration lifecycle audit event.
 
+### Branded advanced console
+
+Private Enterprise mode builds a separate
+`nexoraai-gpustack:v2.3.1-insightsphere` image by default. It retains the
+official GPUStack v2.3.1 backend and replaces only the pinned v2.3.1 web build
+with a small InsightSphere theme layer: product title and assets, navigation
+colors, a **Back to InsightSphere** tab action, and visible **Powered by
+GPUStack** attribution. The upstream UI archive is checksum-verified during
+the build and its Apache-2.0 license is included in the derived image.
+
+The Advanced console remains a separately authenticated administrator surface;
+branding does not bypass GPUStack authentication or copy an InsightSphere
+session into GPUStack. It also does not change the native InsightSphere
+management allowlist, confirmations, encrypted management key, or audit trail.
+
+The runtime launcher applies `docker-compose.gpustack-branding.yml` when
+`MODE=private-enterprise` and `GPUSTACK_BRANDING=enabled` (the default). On a
+clean host, `./nexora infra up` builds the derived image before starting the
+private infrastructure. The UI build can use about 2 GiB of memory. Prefer a
+CI-built image on memory-constrained production hosts; an initial local build
+may require temporarily stopping only the GPUStack container. Its persisted
+`nexora_gpustack_data` volume must remain attached.
+
+For an immediate UI rollback, set the following in `.env.nexora-runtime` and
+recreate only GPUStack:
+
+```dotenv
+GPUSTACK_BRANDING=disabled
+```
+
+```bash
+./nexora recreate gpustack
+```
+
+This returns to the official image named by `GPUSTACK_IMAGE` without deleting
+GPUStack state. Re-enable the switch and recreate the service to restore the
+InsightSphere-themed console. Review and repin the source version, archive
+checksum, patch markers, base image and license whenever GPUStack is upgraded.
+
 The guided deployment can search GPUStack's curated model catalog by workload,
 then loads the Hugging Face/vLLM variants available for the selected Ready
 cluster. It displays bounded model size, capability, license, backend,

@@ -2,6 +2,10 @@
 # Secrets remain in the env file selected below.
 MODE=private-enterprise
 FEATURES=
+
+# Private Enterprise builds the pinned InsightSphere-themed GPUStack console by
+# default. Set disabled only for an explicit rollback to the official image.
+GPUSTACK_BRANDING=enabled
 ENV_FILE=.env.local-runtime
 
 # Set only when FEATURES includes datadog.

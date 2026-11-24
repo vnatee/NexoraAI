@@ -18,9 +18,11 @@ ALLOWED_CONFIG_KEYS = {
     "ENV_FILE",
     "DATADOG_COMPOSE_FILE",
     "DOCKER_COMMAND",
+    "GPUSTACK_BRANDING",
 }
 MODES = {"local-simple", "private-enterprise", "external-gateway"}
 FEATURES = {"tls", "ocr", "datadog"}
+SWITCH_VALUES = {"enabled": True, "disabled": False}
 
 
 def parse_config(path: Path) -> dict[str, str]:
@@ -49,7 +51,20 @@ def split_features(value: str) -> set[str]:
     return requested
 
 
-def compose_files(mode: str, features: set[str], datadog_file: str = "") -> list[Path]:
+def parse_switch(value: str, *, name: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized not in SWITCH_VALUES:
+        raise ValueError(f"{name} must be enabled or disabled")
+    return SWITCH_VALUES[normalized]
+
+
+def compose_files(
+    mode: str,
+    features: set[str],
+    datadog_file: str = "",
+    *,
+    gpustack_branding: bool = True,
+) -> list[Path]:
     if mode not in MODES:
         raise ValueError(f"unsupported mode: {mode}")
     files = [ROOT / "docker-compose.local-runtime.yml"]
@@ -57,6 +72,8 @@ def compose_files(mode: str, features: set[str], datadog_file: str = "") -> list
         files.append(ROOT / "docker-compose.external-ai-runtime.yml")
     if mode == "private-enterprise":
         files.append(ROOT / "docker-compose.private-llm.yml")
+        if gpustack_branding:
+            files.append(ROOT / "docker-compose.gpustack-branding.yml")
     if "tls" in features:
         files.append(ROOT / "docker-compose.local-tls.yml")
     if "datadog" in features:
@@ -77,7 +94,15 @@ def compose_prefix(settings: dict[str, str], mode: str, features: set[str]) -> l
     env_path = Path(env_file)
     env_path = env_path if env_path.is_absolute() else ROOT / env_path
     command.extend(["--env-file", str(env_path)])
-    for path in compose_files(mode, features, settings.get("DATADOG_COMPOSE_FILE", "")):
+    gpustack_branding = parse_switch(
+        settings.get("GPUSTACK_BRANDING", "enabled"), name="GPUSTACK_BRANDING"
+    )
+    for path in compose_files(
+        mode,
+        features,
+        settings.get("DATADOG_COMPOSE_FILE", ""),
+        gpustack_branding=gpustack_branding,
+    ):
         command.extend(["-f", str(path)])
     if "ocr" in features:
         command.extend(["--profile", "ocr"])
@@ -108,6 +133,7 @@ def build_command(
             *prefix,
             "up",
             "-d",
+            "--build",
             "--wait",
             "--remove-orphans",
             *infra_services(mode),

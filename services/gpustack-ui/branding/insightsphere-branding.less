@@ -1,0 +1,123 @@
+/*
+ * InsightSphere product shell for the pinned GPUStack advanced console.
+ * Keep this override intentionally small so a future upstream upgrade remains
+ * a reviewable theme patch rather than a fork of GPUStack business behavior.
+ */
+
+html {
+  --insightsphere-navy-950: #081426;
+  --insightsphere-navy-900: #0f172a;
+  --insightsphere-navy-800: #172554;
+  --insightsphere-blue-600: #0078d4;
+  --insightsphere-cyan-400: #22d3ee;
+  --color-bg-page: #f4f7fb;
+}
+
+html[data-theme='realDark'] {
+  --color-bg-page: #0b1220;
+}
+
+.ant-pro-layout .ant-pro-sider {
+  --color-sider-item-text: rgba(255, 255, 255, 78%);
+  --ant-color-text: rgba(255, 255, 255, 94%);
+  --ant-color-text-secondary: rgba(255, 255, 255, 78%);
+  --ant-color-text-tertiary: rgba(255, 255, 255, 66%);
+  background: linear-gradient(
+    180deg,
+    var(--insightsphere-navy-950) 0%,
+    var(--insightsphere-navy-900) 58%,
+    var(--insightsphere-navy-800) 100%
+  ) !important;
+  border-inline-end: 1px solid rgba(148, 163, 184, 18%);
+  box-shadow: 8px 0 28px rgba(15, 23, 42, 10%);
+}
+
+.ant-pro-layout .ant-pro-sider .ant-menu,
+.ant-pro-layout .ant-pro-sider .ant-pro-sider-logo {
+  background: transparent !important;
+}
+
+.ant-pro-layout .ant-pro-sider .ant-menu-item,
+.ant-pro-layout .ant-pro-sider .ant-menu-submenu-title,
+.ant-pro-layout .ant-pro-sider .ant-menu-item-group-title {
+  color: var(--color-sider-item-text) !important;
+}
+
+.ant-pro-layout .ant-pro-sider .ant-menu-item:hover,
+.ant-pro-layout .ant-pro-sider .ant-menu-submenu-title:hover {
+  color: #fff !important;
+  background: rgba(255, 255, 255, 8%) !important;
+}
+
+.ant-pro-layout .ant-pro-sider .ant-menu-item-selected {
+  color: #fff !important;
+  background: linear-gradient(
+    90deg,
+    rgba(0, 120, 212, 42%),
+    rgba(34, 211, 238, 14%)
+  ) !important;
+  box-shadow: inset 3px 0 0 var(--insightsphere-cyan-400);
+}
+
+.ant-pro-layout .ant-pro-sider .sider-brand-logo-padded {
+  height: 32px !important;
+  max-width: 168px !important;
+}
+
+.ant-pro-layout .ant-pro-sider-footer {
+  padding: 8px !important;
+  border-block-start: 1px solid rgba(148, 163, 184, 18%);
+}
+
+.insightsphere-console-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 4px;
+}
+
+.insightsphere-return-button,
+.insightsphere-collapse-button {
+  color: rgba(255, 255, 255, 78%) !important;
+}
+
+.insightsphere-return-button {
+  display: inline-flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.insightsphere-return-button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.insightsphere-return-button:hover,
+.insightsphere-collapse-button:hover {
+  color: #fff !important;
+  background: rgba(255, 255, 255, 8%) !important;
+}
+
+.ant-pro-layout .ant-pro-sider-collapsed .insightsphere-console-footer {
+  justify-content: center;
+  flex-direction: column;
+}
+
+.ant-pro-layout .ant-pro-sider-collapsed .insightsphere-return-button {
+  flex: none;
+  justify-content: center;
+}
+
+.ant-pro-layout .ant-pro-layout-container {
+  background: var(--color-bg-page);
+}
+
+.ant-btn-primary {
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 12%);
+}

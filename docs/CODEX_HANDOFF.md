@@ -2900,3 +2900,52 @@ reported the requested additional replica as incompatible: the model needs
 approximately 3.68 GiB VRAM (4.09 GiB total at the configured utilization),
 while the currently available GPU had only 1.6 GiB allocatable because existing
 workload capacity was in use. No model was created or changed by this check.
+
+## 2026-11-24: Branded GPUStack advanced console
+
+Private Enterprise now applies `docker-compose.gpustack-branding.yml` by
+default. The overlay builds `nexoraai-gpustack:v2.3.1-insightsphere` from the
+official `gpustack/gpustack:v2.3.1` image and a checksum-pinned GPUStack UI
+v2.3.1 source archive. The source patch is deliberately limited to the
+InsightSphere title/assets, navigation theme, **Back to InsightSphere** tab
+action, and visible **Powered by GPUStack** attribution; GPUStack business and
+authentication behavior remain upstream. The Apache-2.0 UI license is copied
+into the derived image.
+
+The runtime setting `GPUSTACK_BRANDING=enabled|disabled` is fail-closed and is
+enabled by default. Setting it to `disabled` removes only the branding overlay,
+so `./nexora recreate gpustack` returns to the official `GPUSTACK_IMAGE` while
+retaining the existing GPUStack data volume. `infra up` now includes `--build`
+so a clean Private Enterprise host can produce the derived image. The UI build
+is bounded to a 1.5 GiB Node heap but reached about 1.95 GiB RSS on the current
+host; use a prebuilt image or temporarily stop only GPUStack when upgrading on
+a memory-constrained machine.
+
+The derived image built successfully and the recreated GPUStack service became
+healthy. `/healthz` returned `ok`; the served document title is
+`InsightSphere Private AI Infrastructure`; the built assets contain the return
+action and branded footer CSS; and the running container retains the original
+`nexoraai_nexora_gpustack_data:/var/lib/gpustack` volume. A live read-only call
+through InsightSphere's existing encrypted management credential recovered the
+persisted inventory: one cluster, one worker with two GPUs, and the existing
+`qwen3-0.6b-demo` and `bge-m3` models. At validation time the worker was
+`not_ready` and both models were `pending` because GPUStack could not reach the
+worker health endpoint at `192.168.1.102:10150`; this is an external worker
+connectivity state, not a branding migration or lost data.
+
+The **Advanced console** action is a visible top-level action beside
+**Connection** on the Private AI Infrastructure card. Its former placement
+inside the collapsed Connection settings made the escape hatch undiscoverable;
+that duplicate was removed. The action remains disabled until a Console URL is
+saved and still opens a separate tab without opener/referrer access.
+
+Focused branding/runtime tests pass (`13 passed`), and the launcher dry run
+resolves the branded overlay and `--build` successfully. InsightSphere
+TypeScript checking and its memory-safe production build pass. The standard
+service-free run excluding the two environment-blocked app suites reaches
+`1086 passed`, `1 deselected`, and the same `7 failed` stale
+`businessMetadata`/search-field expectations already recorded before this
+slice; none exercises the branding overlay. Operator visual acceptance of the
+login and authenticated navigation was completed by the product owner on
+2026-11-24: the branded Advanced console opened successfully and its menus were
+usable.
