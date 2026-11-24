@@ -37,6 +37,9 @@ the repository's `AGENTS.md` and technical handoff before starting work.
 
 - Use natural Thai by default and retain precise English product or technical
   terms where they improve clarity.
+- For generated documents, proposals, reports, and slide decks, use English
+  throughout unless the product owner explicitly requests Thai or another
+  language. Conversation remains Thai by default.
 - Lead with the direct conclusion. A useful structure is: what exists, what is
   missing, realistic options, recommendation, and the decision needed.
 - Explain the product and architectural meaning, not only filenames, patches,

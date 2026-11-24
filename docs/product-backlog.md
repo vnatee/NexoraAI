@@ -49,6 +49,69 @@ on 2026-11-22:
 Do not install Datadog or introduce vendor-specific runtime dependencies until
 this backlog item is explicitly resumed.
 
+## Deferred — LiteLLM gateway engine evaluation
+
+The product owner moved LiteLLM adoption to an unscheduled backlog on
+2026-11-23. The intended direction is to evaluate LiteLLM Proxy as a separately
+deployed gateway engine behind InsightSphere's existing provider-neutral
+Enterprise Gateway contract. Do not import the LiteLLM SDK into the application
+runtime, fork LiteLLM, expose its administration UI as the product experience,
+or remove the current provider path before a controlled proof of concept and
+rollback plan pass.
+
+LiteLLM may provide the execution-layer capabilities below:
+
+1. Provider translation, stable model aliases, deployment routing, retries,
+   timeouts, fallbacks, and load balancing.
+2. Virtual keys plus gateway-level RPM, TPM, budget, and model-access limits.
+3. Provider-wide guardrails, DLP/content filtering, caching, and normalized
+   upstream errors where these features pass the security and license review.
+4. Allowlisted provider/model discovery and provider spend data.
+
+InsightSphere remains the product control plane and source of truth for Agent
+and LLM Profile selection, System/Team/User authorization, Knowledge and Data
+Group ACLs, Tool/MCP policy, Agent guardrails, private drafts and revisions,
+Playground/Trace, business usage attribution, versioned pricing and Local AI
+TCO, embedding collection/re-index lifecycle, and GPUStack management. The
+existing InsightSphere Add Provider/Model experience must remain the customer
+UI; any later LiteLLM management integration belongs behind an internal adapter.
+
+Evaluate the work in bounded phases:
+
+1. **Runtime proof of concept:** pin and scan a LiteLLM Proxy image; connect one
+   managed provider and one GPUStack route; configure InsightSphere through its
+   Generic OpenAI-compatible gateway; and run the existing Chat, streaming,
+   Tool Calling, Vision, and safe-error conformance suite.
+2. **Quota reconciliation:** define the boundary between InsightSphere
+   System/Team/User/Agent quotas, LiteLLM virtual-key RPM/TPM/budget limits, and
+   upstream provider quota. Display the effective limiting layer without
+   silently creating conflicting policies.
+3. **Guardrail layering:** keep business, Agent, Knowledge, and Tool policy in
+   InsightSphere; use LiteLLM only for approved gateway-wide controls. Prevent
+   duplicate PII masking or filtering from corrupting citations, structured
+   output, or tool parameters.
+4. **Approved discovery:** import provider/model capability metadata as a
+   read-only allowlist. Do not expose the complete upstream catalog or assume
+   Tool, Vision, reasoning, and embedding compatibility without conformance.
+5. **Management adapter:** retain the InsightSphere UI while creating or
+   updating LiteLLM provider/deployment references through a bounded backend
+   adapter. Decide one owner for upstream credentials and never persist the
+   same plaintext secret in both systems.
+6. **Production and reconciliation:** design PostgreSQL, Redis/shared routing
+   state, proxy high availability, backup/restore, upgrade/rollback, provider
+   spend reconciliation, and content-free observability before production use.
+
+Acceptance must prove that application and LiteLLM retries cannot duplicate a
+request or cost; GPUStack remains responsible for balancing its own model
+replicas; prompt, response, reasoning, Tool data, credentials, and Knowledge are
+absent from logs and telemetry; usage retains safe Team/User/Agent attribution;
+gateway latency and streaming remain acceptable; and the OSS/Enterprise license
+boundary, SBOM, vulnerabilities, and commercial terms are approved.
+
+Do not begin this slice until its ownership, priority, supported providers,
+quota source of truth, guardrail boundary, credential ownership, and production
+acceptance criteria are discussed.
+
 ## In progress — 2.3.0 production readiness gate
 
 The current priority is to qualify the enterprise-authentication and Agent
