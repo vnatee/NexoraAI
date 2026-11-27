@@ -32,6 +32,7 @@ import { LoginContext } from "../../loginContext";
 import { currentAgentConfig, check_user_login, register, check_waiting_approve, updateMyProfile, changeMyLocalPassword } from "../../api/api";
 import { GroupDetail, AuthProfile, TeamProfile, User } from "../../api/models";
 import { RegisterDialog } from "./RegisterDialog";
+import { MyMailAccountsDialog } from "./MyMailAccountsDialog";
 import { Storage } from "../../utill/storage";
 import { ACTIVE_TEAM_CHANGED_EVENT, STORAGE_KEYS } from "../../utill/storageKeys";
 import { AuthStorage } from "../../utill/authStorage";
@@ -56,6 +57,7 @@ export const LoginButton = () => {
     const [selectedTeam, setSelectedTeam] = useState<TeamProfile | null>(null);
     const [haveUser, setHaveUser] = useState<User | null>(null);
     const [openProfileDialog, setOpenProfileDialog] = useState(false);
+    const [openMailAccountsDialog, setOpenMailAccountsDialog] = useState(false);
     const [profileDraft, setProfileDraft] = useState({ first_name: "", last_name: "", email: "", tel: "" });
     const [profileSaving, setProfileSaving] = useState(false);
     const [profileError, setProfileError] = useState("");
@@ -552,6 +554,16 @@ export const LoginButton = () => {
                             <MenuItem onClick={openOwnProfile}>My profile</MenuItem>
 
                             <MenuItem
+                                disabled={!activeTeam}
+                                onClick={() => {
+                                    setOpenMailAccountsDialog(true);
+                                    handleCloseMenu();
+                                }}
+                            >
+                                My email accounts
+                            </MenuItem>
+
+                            <MenuItem
                                 disabled={teams.length === 0}
                                 onClick={() => {
                                     setSelectedTeam(activeTeam);
@@ -736,6 +748,13 @@ export const LoginButton = () => {
                                 </Button>
                             </DialogActions>
                         </Dialog>
+
+                        <MyMailAccountsDialog
+                            open={openMailAccountsDialog}
+                            teamId={activeTeam?._id ?? ""}
+                            teamName={activeTeam?.name ?? ""}
+                            onClose={() => setOpenMailAccountsDialog(false)}
+                        />
                     </>
                 )}
             </div>

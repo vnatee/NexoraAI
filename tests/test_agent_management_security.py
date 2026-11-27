@@ -498,6 +498,29 @@ async def test_playground_runs_team_draft_with_server_safe_tool_policy(client, m
         async def run(self, runtime_messages):
             if runtime_messages[-1]["content"] == "fail":
                 raise RuntimeError("private upstream detail")
+            if runtime_messages[-1]["content"] == "mail policy failure":
+                return {
+                    "content": "Email was sent to customer@example.com",
+                    "iterations": 2,
+                    "model_calls": [],
+                    "tool_trace": [
+                        {
+                            "name": "mail_send",
+                            "source": "mail:profile-1",
+                            "risk_level": "write",
+                            "is_error": True,
+                            "output": json.dumps(
+                                {
+                                    "error": (
+                                        "Recipient domain is not allowed: "
+                                        "customer@example.com"
+                                    )
+                                }
+                            ),
+                        }
+                    ],
+                    "execution_trace": [],
+                }
             return {
                 "content": "Safe answer",
                 "iterations": 1,
@@ -537,9 +560,11 @@ async def test_playground_runs_team_draft_with_server_safe_tool_policy(client, m
     assert response.status_code == 200
     assert payload["answer"] == "Safe answer"
     assert payload["diagnostics"]["safe_mode"] is True
+    assert payload["diagnostics"]["mail_mode"] == "test"
     assert [step["kind"] for step in payload["diagnostics"]["steps"]] == [
         "input",
         "guardrail",
+        "mode",
         "mcp",
         "guardrail",
         "answer",
@@ -551,7 +576,66 @@ async def test_playground_runs_team_draft_with_server_safe_tool_policy(client, m
     assert payload["diagnostics"]["configuration"]["model"] == "test-model"
     assert captured["agent_document"] is agent
     assert captured["allow_draft"] is True
-    assert captured["allowed_risk_levels"] == frozenset({"read", "render"})
+    assert captured["allowed_risk_levels"] == frozenset({"read", "render", "write"})
+    assert captured["allowed_write_source_prefixes"] == frozenset({"mail"})
+    assert captured["max_approved_write_calls"] is None
+    assert captured["runtime_metadata"]["playground_mail_mode"] == "test"
+
+    live_response = await client.post(
+        "/teams/team-1/agents/draft-1/playground",
+        json={
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "send a test email to tester@example.com",
+                }
+            ],
+            "selected_scopes": ["global"],
+            "safe_mode": True,
+            "mail_mode": "live",
+        },
+    )
+    live_payload = await live_response.get_json()
+    assert live_response.status_code == 200
+    assert live_payload["diagnostics"]["mail_mode"] == "live"
+    assert any(
+        step["label"] == "Mail mode" and "configured provider" in step["summary"]
+        for step in live_payload["diagnostics"]["steps"]
+    )
+    assert captured["allowed_risk_levels"] == frozenset(
+        {"read", "render", "write"}
+    )
+    assert captured["allowed_write_source_prefixes"] == frozenset({"mail"})
+    assert captured["max_approved_write_calls"] is None
+    assert captured["runtime_metadata"]["playground_mail_mode"] == "live"
+
+    mail_failure_response = await client.post(
+        "/teams/team-1/agents/draft-1/playground",
+        json={
+            "messages": [{"role": "user", "content": "mail policy failure"}],
+            "selected_scopes": ["global"],
+            "safe_mode": True,
+            "mail_mode": "live",
+        },
+    )
+    mail_failure_payload = await mail_failure_response.get_json()
+    assert mail_failure_response.status_code == 200
+    assert mail_failure_payload["answer"].startswith("Email was not sent.")
+    assert "customer@example.com" not in json.dumps(mail_failure_payload)
+    assert any(
+        step["label"] == "Mail Send failed" and step["status"] == "error"
+        for step in mail_failure_payload["diagnostics"]["steps"]
+    )
+
+    invalid_mode_response = await client.post(
+        "/teams/team-1/agents/draft-1/playground",
+        json={
+            "messages": [{"role": "user", "content": "send mail"}],
+            "safe_mode": True,
+            "mail_mode": "unrestricted",
+        },
+    )
+    assert invalid_mode_response.status_code == 400
 
     failed_response = await client.post(
         "/teams/team-1/agents/draft-1/playground",
@@ -659,3 +743,86 @@ async def test_system_chat_history_retention_requires_system_admin(client, monke
     assert response.status_code == 200
     assert len(calls) == 1
     assert (await response.get_json()) == {"configured_days": 90, "effective_days": 90}
+
+
+def test_mail_binding_management_resolves_the_agents_team(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        backend_app,
+        "get_team_by_agent_id",
+        lambda agent_id: {"_id": "team-1"} if agent_id == "agent-1" else None,
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_require_team_access",
+        lambda claims, team_id, *, permission=None: calls.append(
+            (claims, team_id, permission)
+        )
+        or ({"_id": "user-1"}, {"_id": team_id}),
+    )
+
+    backend_app._require_agent_management_access(
+        {"application_user_id": "user-1"}, "agent-1"
+    )
+
+    assert calls == [
+        ({"application_user_id": "user-1"}, "team-1", "Manage agents")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mail_binding_list_requires_agent_management_access(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        backend_app,
+        "_require_agent_management_access",
+        lambda claims, agent_id: calls.append((claims, agent_id)),
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "list_mail_bindings",
+        lambda agent_id: [{"_id": "binding-1", "agent_id": agent_id}],
+    )
+
+    response = await client.get("/mail_bindings?agent_id=agent-1")
+
+    assert response.status_code == 200
+    assert (await response.get_json())[0]["agent_id"] == "agent-1"
+    assert calls[0][1] == "agent-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "changed_field,changed_value",
+    [("provider", "gmail"), ("account_mode", "personal")],
+)
+async def test_team_mail_profile_rejects_identity_changes(
+    client, monkeypatch, changed_field, changed_value
+):
+    monkeypatch.setattr(
+        backend_app,
+        "get_mail_connection",
+        lambda _profile_id: {
+            "_id": "profile-1",
+            "team_id": "team-1",
+            "name": "Shared support",
+            "provider": "generic",
+            "account_mode": "shared",
+            "email_address": "support@example.com",
+            "public_config": {},
+            "secrets_ciphertext": "encrypted",
+        },
+    )
+    monkeypatch.setattr(
+        backend_app,
+        "_require_integration_catalog_access",
+        lambda *_args, **_kwargs: None,
+    )
+
+    response = await client.post(
+        "/edit_mail_config",
+        json={"config_id": "profile-1", changed_field: changed_value},
+    )
+
+    assert response.status_code == 400
+    assert "cannot be changed" in (await response.get_json())["error"]

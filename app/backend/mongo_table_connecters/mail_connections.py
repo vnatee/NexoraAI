@@ -9,6 +9,7 @@ from mongo_table_connecters.mongo_connector import get_database
 collection = get_database()["mail_connections"]
 
 PROVIDERS = {"microsoft365", "gmail", "generic"}
+ACCOUNT_MODES = {"shared", "personal"}
 RECEIVE_PROTOCOLS = {"imap", "pop3"}
 SECURITY_MODES = {"ssl", "starttls", "none"}
 
@@ -20,10 +21,15 @@ def normalize_mail_connection(data: object, *, existing: dict[str, Any] | None =
     provider = str(data.get("provider") or old.get("provider") or "generic").strip().lower()
     if provider not in PROVIDERS:
         raise ValueError("Unsupported mail provider")
+    account_mode = str(
+        data.get("account_mode") or old.get("account_mode") or "shared"
+    ).strip().lower()
+    if account_mode not in ACCOUNT_MODES:
+        raise ValueError("Mail account mode must be shared or personal")
     name = str(data.get("name") or old.get("name") or "").strip()
     email_address = str(data.get("email_address") or data.get("email") or old.get("email_address") or "").strip()
-    if not name or not email_address:
-        raise ValueError("Connection name and email address are required")
+    if not name or (account_mode == "shared" and not email_address):
+        raise ValueError("Profile name and a shared mailbox address are required")
 
     public_config = dict(old.get("public_config") or {})
     incoming_public = data.get("public_config") or {}
@@ -40,7 +46,8 @@ def normalize_mail_connection(data: object, *, existing: dict[str, Any] | None =
             if not str(public_config.get(field) or "").strip():
                 raise ValueError(f"Gmail {field} is required")
     else:
-        public_config.setdefault("username", email_address)
+        if account_mode == "shared":
+            public_config.setdefault("username", email_address)
         receive_protocol = str(public_config.get("receive_protocol") or "imap").lower()
         receive_security = str(public_config.get("receive_security") or "ssl").lower()
         smtp_security = str(public_config.get("smtp_security") or "starttls").lower()
@@ -63,23 +70,36 @@ def normalize_mail_connection(data: object, *, existing: dict[str, Any] | None =
         if not isinstance(secrets, dict):
             raise ValueError("secrets must be an object")
         normalized = {str(k): str(v) for k, v in secrets.items() if v not in (None, "")}
-        required_secrets = {
-            "microsoft365": {"client_secret"},
-            "gmail": {"client_secret", "refresh_token"},
-            "generic": {"password"},
-        }[provider]
+        required_secrets = (
+            {
+                "microsoft365": {"client_secret"},
+                "gmail": {"client_secret"},
+                "generic": set(),
+            }[provider]
+            if account_mode == "personal"
+            else {
+                "microsoft365": {"client_secret"},
+                "gmail": {"client_secret", "refresh_token"},
+                "generic": {"password"},
+            }[provider]
+        )
         if not secrets_ciphertext and not required_secrets.issubset(normalized):
             missing = ", ".join(sorted(required_secrets - set(normalized)))
             raise ValueError(f"Missing credentials: {missing}")
         if normalized:
             secrets_ciphertext = encrypt_secret(json.dumps(normalized, ensure_ascii=False))
-    if not secrets_ciphertext and data.get("enabled", old.get("enabled", True)) is not False:
+    credentials_required = not (
+        account_mode == "personal" and provider == "generic"
+    )
+    if credentials_required and not secrets_ciphertext and data.get("enabled", old.get("enabled", True)) is not False:
         raise ValueError("Credentials are required for an enabled mail connection")
 
     return {
         "team_id": str(data.get("team_id") or old.get("team_id") or ""),
         "name": name[:100],
         "provider": provider,
+        "account_mode": account_mode,
+        "connection_revision": max(1, int(old.get("connection_revision") or 1)),
         "email_address": email_address[:320],
         "public_config": public_config,
         "secrets_ciphertext": secrets_ciphertext,
@@ -131,6 +151,10 @@ def serialize_mail_connection(document: dict[str, Any], *, usage_count: int = 0)
         "team_id": document.get("team_id"),
         "name": document.get("name"),
         "provider": document.get("provider", "generic"),
+        "account_mode": document.get("account_mode", "shared"),
+        "connection_revision": max(
+            1, int(document.get("connection_revision") or 1)
+        ),
         "email_address": document.get("email_address"),
         "public_config": document.get("public_config") or {},
         "enabled": document.get("enabled", True),

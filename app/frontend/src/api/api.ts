@@ -2252,6 +2252,7 @@ export async function runAgentPlaygroundApi(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
     selectedScopes: string[],
     dataGroupIds: string[],
+    mailMode: "test" | "live",
     idToken: string
 ): Promise<AgentPlaygroundResponse> {
     const headers = await getHeaders(idToken);
@@ -2263,6 +2264,7 @@ export async function runAgentPlaygroundApi(
             messages,
             selected_scopes: selectedScopes,
             data_groups_id: dataGroupIds,
+            mail_mode: mailMode,
             safe_mode: true
         })
     });
@@ -3071,6 +3073,54 @@ export async function test_mail_connection(config_id: string, idToken: string): 
     const result = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(result.error || `test mail connection failed: ${response.statusText}`);
     return result;
+}
+
+import { PersonalMailAccount, PersonalMailProfile } from "./models";
+
+export async function get_my_mail_profiles(team_id: string, idToken: string): Promise<PersonalMailProfile[]> {
+    const response = await fetch(`/my/mail-profiles?team_id=${encodeURIComponent(team_id)}`, {
+        headers: await getHeaders(idToken)
+    });
+    const result = await response.json().catch(() => ([]));
+    if (!response.ok) throw new Error(result.error || `get personal mail profiles failed: ${response.statusText}`);
+    return result;
+}
+
+export async function save_my_mail_account(
+    profile_id: string,
+    payload: Record<string, unknown>,
+    idToken: string
+): Promise<PersonalMailAccount> {
+    const response = await fetch(`/my/mail-profiles/${encodeURIComponent(profile_id)}/account`, {
+        method: "PUT",
+        headers: { ...(await getHeaders(idToken)), "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `save personal mail account failed: ${response.statusText}`);
+    return result;
+}
+
+export async function test_my_mail_account(
+    profile_id: string,
+    idToken: string
+): Promise<{ ok: boolean; message: string; account: PersonalMailAccount }> {
+    const response = await fetch(`/my/mail-profiles/${encodeURIComponent(profile_id)}/test`, {
+        method: "POST",
+        headers: await getHeaders(idToken)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `test personal mail account failed: ${response.statusText}`);
+    return result;
+}
+
+export async function disconnect_my_mail_account(profile_id: string, idToken: string): Promise<void> {
+    const response = await fetch(`/my/mail-profiles/${encodeURIComponent(profile_id)}/account`, {
+        method: "DELETE",
+        headers: await getHeaders(idToken)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.error || `disconnect personal mail account failed: ${response.statusText}`);
 }
 
 // ─── Governed Web Search ───────────────────────────────────────────────────

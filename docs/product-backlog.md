@@ -10,7 +10,9 @@ The product owner moved the following items to an unscheduled backlog on
 1. Automated Playground test cases and evaluation sets.
 2. Side-by-side Active Agent versus private-revision comparison.
 3. Playground attachments.
-4. Approval-gated testing of write-capable tools.
+4. Playground testing for write capabilities other than the implemented
+   Test/Live Mail Send modes (for example REST writes, messaging, business
+   documents, or write-capable MCP tools).
 5. Trace export and comparison across revisions.
 
 ## Deferred — Full external Customer Portal

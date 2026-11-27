@@ -1264,6 +1264,7 @@ export interface AgentPlaygroundResponse {
     diagnostics: {
         runtime: "legacy" | "langgraph";
         safe_mode: boolean;
+        mail_mode: "test" | "live";
         legacy_boundary: string | null;
         model: string;
         profile_id: string;
@@ -1642,11 +1643,31 @@ export interface MailEmailConfig {
     team_id: string;
     name: string;
     provider: MailProvider;
+    account_mode: "shared" | "personal";
+    connection_revision?: number;
     email_address: string;
     public_config: MailPublicConfig;
     enabled: boolean;
     has_credentials?: boolean;
     agent_usage_count?: number;
+}
+
+export interface PersonalMailAccount {
+    _id: string;
+    profile_id: string;
+    team_id: string;
+    email_address: string;
+    public_config: { username?: string };
+    enabled: boolean;
+    verification_status: "pending" | "verified";
+    verified_profile_revision?: number | null;
+    verified_at?: string | null;
+    has_credentials: boolean;
+}
+
+export interface PersonalMailProfile {
+    profile: MailEmailConfig;
+    account: PersonalMailAccount | null;
 }
 
 export type WebSearchProvider = "brave" | "searxng";

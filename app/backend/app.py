@@ -328,6 +328,19 @@ from mongo_table_connecters.mail_bindings import (
     normalize_mail_binding,
     update_mail_binding,
 )
+from mongo_table_connecters.user_mail_accounts import (
+    delete_user_mail_account,
+    delete_user_mail_accounts_for_profile,
+    ensure_user_mail_account_indexes,
+    get_user_mail_account,
+    invalidate_user_mail_accounts,
+    list_user_mail_accounts,
+    materialize_user_mail_connection,
+    normalize_user_mail_account,
+    save_user_mail_account,
+    serialize_user_mail_account,
+    verify_user_mail_account,
+)
 from email_connectors import test_mail_connection
 from business_document_connectors import test_business_document_connection
 from mongo_table_connecters.business_document_connections import (
@@ -1240,6 +1253,17 @@ def _require_agent_integration_team(agent_id: str, integration: dict[str, Any] |
     integration_team_id = str(integration.get("team_id") or "")
     if not integration_team_id or integration_team_id != str(team.get("_id") or ""):
         raise AccessControlError("Integration is not assigned to the Agent's team")
+
+
+def _require_agent_management_access(
+    auth_claims: dict[str, Any], agent_id: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    team = get_team_by_agent_id(str(agent_id or ""))
+    if not team:
+        raise AccessControlError("Agent not found", status_code=404)
+    return _require_team_access(
+        auth_claims, str(team.get("_id") or ""), permission="Manage agents"
+    )
 
 
 def _require_user_management_target(
@@ -7385,13 +7409,51 @@ async def edit_mail_config(auth_claims: dict[str, Any]):
         existing = get_mail_connection(connection_id)
         if not existing:
             return jsonify({"error": "Mail connection not found"}), 404
-        _require_integration_catalog_access(auth_claims, str(existing.get("team_id") or ""))
-        if "team_id" in body and str(body.get("team_id") or "") != str(existing.get("team_id") or ""):
-            raise ValueError("Use Assign to team to change integration ownership")
-        document = update_mail_connection(
-            connection_id, normalize_mail_connection(body, existing=existing)
+        _require_integration_catalog_access(
+            auth_claims, str(existing.get("team_id") or "")
         )
-        return jsonify({"message": "Mail connection updated", "connection": serialize_mail_connection(document or existing)})
+        if "team_id" in body and str(body.get("team_id") or "") != str(
+            existing.get("team_id") or ""
+        ):
+            raise ValueError("Use Assign to team to change integration ownership")
+        for immutable_field, label in (
+            ("provider", "provider"),
+            ("account_mode", "account mode"),
+        ):
+            if (
+                immutable_field in body
+                and str(body.get(immutable_field) or "").strip().lower()
+                != str(
+                    existing.get(immutable_field)
+                    or ("shared" if immutable_field == "account_mode" else "")
+                )
+                .strip()
+                .lower()
+            ):
+                raise ValueError(
+                    f"Mail {label} cannot be changed after the profile is created; create a new Team Mail Profile instead"
+                )
+        normalized = normalize_mail_connection(body, existing=existing)
+        connection_changed = any(
+            normalized.get(field) != existing.get(field)
+            for field in ("email_address", "public_config", "secrets_ciphertext")
+        )
+        if connection_changed:
+            normalized["connection_revision"] = max(
+                1, int(existing.get("connection_revision") or 1)
+            ) + 1
+        document = update_mail_connection(connection_id, normalized)
+        if (
+            connection_changed
+            and (document or existing).get("account_mode", "shared") == "personal"
+        ):
+            invalidate_user_mail_accounts(connection_id)
+        return jsonify(
+            {
+                "message": "Mail connection updated",
+                "connection": serialize_mail_connection(document or existing),
+            }
+        )
     except AccessControlError as exc:
         return error_response(exc, "/edit_mail_config")
     except ValueError as exc:
@@ -7415,6 +7477,7 @@ async def remove_mail_config(auth_claims: dict[str, Any]):
         return jsonify({"error": f"Connection is assigned to {in_use} Agent(s); remove those bindings first"}), 409
     if not soft_delete_mail_connection(connection_id):
         return jsonify({"error": "Mail connection not found"}), 404
+    delete_user_mail_accounts_for_profile(connection_id)
     return jsonify({"message": "Mail connection deleted"})
 
 
@@ -7427,6 +7490,8 @@ async def test_mail_config(auth_claims: dict[str, Any]):
         if not connection:
             raise ValueError("Save the mail connection before testing it")
         _require_integration_catalog_access(auth_claims, str(connection.get("team_id") or ""))
+        if connection.get("account_mode", "shared") == "personal":
+            raise ValueError("Each User must connect and test their own account")
         result = await test_mail_connection(connection, decrypt_mail_secrets(connection))
         return jsonify(result)
     except AccessControlError as exc:
@@ -7436,11 +7501,132 @@ async def test_mail_config(auth_claims: dict[str, Any]):
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
+@bp.get("/my/mail-profiles")
+@authenticated
+async def my_mail_profiles(auth_claims: dict[str, Any]):
+    team_id = str(request.args.get("team_id") or "")
+    try:
+        user, _ = _require_team_access(auth_claims, team_id)
+        user_id = str(user.get("_id") or "")
+        accounts = {
+            str(item.get("profile_id") or ""): item
+            for item in list_user_mail_accounts(user_id, team_id)
+        }
+        results = []
+        for profile in list_mail_connections(team_id, enabled_only=True):
+            if profile.get("account_mode", "shared") != "personal":
+                continue
+            account = accounts.get(str(profile.get("_id") or ""))
+            results.append(
+                {
+                    "profile": serialize_mail_connection(profile),
+                    "account": (
+                        serialize_user_mail_account(account) if account else None
+                    ),
+                }
+            )
+        return jsonify(results)
+    except AccessControlError as exc:
+        return error_response(exc, "/my/mail-profiles")
+
+
+@bp.put("/my/mail-profiles/<profile_id>/account")
+@authenticated
+async def save_my_mail_account(auth_claims: dict[str, Any], profile_id: str):
+    try:
+        profile = get_mail_connection(profile_id)
+        if not profile or profile.get("account_mode", "shared") != "personal":
+            raise AccessControlError("Team Mail Profile not found", status_code=404)
+        user, _ = _require_team_access(
+            auth_claims, str(profile.get("team_id") or "")
+        )
+        user_id = str(user.get("_id") or "")
+        existing = get_user_mail_account(user_id, profile_id)
+        managed_email = (
+            str(user.get("ad_email") or "").strip()
+            if profile.get("provider") == "microsoft365"
+            else ""
+        )
+        normalized = normalize_user_mail_account(
+            await request.get_json(),
+            profile=profile,
+            existing=existing,
+            managed_email=managed_email,
+        )
+        document = save_user_mail_account(user_id, profile_id, normalized)
+        return jsonify(serialize_user_mail_account(document))
+    except AccessControlError as exc:
+        return error_response(exc, "/my/mail-profiles/<profile_id>/account")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@bp.post("/my/mail-profiles/<profile_id>/test")
+@authenticated
+async def test_my_mail_account(auth_claims: dict[str, Any], profile_id: str):
+    try:
+        profile = get_mail_connection(profile_id)
+        if not profile or profile.get("account_mode", "shared") != "personal":
+            raise AccessControlError("Team Mail Profile not found", status_code=404)
+        user, _ = _require_team_access(
+            auth_claims, str(profile.get("team_id") or "")
+        )
+        user_id = str(user.get("_id") or "")
+        account = get_user_mail_account(user_id, profile_id)
+        if not account or account.get("enabled") is False:
+            raise ValueError("Connect your mail account before testing it")
+        connection, secrets = materialize_user_mail_connection(profile, account)
+        result = await test_mail_connection(connection, secrets)
+        verify_user_mail_account(
+            user_id,
+            profile_id,
+            connection_revision=max(
+                1, int(profile.get("connection_revision") or 1)
+            ),
+        )
+        return jsonify(
+            {
+                **result,
+                "account": serialize_user_mail_account(
+                    get_user_mail_account(user_id, profile_id) or account
+                ),
+            }
+        )
+    except AccessControlError as exc:
+        return error_response(exc, "/my/mail-profiles/<profile_id>/test")
+    except (ValueError, OSError) as exc:
+        current_app.logger.warning("Personal mail account test failed: %s", exc)
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@bp.delete("/my/mail-profiles/<profile_id>/account")
+@authenticated
+async def disconnect_my_mail_account(
+    auth_claims: dict[str, Any], profile_id: str
+):
+    try:
+        profile = get_mail_connection(profile_id)
+        if not profile or profile.get("account_mode", "shared") != "personal":
+            raise AccessControlError("Team Mail Profile not found", status_code=404)
+        user, _ = _require_team_access(
+            auth_claims, str(profile.get("team_id") or "")
+        )
+        if not delete_user_mail_account(str(user.get("_id") or ""), profile_id):
+            raise AccessControlError("Personal mail account not found", status_code=404)
+        return jsonify({"message": "Personal mail account disconnected"})
+    except AccessControlError as exc:
+        return error_response(exc, "/my/mail-profiles/<profile_id>/account")
+
+
 @bp.get("/mail_bindings")
 @authenticated
 async def mail_bindings(auth_claims: dict[str, Any]):
     agent_id = str(request.args.get("agent_id") or "")
-    return jsonify([_mail_binding_response(item) for item in list_mail_bindings(agent_id)])
+    try:
+        _require_agent_management_access(auth_claims, agent_id)
+        return jsonify([_mail_binding_response(item) for item in list_mail_bindings(agent_id)])
+    except AccessControlError as exc:
+        return error_response(exc, "/mail_bindings")
 
 
 @bp.post("/insert_mail_binding")
@@ -7450,6 +7636,7 @@ async def create_mail_binding(auth_claims: dict[str, Any]):
         normalized = normalize_mail_binding(await request.get_json())
         if not normalized["agent_id"] or not get_agent_by_id(normalized["agent_id"]):
             raise ValueError("A valid agent_id is required")
+        _require_agent_management_access(auth_claims, normalized["agent_id"])
         mail_connection = get_mail_connection(normalized["email_id"])
         if not mail_connection:
             raise ValueError("A valid email_id is required")
@@ -7461,6 +7648,8 @@ async def create_mail_binding(auth_claims: dict[str, Any]):
             return jsonify({"error": "This mail connection is already assigned to the Agent"}), 409
         document = insert_mail_binding(normalized)
         return jsonify({"message": "Mail binding created", "binding": _mail_binding_response(document)}), 201
+    except AccessControlError as exc:
+        return error_response(exc, "/insert_mail_binding")
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -7469,7 +7658,14 @@ async def create_mail_binding(auth_claims: dict[str, Any]):
 @authenticated
 async def toggle_mail_binding(auth_claims: dict[str, Any]):
     body = await request.get_json()
-    if not update_mail_binding(str(body.get("binding_id") or ""), enabled=body.get("enabled") is True):
+    binding = get_mail_binding(str(body.get("binding_id") or ""))
+    try:
+        if not binding:
+            raise AccessControlError("Mail binding not found", status_code=404)
+        _require_agent_management_access(auth_claims, str(binding.get("agent_id") or ""))
+    except AccessControlError as exc:
+        return error_response(exc, "/toggle_mail_binding")
+    if not update_mail_binding(str(binding.get("_id") or ""), enabled=body.get("enabled") is True):
         return jsonify({"error": "Mail binding not found or unchanged"}), 404
     return jsonify({"message": "Mail binding updated"})
 
@@ -7483,6 +7679,7 @@ async def edit_mail_binding(auth_claims: dict[str, Any]):
         existing = get_mail_binding(binding_id)
         if not existing:
             return jsonify({"error": "Mail binding not found"}), 404
+        _require_agent_management_access(auth_claims, str(existing.get("agent_id") or ""))
         normalized = normalize_mail_binding({**existing, **body})
         mail_connection = get_mail_connection(normalized["email_id"])
         if not mail_connection:
@@ -7496,6 +7693,8 @@ async def edit_mail_binding(auth_claims: dict[str, Any]):
             return jsonify({"error": "This mail connection is already assigned to the Agent"}), 409
         update_mail_binding(binding_id, **normalized)
         return jsonify({"message": "Mail binding updated"})
+    except AccessControlError as exc:
+        return error_response(exc, "/update_mail_binding")
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -7504,7 +7703,15 @@ async def edit_mail_binding(auth_claims: dict[str, Any]):
 @authenticated
 async def remove_mail_binding(auth_claims: dict[str, Any]):
     body = await request.get_json()
-    if not delete_mail_binding(str(body.get("binding_id") or "")):
+    binding_id = str(body.get("binding_id") or "")
+    binding = get_mail_binding(binding_id)
+    try:
+        if not binding:
+            raise AccessControlError("Mail binding not found", status_code=404)
+        _require_agent_management_access(auth_claims, str(binding.get("agent_id") or ""))
+    except AccessControlError as exc:
+        return error_response(exc, "/delete_mail_binding")
+    if not delete_mail_binding(binding_id):
         return jsonify({"error": "Mail binding not found"}), 404
     return jsonify({"message": "Mail binding deleted"})
 
@@ -11892,6 +12099,28 @@ def _playground_runtime_trace(events: object) -> list[dict[str, Any]]:
     return steps
 
 
+def _playground_mail_failure_reason(event: dict[str, Any]) -> str:
+    """Return a bounded reason without exposing recipients or provider details."""
+    try:
+        output = json.loads(str(event.get("output") or "{}"))
+    except (json.JSONDecodeError, TypeError):
+        output = {}
+    message = str(output.get("error") or "").casefold()
+    if "recipient domain is not allowed" in message:
+        return "Recipient domain is not allowed by the Agent Mail Binding"
+    if "recipient count exceeds" in message:
+        return "Recipient count exceeds the Agent Mail Binding limit"
+    if "at least one to recipient" in message:
+        return "At least one To recipient is required"
+    if "subject and body are required" in message:
+        return "Subject and body are required"
+    if "template variables" in message:
+        return "Required Mail Binding template values are missing"
+    if event.get("policy_denied"):
+        return "Mail Send was blocked by runtime policy"
+    return "The mail provider or Mail Binding rejected the send request"
+
+
 def _playground_configuration_snapshot(
     agent: dict[str, Any], context: dict[str, Any], access: Any
 ) -> dict[str, Any]:
@@ -11924,14 +12153,21 @@ async def run_agent_playground(
     configuration_snapshot: dict[str, Any] = {}
     started = time.perf_counter()
     failure_stage = "setup"
+    playground_mail_mode = "test"
     try:
         body = await request.get_json(silent=True) or {}
         if not isinstance(body, dict):
             raise AccessControlError("Playground request must be an object", status_code=400)
         if body.get("safe_mode", True) is not True:
             raise AccessControlError(
-                "Live write-tool testing is not available in this Playground release",
+                "Playground safe mode cannot be disabled; use a scoped write approval instead",
                 status_code=409,
+            )
+        playground_mail_mode = str(body.get("mail_mode") or "test").lower()
+        if playground_mail_mode not in {"test", "live"}:
+            raise AccessControlError(
+                "Playground mail mode must be either 'test' or 'live'",
+                status_code=400,
             )
         _actor, team = _require_team_access(
             auth_claims, team_id, permission="Manage agents"
@@ -11996,6 +12232,11 @@ async def run_agent_playground(
         runtime = "langgraph" if _use_langgraph_runtime(
             agent_id, agent_document=agent
         ) else "legacy"
+        if playground_mail_mode == "live" and runtime != "langgraph":
+            raise AccessControlError(
+                "Live mail sending is available only for LangGraph Agents",
+                status_code=409,
+            )
         trace_steps = [
             _playground_trace_step(
                 "input", "User input", summary=f"{len(messages)} conversation turn(s)"
@@ -12008,11 +12249,44 @@ async def run_agent_playground(
                 details={"enabled": bool(guardrail_policy.enabled)},
             ),
         ]
+        trace_steps.append(
+            _playground_trace_step(
+                "mode",
+                "Mail mode",
+                status="info" if playground_mail_mode == "test" else "success",
+                summary=(
+                    "Test mode simulates Mail Send without contacting the provider"
+                    if playground_mail_mode == "test"
+                    else "Live mode executes Mail Send through the configured provider"
+                ),
+                details={
+                    "source": "mail",
+                    "risk_level": "write",
+                    "automatic": playground_mail_mode == "test",
+                },
+            )
+        )
         tools: list[dict[str, Any]] = []
         citations: list[str] = []
         iterations = 1
         run_id = str(uuid.uuid4())
         failure_stage = "agent_runtime"
+
+        mode_audit = AuditTrail(
+            agent_id=agent_id,
+            team_id=team_id,
+            auth_claims=trusted_claims,
+            run_id=run_id,
+            execution_context="playground",
+        )
+        await mode_audit.emit(
+            "playground_mail_mode_selected",
+            source="mail",
+            details={
+                "mode": playground_mail_mode,
+                "provider_side_effects": playground_mail_mode == "live",
+            },
+        )
 
         if runtime == "langgraph":
             agent_runtime = await create_agent_runtime(
@@ -12026,10 +12300,13 @@ async def run_agent_playground(
                     "run_id": run_id,
                     "execution_context": "playground",
                     "agent_lifecycle": "draft",
+                    "playground_mail_mode": playground_mail_mode,
                 },
                 agent_document=agent,
                 allow_draft=True,
-                allowed_risk_levels=frozenset({"read", "render"}),
+                allowed_risk_levels=frozenset({"read", "render", "write"}),
+                allowed_write_source_prefixes=frozenset({"mail"}),
+                max_approved_write_calls=None,
             )
             result = await agent_runtime.run(messages)
             trace_steps.extend(_playground_runtime_trace(result.get("execution_trace")))
@@ -12046,6 +12323,7 @@ async def run_agent_playground(
                     "total_tokens",
                 )
             }
+            mail_send_failures: list[str] = []
             for event in result.get("tool_trace") or []:
                 if not isinstance(event, dict):
                     continue
@@ -12064,6 +12342,14 @@ async def run_agent_playground(
                         "duration_ms": float(event.get("duration_ms") or 0),
                     }
                 )
+                if (
+                    str(event.get("source") or "").startswith("mail:")
+                    and str(event.get("risk_level") or "") == "write"
+                    and event.get("is_error")
+                ):
+                    mail_send_failures.append(
+                        _playground_mail_failure_reason(event)
+                    )
                 if event.get("source") == "rag" and not event.get("is_error"):
                     try:
                         rag_result = json.loads(str(event.get("output") or "{}"))
@@ -12073,8 +12359,26 @@ async def run_agent_playground(
                             "Unable to parse Playground RAG citations for Agent %s",
                             agent_id,
                         )
+            if mail_send_failures:
+                unique_failures = list(dict.fromkeys(mail_send_failures))
+                trace_steps.append(
+                    _playground_trace_step(
+                        "integration",
+                        "Mail Send failed",
+                        status="error",
+                        summary="; ".join(unique_failures)[:300],
+                        details={"source": "mail", "risk_level": "write"},
+                    )
+                )
+                answer_content = (
+                    "Email was not sent. "
+                    + "; ".join(unique_failures)
+                    + ". Review the Mail Binding or select Trace for details."
+                )
+            else:
+                answer_content = str(result.get("content") or "")
             response_payload = {
-                "message": {"role": "assistant", "content": str(result.get("content") or "")},
+                "message": {"role": "assistant", "content": answer_content},
                 "context": {
                     "data_points": {"text": citations, "images": []},
                     "thoughts": [
@@ -12164,6 +12468,7 @@ async def run_agent_playground(
         diagnostics = {
             "runtime": runtime,
             "safe_mode": True,
+            "mail_mode": playground_mail_mode,
             "legacy_boundary": "prompt_rag_only" if runtime == "legacy" else None,
             "model": str(context["overrides"].get("_llm_model") or "unknown"),
             "profile_id": str(context["overrides"].get("_llm_profile_id") or ""),
@@ -12201,6 +12506,7 @@ async def run_agent_playground(
                 "diagnostics": {
                     "runtime": runtime,
                     "safe_mode": True,
+                    "mail_mode": playground_mail_mode,
                     "legacy_boundary": "prompt_rag_only" if runtime == "legacy" else None,
                     "model": str(context.get("overrides", {}).get("_llm_model") or "unknown"),
                     "profile_id": str(context.get("overrides", {}).get("_llm_profile_id") or ""),
@@ -13754,6 +14060,7 @@ async def setup_clients():
         ensure_agent_invocation_key_indexes()
         ensure_agent_invocation_job_indexes()
         ensure_knowledge_metadata_profile_indexes()
+        ensure_user_mail_account_indexes()
 
     # Use the current user identity for keyless authentication to Azure services.
     # This assumes you use 'azd auth login' locally, and managed identity when deployed on Azure.

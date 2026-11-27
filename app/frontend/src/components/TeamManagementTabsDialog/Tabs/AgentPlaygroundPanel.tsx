@@ -22,6 +22,8 @@ import {
     Tabs,
     TextField,
     Tooltip,
+    ToggleButton,
+    ToggleButtonGroup,
     Typography
 } from "@mui/material";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
@@ -69,16 +71,24 @@ export function AgentPlaygroundPanel({ agent, teamId, disabled = false, onPrepar
     const [access, setAccess] = useState<EffectiveAccessResponse | null>(null);
     const [selectedScopes, setSelectedScopes] = useState<string[]>(["global"]);
     const [selectedDataGroupIds, setSelectedDataGroupIds] = useState<string[]>([]);
+    const [mailMode, setMailMode] = useState<"test" | "live">("test");
     const conversationEndRef = useRef<HTMLDivElement | null>(null);
 
     const isDraft = agent?.lifecycle_status === "draft";
-    const canRun = Boolean(teamId && isDraft && !disabled && !running && input.trim());
+    const canRun = Boolean(
+        teamId
+        && isDraft
+        && !disabled
+        && !running
+        && input.trim()
+    );
 
     useEffect(() => {
         setMessages([]);
         setLastResult(null);
         setActiveView("chat");
         setError("");
+        setMailMode("test");
         setStatus(isDraft ? "Private draft · not tested yet" : "Playground requires a private draft");
     }, [agent?._id, isDraft]);
 
@@ -132,7 +142,7 @@ export function AgentPlaygroundPanel({ agent, teamId, disabled = false, onPrepar
             if (savedAgent.lifecycle_status !== "draft") {
                 throw new Error("Playground requires a private Agent draft");
             }
-            setStatus("Draft saved · running safe test…");
+            setStatus(`Draft saved · running ${mailMode} mail mode…`);
             const token = await getToken(instance);
             if (!token) throw new Error("Authentication is required");
             const result = await runAgentPlaygroundApi(
@@ -141,6 +151,7 @@ export function AgentPlaygroundPanel({ agent, teamId, disabled = false, onPrepar
                 pendingMessages,
                 selectedScopes,
                 selectedDataGroupIds,
+                mailMode,
                 token
             );
             setMessages(previous => [...previous, { role: "assistant", content: result.answer }]);
@@ -148,7 +159,7 @@ export function AgentPlaygroundPanel({ agent, teamId, disabled = false, onPrepar
             if ((result.diagnostics.steps ?? []).some(step => step.status === "error" || step.status === "blocked")) {
                 setActiveView("trace");
             }
-            setStatus(`Draft saved · tested with ${result.diagnostics.runtime}`);
+            setStatus(`Draft saved · tested with ${result.diagnostics.runtime} · ${result.diagnostics.mail_mode} mail`);
         } catch (reason) {
             const diagnostics = reason instanceof Error
                 ? (reason as Error & { diagnostics?: AgentPlaygroundResponse["diagnostics"] }).diagnostics
@@ -181,7 +192,12 @@ export function AgentPlaygroundPanel({ agent, teamId, disabled = false, onPrepar
                     <Stack direction="row" alignItems="center" spacing={1}>
                         <ScienceOutlinedIcon color="primary" fontSize="small" />
                         <Typography fontWeight={700}>Playground</Typography>
-                        <Chip label="Safe test" color="success" variant="outlined" size="small" />
+                        <Chip
+                            label={mailMode === "live" ? "Live mail" : "Test mail"}
+                            color={mailMode === "live" ? "warning" : "success"}
+                            variant="outlined"
+                            size="small"
+                        />
                     </Stack>
                     <Typography variant="caption" color="text.secondary" noWrap>{status}</Typography>
                 </Box>
@@ -250,6 +266,36 @@ export function AgentPlaygroundPanel({ agent, teamId, disabled = false, onPrepar
                     </Accordion>
                     <Divider />
 
+                    <Box px={2} py={1.25} bgcolor="background.paper">
+                        <Stack spacing={1}>
+                            <Stack direction={{ xs: "column", sm: "row" }} alignItems={{ sm: "center" }} justifyContent="space-between" spacing={1}>
+                                <Box>
+                                    <Typography variant="subtitle2">Mail execution</Typography>
+                                    <Typography variant="caption" color="text.secondary">
+                                        Test simulates sending; Live uses the configured mailbox and Agent mail policy.
+                                    </Typography>
+                                </Box>
+                                <ToggleButtonGroup
+                                    exclusive
+                                    size="small"
+                                    value={mailMode}
+                                    disabled={running}
+                                    onChange={(_event, value: "test" | "live" | null) => value && setMailMode(value)}
+                                    aria-label="Playground mail execution mode"
+                                >
+                                    <ToggleButton value="test">Test</ToggleButton>
+                                    <ToggleButton value="live" color="warning">Live</ToggleButton>
+                                </ToggleButtonGroup>
+                            </Stack>
+                            {mailMode === "live" && (
+                                <Alert severity="warning">
+                                    Live mode performs real Mail Tool actions. Messages, recipients, CC and BCC are sent exactly as allowed by the Agent mail configuration.
+                                </Alert>
+                            )}
+                        </Stack>
+                    </Box>
+                    <Divider />
+
                     <Tabs
                         value={activeView}
                         onChange={(_event, value: "chat" | "trace") => setActiveView(value)}
@@ -270,7 +316,7 @@ export function AgentPlaygroundPanel({ agent, teamId, disabled = false, onPrepar
                                 <ScienceOutlinedIcon sx={{ fontSize: 40, opacity: 0.55 }} />
                                 <Typography fontWeight={600} color="text.primary">Test before activation</Typography>
                                 <Typography variant="body2" maxWidth={420}>
-                                    Playground saves the private draft before each run and uses real model, Knowledge, guardrail, quota and audit policies. Write-capable tools stay blocked.
+                                    Playground saves the private draft before each run and uses the real model, Knowledge, guardrail, quota and audit policies. Test mode simulates Mail Send; Live mode sends through the configured provider.
                                 </Typography>
                             </Stack>
                         )}
@@ -421,7 +467,7 @@ export function AgentPlaygroundPanel({ agent, teamId, disabled = false, onPrepar
                                 }
                             }}
                         />
-                        <Tooltip title="Save draft and run safe test">
+                        <Tooltip title={mailMode === "live" ? "Save draft and run with live mail" : "Save draft and run with simulated mail"}>
                             <span>
                                 <IconButton color="primary" disabled={!canRun} onClick={() => void run()}>
                                     {running ? <CircularProgress size={22} /> : <SendIcon />}

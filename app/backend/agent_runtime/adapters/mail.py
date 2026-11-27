@@ -8,6 +8,10 @@ from mongo_table_connecters.mail_connections import (
     decrypt_mail_secrets,
     get_mail_connection,
 )
+from mongo_table_connecters.user_mail_accounts import (
+    get_user_mail_account,
+    materialize_user_mail_connection,
+)
 
 _TEMPLATE_VARIABLE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_.-]*)\s*}}")
 
@@ -49,12 +53,45 @@ def _validate_recipients(binding: dict[str, Any], recipients: list[str]) -> None
             raise ValueError(f"Recipient domain is not allowed: {', '.join(invalid)}")
 
 
+def _playground_mail_mode(context: Any) -> str | None:
+    if str(context.metadata.get("execution_context") or "") != "playground":
+        return None
+    mode = str(context.metadata.get("playground_mail_mode") or "test").lower()
+    return mode if mode in {"test", "live"} else "test"
+
+
 def register_mail_tools(registry: ToolRegistry, agent_id: str) -> None:
     for binding in list_mail_bindings(agent_id, enabled_only=True):
         connection = get_mail_connection(binding.get("email_id", ""))
         if not connection or connection.get("enabled") is False:
             continue
-        secrets = decrypt_mail_secrets(connection)
+        if str(connection.get("team_id") or "") != str(registry.context.team_id or ""):
+            continue
+        if connection.get("account_mode", "shared") == "personal":
+            user_id = str(
+                registry.context.auth_claims.get("application_user_id") or ""
+            )
+            account = get_user_mail_account(user_id, str(connection.get("_id") or ""))
+            try:
+                revision_matches = int(
+                    account.get("verified_profile_revision") if account else 0
+                ) == max(1, int(connection.get("connection_revision") or 1))
+            except (TypeError, ValueError):
+                revision_matches = False
+            if (
+                not account
+                or account.get("enabled") is False
+                or account.get("verification_status") != "verified"
+                or not revision_matches
+                or str(account.get("team_id") or "")
+                != str(registry.context.team_id or "")
+            ):
+                continue
+            connection, secrets = materialize_user_mail_connection(
+                connection, account
+            )
+        else:
+            secrets = decrypt_mail_secrets(connection)
         alias = str(connection.get("name") or connection.get("email_address") or "mail")
         suffix = str(binding.get("_id") or connection.get("_id"))[:8]
         permissions = set(binding.get("permissions") or ["read", "send"])
@@ -118,6 +155,17 @@ def register_mail_tools(registry: ToolRegistry, agent_id: str) -> None:
                 )
                 if not subject or not body:
                     raise ValueError("Subject and body are required when no configured template is available")
+                if _playground_mail_mode(context) == "test":
+                    return {
+                        "sent": False,
+                        "simulated": True,
+                        "provider": str(_connection.get("provider") or "unknown"),
+                        "to_count": len(to),
+                        "cc_count": len(cc),
+                        "bcc_count": len(bcc),
+                        "subject_length": len(subject),
+                        "body_length": len(body),
+                    }
                 return await send_message(
                     _connection,
                     _secrets,

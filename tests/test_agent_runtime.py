@@ -173,6 +173,88 @@ async def test_safe_test_registry_blocks_write_tools_server_side():
 
 
 @pytest.mark.asyncio
+async def test_playground_write_approval_allows_one_mail_call_only():
+    registry = ToolRegistry(
+        ToolRuntimeContext(agent_id="draft-1", auth_claims={"oid": "admin-1"}),
+        allowed_risk_levels=frozenset({"read", "render", "write"}),
+        allowed_write_source_prefixes=frozenset({"mail"}),
+        max_approved_write_calls=1,
+    )
+    mail_handler = AsyncMock(return_value={"sent": True})
+    message_handler = AsyncMock(return_value={"sent": True})
+    registry.register(
+        ToolSpec(
+            name="send_mail",
+            description="Send mail",
+            input_schema={"type": "object", "properties": {}},
+            handler=mail_handler,
+            source="mail:profile-1",
+            risk_level="write",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="send_message",
+            description="Send a message",
+            input_schema={"type": "object", "properties": {}},
+            handler=message_handler,
+            source="messaging:connection-1",
+            risk_level="write",
+        )
+    )
+
+    first = await registry.execute("send_mail", {})
+    second = await registry.execute("send_mail", {})
+    unrelated = await registry.execute("send_message", {})
+
+    assert json.loads(first) == {"sent": True}
+    assert json.loads(second)["policy_denied"] is True
+    assert "already been used" in json.loads(second)["error"]
+    assert json.loads(unrelated)["policy_denied"] is True
+    assert "not included" in json.loads(unrelated)["error"]
+    mail_handler.assert_awaited_once()
+    message_handler.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_playground_live_mail_allows_multiple_mail_calls_only():
+    registry = ToolRegistry(
+        ToolRuntimeContext(agent_id="draft-1", auth_claims={"oid": "admin-1"}),
+        allowed_risk_levels=frozenset({"read", "render", "write"}),
+        allowed_write_source_prefixes=frozenset({"mail"}),
+        max_approved_write_calls=None,
+    )
+    mail_handler = AsyncMock(return_value={"sent": True})
+    message_handler = AsyncMock(return_value={"sent": True})
+    registry.register(
+        ToolSpec(
+            name="send_mail",
+            description="Send mail",
+            input_schema={"type": "object", "properties": {}},
+            handler=mail_handler,
+            source="mail:profile-1",
+            risk_level="write",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="send_message",
+            description="Send a message",
+            input_schema={"type": "object", "properties": {}},
+            handler=message_handler,
+            source="messaging:connection-1",
+            risk_level="write",
+        )
+    )
+
+    assert json.loads(await registry.execute("send_mail", {})) == {"sent": True}
+    assert json.loads(await registry.execute("send_mail", {})) == {"sent": True}
+    assert json.loads(await registry.execute("send_message", {}))["policy_denied"] is True
+    assert mail_handler.await_count == 2
+    message_handler.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_explicit_mcp_request_requires_mcp_tool_on_first_iteration():
     registry = ToolRegistry(
         ToolRuntimeContext(agent_id="agent-1", auth_claims={"oid": "user-1"})

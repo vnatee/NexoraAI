@@ -85,15 +85,24 @@ class ToolRegistry:
         audit: AuditTrail | None = None,
         guardrail_policy: GuardrailPolicy | None = None,
         allowed_risk_levels: frozenset[str] | None = None,
+        allowed_write_source_prefixes: frozenset[str] | None = None,
+        max_approved_write_calls: int | None = 0,
     ):
         self.context = context
         self.policy = policy or ToolExecutionPolicy()
         self.audit = audit
         self.guardrail_policy = guardrail_policy
         self.allowed_risk_levels = allowed_risk_levels
+        self.allowed_write_source_prefixes = allowed_write_source_prefixes
+        self.max_approved_write_calls = (
+            None
+            if max_approved_write_calls is None
+            else max(0, int(max_approved_write_calls))
+        )
         self._tools: dict[str, ToolSpec] = {}
         self.execution_log: list[dict[str, Any]] = []
         self._total_calls = 0
+        self._approved_write_calls = 0
         self._calls_by_tool: dict[str, int] = {}
 
     @staticmethod
@@ -240,6 +249,22 @@ class ToolRegistry:
                 raise ToolPolicyViolation(
                     f"Tool '{spec.name}' is unavailable in safe test mode because its risk level is '{spec.risk_level}'"
                 )
+            if self.allowed_risk_levels is not None and spec.risk_level == "write":
+                source_allowed = any(
+                    spec.source == prefix or spec.source.startswith(f"{prefix}:")
+                    for prefix in (self.allowed_write_source_prefixes or ())
+                )
+                if not source_allowed:
+                    raise ToolPolicyViolation(
+                        f"Tool '{spec.name}' is not included in this approved write test"
+                    )
+                if (
+                    self.max_approved_write_calls is not None
+                    and self._approved_write_calls >= self.max_approved_write_calls
+                ):
+                    raise ToolPolicyViolation(
+                        "The approved write action for this Playground run has already been used"
+                    )
             argument_size = self.policy.validate(
                 tool_name=spec.name,
                 source=spec.source,
@@ -249,6 +274,11 @@ class ToolRegistry:
             )
             self._total_calls += 1
             self._calls_by_tool[spec.name] = self._calls_by_tool.get(spec.name, 0) + 1
+            if self.allowed_risk_levels is not None and spec.risk_level == "write":
+                # Count the write before invoking the external system. A finite
+                # allowance therefore cannot be retried after a failure; Live
+                # modes can opt into an unlimited allowance explicitly.
+                self._approved_write_calls += 1
             value = await asyncio.wait_for(
                 spec.handler(arguments, self.context),
                 timeout=min(spec.timeout_seconds, self.policy.max_timeout_seconds),

@@ -178,20 +178,20 @@ export function MailBindingDialog({ open, mailConfigs, binding, saving, onClose,
                 <Stack spacing={3}>
                     {/* ── Account ── */}
                     <Typography variant="subtitle2" color="text.secondary">
-                        Account
+                        Team Mail Profile
                     </Typography>
 
                     <TextField
                         select
                         required
-                        label="Email Account"
+                        label="Mail Profile"
                         value={emailId}
                         disabled={saving}
                         error={isSubmitted && !emailId}
                         helperText={
                             isSubmitted && !emailId
                                 ? "Email account is required"
-                                : "Select the mail configuration to bind to this agent"
+                                : "The Agent uses this policy; personal profiles resolve the signed-in User's own account"
                         }
                         onChange={e => setEmailId(e.target.value)}
                     >
@@ -202,7 +202,7 @@ export function MailBindingDialog({ open, mailConfigs, binding, saving, onClose,
                         ) : (
                             mailConfigs.map(cfg => (
                                 <MenuItem key={cfg._id} value={cfg._id}>
-                                    {cfg.name} — {cfg.email_address} ({cfg.provider})
+                                    {cfg.name} — {cfg.account_mode === "personal" ? "Current User's account" : cfg.email_address} ({cfg.provider})
                                 </MenuItem>
                             ))
                         )}

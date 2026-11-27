@@ -1,6 +1,6 @@
 # Codex handoff — NexoraAI
 
-Last updated: 2026-10-12 UTC
+Last updated: 2026-11-27 Asia/Bangkok
 
 This document replaces a raw chat transcript as the engineering handoff. It
 captures the decisions and evidence needed to continue without storing copied
@@ -9,7 +9,7 @@ logs, credentials, attachments, or repetitive conversational text.
 ## Repository state
 
 - Workspace: `/workspaces/NexoraAI`
-- Branch: `feature/external-agent-access`
+- Branch: `feature/personal-mail-profiles`
 - Remote safety checkpoint: `feature/external-agent-access` at `326b832`
   before the External Channel foundation changes.
 - Current product-history root: `436fd69 feat: initialize NexoraAI enterprise
@@ -2781,9 +2781,10 @@ Playground execution Trace, Prompt/Integration publish, revision discard, and
 External Gateway failure diagnostics on 2026-11-22. This slice is complete and
 must not remain listed as pending acceptance.
 The next Playground phases—automated evaluations, Active-versus-revision
-comparison, attachments, approval-gated write-tool testing, and cross-revision
-Trace export/comparison—were explicitly moved to the unscheduled product
-backlog. Do not start them without a new product-owner decision.
+comparison, attachments, approval-gated testing for non-mail write tools, and
+cross-revision Trace export/comparison—remain in the unscheduled product
+backlog. The product owner pulled the narrowly governed Mail Send test into the
+implemented scope on 2026-11-25; do not infer approval for other write tools.
 The full external Customer Portal—branded Chat, customer/guest identity,
 Internal/External information separation, rate-limit/abuse analytics,
 feedback/human escalation, and read-only SAP Business One integration—was also
@@ -2949,3 +2950,82 @@ slice; none exercises the branding overlay. Operator visual acceptance of the
 login and authenticated navigation was completed by the product owner on
 2026-11-24: the branded Advanced console opened successfully and its menus were
 usable.
+
+## 2026-11-25: Personal mail accounts through Team Mail Profiles
+
+The mail integration now separates Team policy from User-owned mailbox
+credentials. A Team Admin creates either a backward-compatible **Shared
+mailbox** profile or a **Personal accounts** profile and binds that profile to
+an Agent. Each Team member can connect, test, and disconnect their own Personal
+account from **My email accounts**. At Agent runtime, the profile resolves only
+the verified account belonging to the authenticated application User and the
+Agent's Team. Missing, disabled, untested, cross-Team, external-channel, or
+background-without-User contexts receive no Personal mail tools and never fall
+back to a shared or another User's mailbox.
+
+Microsoft 365 Personal profiles use the Team's Graph application identity and
+derive the mailbox from the managed User identity; Exchange Application RBAC
+must restrict the app to approved mailboxes. Gmail stores the OAuth client at
+Team level and a refresh token per User. Generic mail stores Team endpoints and
+the username/password per User. All secrets use the existing Fernet helpers,
+remain absent from API responses, and are cleared on disconnect or profile
+deletion. Provider and account mode are immutable after creation. Connection
+changes invalidate linked User verification, while name-only edits do not.
+Every successful User test also records the Team profile connection revision;
+runtime requires an exact revision match. This keeps the path fail-closed even
+if a process stops between updating a profile and invalidating linked accounts.
+
+Mail binding list/create/edit/toggle/delete routes now enforce the Agent Team's
+**Manage agents** permission. This closes a pre-existing management
+authorization gap without changing Agent tool permissions or recipient policy.
+
+Focused mail and management authorization validation passes (`19 passed`, `35
+deselected`), Python compilation passes, and the memory-safe TypeScript and
+production frontend build passes. The broader service-free suite excluding the
+two environment-blocked application suites reaches `1097 passed`, `1
+deselected`, with the same `7 failed` stale `businessMetadata`/search-field
+expectations recorded before this slice; no mail test fails. Full browser
+acceptance with real provider accounts remains outstanding. The rebuilt local
+application is healthy and its live/readiness endpoints return HTTP 200.
+Browser-based Gmail
+OAuth, delegated Microsoft User OAuth, a dedicated send draft/approval screen,
+attachments, reply/forward, Gmail domain-wide delegation, and generic XOAUTH2
+remain follow-up work rather than being represented as complete.
+
+## 2026-11-25: Test/Live Mail Send in Playground
+
+LangGraph Playground can now prove Mail Send without opening non-mail write
+tools. Mail **Test** mode is the default: it executes normal Mail Tool argument,
+template, mailbox, recipient-domain, and maximum-recipient validation, then
+returns a metadata-only simulated result before the provider call. Mail
+**Live** mode uses the same provider path as a normal Agent and permits repeated
+Mail Tool calls and To, CC, or BCC recipients within the Agent Mail Binding
+policy. The UI keeps an orange Live status and warning visible; it does not add
+a per-Run confirmation or require a recipient in advance.
+
+The server independently validates Team **Manage agents**, draft ownership,
+LangGraph runtime, the requested mail mode, source prefix, Agent Mail Binding
+policy, allowed recipient domains, and the signed-in User's verified Personal
+Mail account. REST, messaging, business-document, MCP, delegation, and every
+other write source remain blocked in both modes. Trace and audit record the
+selected mode and whether provider side effects were enabled without storing
+addresses, message content, Prompt, credentials, or tool output.
+
+Playground also treats the Mail Tool result as authoritative. If a Mail Send
+fails, its response is replaced with **Email was not sent** even when the model
+incorrectly claims success. Trace adds a metadata-only **Mail Send failed** step
+and maps known recipient-domain/count/template failures to a safe reason without
+including recipient addresses. This prevents a model-generated false success
+from being presented as delivery evidence.
+
+Focused Playground/runtime/mail/security validation passes (`76 passed`),
+focused Ruff, Python compilation, TypeScript checking, and the memory-safe
+production build pass. Live browser/provider acceptance remains to be completed
+for this mode revision. The local app image was rebuilt after temporarily
+stopping GPUStack to free build memory; both containers were restored healthy
+and the app live/readiness endpoints return HTTP 200. A broader service-free
+run was stopped at 17% after
+`69` existing `tests/test_app.py` snapshots failed because current responses
+contain the previously introduced `storageUrl` field; later fixtures also tried
+to reach a live MongoDB during app startup. These failures are outside this
+slice, while no focused Playground, runtime, mail, or authorization test fails.

@@ -339,13 +339,22 @@ revision is rejected at publish time if the active Agent changed after the
 revision was created. Publishing uses a short server-side lock and restores the
 previous bindings if promotion fails.
 
-Playground Phase 1 is **Safe test** only. LangGraph permits read-only Knowledge,
-database, Web Search, REST GET, mail-read, document-read, read-only MCP, and
-chart rendering while server-side policy blocks write and delegation tools.
-Legacy testing covers Prompt, model, and Knowledge retrieval but does not run
-its external API confirmation workflow. Playground conversations are not added
-to normal Chat History. Attachments, live write-tool testing, automated
-evaluation sets, and side-by-side revision comparison remain later phases.
+Playground defaults to Mail **Test** mode. LangGraph runs the real Mail Tool
+flow and validates the mailbox, template, recipient domains, and recipient
+limit, but returns a simulated success without contacting the mail provider.
+Select **Live** to use Mail Send exactly as configured for the Agent, including
+multiple calls and To, CC, or BCC recipients allowed by its Mail Binding.
+The orange Live status and warning remain visible while this mode is selected.
+Delivery is proven only when Trace marks the Mail Tool successful. If the tool
+fails, Playground replaces any model claim of success with **Email was not
+sent** and shows a safe failure reason in Trace. For a recipient-domain failure,
+edit the Agent's Mail Binding and add the required domains, or leave the domain
+list empty when the Agent may send to any domain.
+Write tools from REST, messaging, business documents, MCP, and delegation stay
+blocked in both modes. Legacy Agents cannot use Live Mail. Playground
+conversations are not added to normal Chat History. Attachments, other
+write-tool tests, automated evaluation sets, and side-by-side revision
+comparison remain later phases.
 
 For MCP Agents configure:
 

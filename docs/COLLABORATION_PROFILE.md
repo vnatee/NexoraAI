@@ -40,6 +40,10 @@ the repository's `AGENTS.md` and technical handoff before starting work.
 - For generated documents, proposals, reports, and slide decks, use English
   throughout unless the product owner explicitly requests Thai or another
   language. Conversation remains Thai by default.
+- Use familiar, plain terminology in documents. Prefer direct words such as
+  `group` instead of `cohort` when they express the same meaning. Retain a
+  specialized term only when it is an official product/API name or replacing
+  it would make the technical meaning inaccurate.
 - Lead with the direct conclusion. A useful structure is: what exists, what is
   missing, realistic options, recommendation, and the decision needed.
 - Explain the product and architectural meaning, not only filenames, patches,

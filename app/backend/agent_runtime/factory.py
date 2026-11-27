@@ -79,6 +79,8 @@ async def create_agent_runtime(
     agent_document: dict[str, Any] | None = None,
     allow_draft: bool = False,
     allowed_risk_levels: frozenset[str] | None = None,
+    allowed_write_source_prefixes: frozenset[str] | None = None,
+    max_approved_write_calls: int | None = 0,
 ) -> AgentRuntime:
     agent = agent_document if agent_document is not None else get_agent_by_id(agent_id) or {}
     if str(agent.get("_id") or agent_id) != str(agent_id):
@@ -113,6 +115,8 @@ async def create_agent_runtime(
             (agent.get("config") or {}).get("guardrails"), team_id=team_id
         ),
         allowed_risk_levels=allowed_risk_levels,
+        allowed_write_source_prefixes=allowed_write_source_prefixes,
+        max_approved_write_calls=max_approved_write_calls,
     )
     has_temporary_attachments = bool(overrides.get("_temporary_attachment_ids"))
     attachment_evidence_scope = str(overrides.get("_attachment_evidence_scope") or "")
