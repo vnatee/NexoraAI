@@ -1172,7 +1172,8 @@ export function AgentDialog({
         agent_name: agentName.trim(),
         config,
         prompt,
-        lifecycle_status: agent?.lifecycle_status
+        lifecycle_status: agent?.lifecycle_status,
+        revision_of: agent?.revision_of
     });
     const expandedPromptDefinition = PROMPT_FIELDS.find(field => field.key === expandedPromptField);
 
