@@ -256,7 +256,7 @@ export const UploadFile: React.FC<Props> = ({ className, disabled, dialogRef }: 
                                     {t("Select File")}
                                     <input
                                         hidden
-                                        accept=".txt,.md,.json,.png,.jpg,.jpeg,.bmp,.heic,.tiff,.pdf,.docx,.xlsx,.pptx,.html"
+                                        accept=".txt,.md,.csv,.json,.png,.jpg,.jpeg,.bmp,.heic,.tiff,.pdf,.docx,.xlsx,.pptx,.html"
                                         type="file"
                                         onChange={handleUploadFile}
                                     />

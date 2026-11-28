@@ -7,10 +7,15 @@ variables.
 
 ## Providers
 
-- **Azure Document Intelligence (system)** uses the existing
-  `AZURE_DOCUMENTINTELLIGENCE_*` configuration and Azure credential.
-- **Local Text (system)** extracts embedded PDF text with pypdf. It is not OCR.
-- **Docling Local / Serve** handles PDF, office documents, and images locally.
+- **Built-in Document Processor (CPU)** is the system default and requires no
+  GPU. It uses lightweight local parsing for machine-readable PDF and text
+  formats, then the local Docling service for scanned PDF, Office documents,
+  images, layout, and tables. The service runs in its own container so its ML
+  dependencies do not enlarge the application container.
+- **Azure Document Intelligence** can be added by a System Administrator when
+  the deployment has `AZURE_DOCUMENTINTELLIGENCE_*` configuration and an Azure
+  credential. It is not created as a second system default.
+- **External Docling Service** connects to a separate Docling instance. The system Built-in CPU provider already uses the bundled Docling service.
   Service mode is recommended because it keeps the large ML runtime outside the
   web container. Embedded mode is intended for development only.
 - **PaddleOCR / PaddleX API** calls self-hosted General OCR or Layout Parsing.
@@ -19,14 +24,20 @@ variables.
 - **Generic OCR REST API** connects an internal/local OCR service using
   multipart or Base64 JSON and configurable response-field mappings.
 
-Provider, profile, and routing-rule administration is under **Admin Management >
-Integrations > Document Processing & OCR** and requires a system administrator.
+Provider, profile, and routing-rule administration is under **System
+Administration > Document processing** and requires a system administrator.
 Test the provider before assigning it to a profile used by an enabled rule.
 
 Uploads create persistent processing jobs and expose the current OCR, chunking,
 embedding, indexing, or failure state in Personal, Team, and Global upload UI.
 See `docs/ingestion-jobs.md` for status, recovery, Retry, and access-control
 details.
+
+The provider card intentionally shows only a short format summary and CPU/no-GPU
+badges. **View details** lists the supported extensions and limitations. The
+built-in processor does not accept encrypted documents or legacy DOC, XLS, and
+PPT files. CPU OCR is suitable for standard workloads; large scanned batches
+should use an external, cloud, or GPU-backed processing provider.
 
 ## Routing rules
 
@@ -51,9 +62,12 @@ without regard to letter case. Existing duplicates from an older application
 version are left untouched so administrators can first verify routing-rule
 references and then delete only the unwanted profile.
 
-## Run Docling Serve locally
+## Built-in Docling Serve
 
-Start the optional CPU service from the repository root:
+The portable runtime starts Docling automatically as the built-in CPU document
+processor. Its default resource limits can be adjusted with `DOCLING_CPUS` and
+`DOCLING_MEMORY_LIMIT`. To run only the standalone OCR template during
+development:
 
 ```bash
 docker compose -f docker-compose.ocr.yml up -d
@@ -80,7 +94,7 @@ backend environment size.
 
 ## Create the default local OCR profile
 
-1. Add a **Docling Local / Serve** provider in service mode.
+1. Add an **External Docling Service** provider when a separate Docling instance is required.
 2. Enter the reachable service URL and select **Test**.
 3. Add a processing profile, choose the provider, and list the extensions to
    route to it, for example `.pdf,.png,.jpg,.jpeg,.tiff,.docx,.pptx,.xlsx`.

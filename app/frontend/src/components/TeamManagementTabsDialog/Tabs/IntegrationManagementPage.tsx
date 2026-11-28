@@ -5,7 +5,6 @@ import ChatIcon from "@mui/icons-material/Chat";
 import EmailIcon from "@mui/icons-material/Email";
 import TableChartIcon from "@mui/icons-material/TableChart";
 import StorageIcon from "@mui/icons-material/Storage";
-import DocumentScannerIcon from "@mui/icons-material/DocumentScanner";
 import HubOutlinedIcon from "@mui/icons-material/HubOutlined";
 import FolderSharedOutlinedIcon from "@mui/icons-material/FolderSharedOutlined";
 import SearchIcon from "@mui/icons-material/Search";
@@ -16,7 +15,6 @@ import { ExternalApiListPage } from "./ExternalApiListPage";
 import { DatabaseQueryListPage } from "./DatabaseQueryListPage";
 import { MailIntegrationListPage } from "./MailIntegrationListPage";
 import { MessagingIntegrationListPage } from "./MessagingIntegrationListPage";
-import { DocumentProcessingPage } from "./DocumentProcessingPage";
 import { BusinessDocumentsIntegrationPage } from "./BusinessDocumentsIntegrationPage";
 import { WebSearchIntegrationPage } from "./WebSearchIntegrationPage";
 import { IntegrationConnectionSummary, TeamProfile } from "../../../api/models";
@@ -24,16 +22,15 @@ import { listIntegrationConnectionsApi } from "../../../api/api";
 import { getToken } from "../../../authConfig";
 import { MCPServerManagement } from "../../MCPServerManagement";
 
-type ViewMode = "types" | "external_api" | "database" | "mail" | "messaging" | "mcp" | "document_processing" | "business_documents" | "web_search";
+type ViewMode = "types" | "external_api" | "database" | "mail" | "messaging" | "mcp" | "business_documents" | "web_search";
 
 const connectionView = (kind: IntegrationConnectionSummary["kind"]): ViewMode => (kind === "rest_api" ? "external_api" : kind);
 
 interface Props {
     team: TeamProfile | null;
-    isSystemAdmin: boolean;
 }
 
-export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
+export function IntegrationManagementPage({ team }: Props) {
     const { instance } = useMsal();
     const [view, setView] = useState<ViewMode>("types");
     const [connections, setConnections] = useState<IntegrationConnectionSummary[]>([]);
@@ -97,7 +94,6 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
             />
         );
     }
-    if (view === "document_processing") return <DocumentProcessingPage onBack={() => setView("types")} />;
     if (view === "business_documents") return <BusinessDocumentsIntegrationPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
     if (view === "web_search") return <WebSearchIntegrationPage key={team?._id || "unassigned"} team={team} onBack={() => setView("types")} />;
 
@@ -182,21 +178,6 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
             ]
         },
         {
-            key: "document_processing",
-            category: "AI & Documents",
-            title: "Document Processing & OCR",
-            description: "Manage Azure and local extraction providers used by RAG ingestion",
-            icon: <DocumentScannerIcon fontSize="large" />,
-            enabled: true,
-            systemAdminOnly: true,
-            badges: [
-                { label: "Azure DI", color: "primary" as const },
-                { label: "Docling", color: "success" as const },
-                { label: "PaddleOCR", color: "info" as const },
-                { label: "Google Document AI", color: "warning" as const }
-            ]
-        },
-        {
             key: "visualization",
             category: "Visualization",
             title: "Visualization",
@@ -232,7 +213,7 @@ export function IntegrationManagementPage({ team, isSystemAdmin }: Props) {
             connection.detail.toLocaleLowerCase().includes(normalizedSearch)
         );
     });
-    const availableIntegrationTypes = integrationTypes.filter(type => !type.systemAdminOnly || isSystemAdmin);
+    const availableIntegrationTypes = integrationTypes;
     const catalogCategories = ["All", ...Array.from(new Set(availableIntegrationTypes.map(type => type.category)))];
     const normalizedCatalogSearch = catalogSearch.trim().toLocaleLowerCase();
     const visibleIntegrationTypes = availableIntegrationTypes.filter(type =>

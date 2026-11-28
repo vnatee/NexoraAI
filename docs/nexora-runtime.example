@@ -1,6 +1,8 @@
 # Copy this file to .env.nexora-runtime. It contains no application secrets.
 # Secrets remain in the env file selected below.
 MODE=private-enterprise
+# Optional: tls, datadog. The legacy ocr value is accepted but built-in CPU
+# document processing now starts by default.
 FEATURES=
 
 # Private Enterprise builds the pinned InsightSphere-themed GPUStack console by

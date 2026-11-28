@@ -17,6 +17,8 @@ services:
         required: false
       integration-controller:
         condition: service_healthy
+      docling:
+        condition: service_healthy
     environment:
       APP_RUNTIME_MODE: local
       APP_DATA_ENCRYPTION_KEY: ${APP_DATA_ENCRYPTION_KEY:?Set APP_DATA_ENCRYPTION_KEY}
@@ -61,6 +63,7 @@ services:
       USE_USER_UPLOAD: "true"
       USE_LOCAL_PDF_PARSER: "true"
       USE_LOCAL_HTML_PARSER: "true"
+      BUILTIN_DOCUMENT_PROCESSOR_ENDPOINT: http://docling:5001
       USE_CHAT_HISTORY_COSMOS: "false"
       USE_CHAT_HISTORY_DATABASE: "true"
       USE_CHAT_HISTORY_BROWSER: "false"
@@ -281,14 +284,21 @@ services:
     command: ["ollama pull \"$${EMBEDDING_MODEL}\" && ollama pull \"$${LLM_MODEL}\""]
 
   docling:
-    profiles: ["ocr"]
     image: ${DOCLING_SERVE_IMAGE:-quay.io/docling-project/docling-serve:latest}
     restart: unless-stopped
+    cpus: ${DOCLING_CPUS:-2.0}
+    mem_limit: ${DOCLING_MEMORY_LIMIT:-6g}
     environment:
       DOCLING_SERVE_ENABLE_UI: "false"
       DOCLING_SERVE_MAX_NUM_PAGES: ${DOCLING_SERVE_MAX_NUM_PAGES:-500}
       DOCLING_SERVE_MAX_FILE_SIZE: ${DOCLING_SERVE_MAX_FILE_SIZE:-104857600}
       DOCLING_DEVICE: ${DOCLING_DEVICE:-cpu}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:5001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
 volumes:
   nexora_mongodb_data:

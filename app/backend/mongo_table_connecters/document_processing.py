@@ -13,12 +13,18 @@ profiles_collection = db["document_processing_profiles"]
 routing_rules_collection = db["document_processing_routing_rules"]
 PROVIDER_TYPES = {
     "azure_document_intelligence",
+    "builtin_cpu",
     "docling",
     "google_document_ai",
     "generic_ocr_api",
     "paddleocr",
     "local_text",
 }
+BUILTIN_CPU_PROVIDER_ID = "local-text"
+BUILTIN_CPU_SUPPORTED_TYPES = [
+    ".pdf", ".docx", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg",
+    ".tiff", ".bmp", ".heic", ".txt", ".md", ".csv", ".json", ".html",
+]
 ROUTING_SCOPES = {"all", "personal", "team", "global"}
 ROUTING_FALLBACK_BEHAVIORS = {"continue", "system", "error"}
 
@@ -62,6 +68,11 @@ def normalize_provider(data: object, existing: dict[str, Any] | None = None) -> 
         config["execution_mode"] = execution_mode
         if execution_mode == "service":
             config["endpoint"] = normalize_docling_endpoint(config.get("endpoint"))
+            auth_type = str(config.get("auth_type") or "none").strip().lower()
+            if auth_type not in {"none", "api_key"}:
+                raise ValueError("Docling authentication must be none or api_key")
+            config["auth_type"] = auth_type
+            config["api_key_header"] = "X-Api-Key"
     elif provider_type in {"generic_ocr_api", "paddleocr"}:
         config["endpoint"] = _http_endpoint(config.get("endpoint"), "OCR API")
         config["process_path"] = str(
@@ -114,6 +125,8 @@ def normalize_provider(data: object, existing: dict[str, Any] | None = None) -> 
         credentials_ciphertext = encrypt_provider_secret(str(credentials))
     if provider_type == "google_document_ai" and not credentials_ciphertext:
         raise ValueError("Google Document AI requires Service Account JSON credentials")
+    if provider_type == "docling" and config.get("auth_type") == "api_key" and not credentials_ciphertext:
+        raise ValueError("Docling API key is required for API key authentication")
     if provider_type in {"generic_ocr_api", "paddleocr"} and config.get("auth_type") != "none" and not credentials_ciphertext:
         raise ValueError("OCR API credentials are required for the selected authentication type")
     return {
@@ -130,7 +143,19 @@ def serialize_provider(item: dict[str, Any]) -> dict[str, Any]:
         for key, value in item.items()
         if key not in {"created_at", "updated_at", "delete_at", "credentials_ciphertext"}
     }
-    return serialized | {"has_credentials": bool(item.get("credentials_ciphertext"))}
+    result = serialized | {"has_credentials": bool(item.get("credentials_ciphertext"))}
+    if item.get("provider_type") == "builtin_cpu":
+        result["display"] = {
+            "summary": "PDF, scanned PDF, Office, images, and text files",
+            "supported_types": BUILTIN_CPU_SUPPORTED_TYPES,
+            "badges": ["CPU", "No GPU required"],
+            "limitations": [
+                "Encrypted documents and legacy DOC, XLS, and PPT files are not supported.",
+                "OCR on CPU can take longer for large or heavily scanned documents.",
+                "Large-volume OCR should use an external, cloud, or GPU-backed processor.",
+            ],
+        }
+    return result
 
 
 def decrypt_provider_credentials(item: dict[str, Any]) -> str:
@@ -436,8 +461,61 @@ def resolve_processing_route(
 
 
 def ensure_system_providers(has_azure: bool) -> None:
-    definitions = [("local-text", "Local text extraction", "local_text")]
-    if has_azure:
-        definitions.insert(0, ("system-azure-document-intelligence", "Azure Document Intelligence (system)", "azure_document_intelligence"))
-    for provider_id, name, provider_type in definitions:
-        providers_collection.update_one({"_id": provider_id}, {"$setOnInsert": {"_id": provider_id, "name": name, "provider_type": provider_type, "config": {}, "enabled": True, "system_managed": True, "created_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc), "delete_at": None}}, upsert=True)
+    del has_azure  # Azure is now explicitly added rather than auto-created.
+    definitions = [
+        (
+            BUILTIN_CPU_PROVIDER_ID,
+            "Built-in Document Processor (CPU)",
+            "builtin_cpu",
+            {"execution_mode": "service", "endpoint": "http://docling:5001"},
+        )
+    ]
+    now = datetime.now(timezone.utc)
+    for provider_id, name, provider_type, config in definitions:
+        providers_collection.update_one(
+            {"_id": provider_id},
+            {
+                "$set": {
+                    "name": name,
+                    "provider_type": provider_type,
+                    "config": config,
+                    "enabled": True,
+                    "system_managed": True,
+                    "updated_at": now,
+                    "delete_at": None,
+                },
+                "$setOnInsert": {
+                    "_id": provider_id,
+                    "created_at": now,
+                    "credentials_ciphertext": None,
+                },
+            },
+            upsert=True,
+        )
+
+    legacy_azure_id = "system-azure-document-intelligence"
+    legacy_azure = providers_collection.find_one(
+        {"_id": legacy_azure_id, "delete_at": None}
+    )
+    if legacy_azure:
+        referenced = profiles_collection.find_one(
+            {"provider_id": legacy_azure_id, "delete_at": None}
+        )
+        providers_collection.update_one(
+            {"_id": legacy_azure_id, "delete_at": None},
+            {
+                "$set": (
+                    {
+                        "name": "Azure Document Intelligence",
+                        "system_managed": False,
+                        "updated_at": now,
+                    }
+                    if referenced
+                    else {
+                        "enabled": False,
+                        "delete_at": now,
+                        "updated_at": now,
+                    }
+                )
+            },
+        )

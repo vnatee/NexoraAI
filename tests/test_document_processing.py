@@ -36,6 +36,51 @@ def test_provider_and_profile_validation(monkeypatch):
     assert profile["is_default"] is True
 
 
+def test_builtin_cpu_provider_exposes_compact_safe_capabilities():
+    provider = storage.serialize_provider(
+        {
+            "_id": storage.BUILTIN_CPU_PROVIDER_ID,
+            "name": "Built-in Document Processor (CPU)",
+            "provider_type": "builtin_cpu",
+            "config": {"endpoint": "http://docling:5001"},
+            "enabled": True,
+            "system_managed": True,
+        }
+    )
+
+    assert provider["display"]["summary"] == "PDF, scanned PDF, Office, images, and text files"
+    assert ".pdf" in provider["display"]["supported_types"]
+    assert ".csv" in provider["display"]["supported_types"]
+    assert provider["display"]["badges"] == ["CPU", "No GPU required"]
+    assert "credentials_ciphertext" not in provider
+
+
+@pytest.mark.asyncio
+async def test_builtin_cpu_parser_uses_embedded_pdf_text_before_ocr():
+    parser = documentprocessing.BuiltInCPUParser(
+        StubParser("machine-readable text"),
+        {"execution_mode": "service", "endpoint": "http://docling:5001"},
+    )
+    parser.docling_parser = StubParser("unexpected OCR")
+
+    pages = [page async for page in parser.parse(NamedBytesIO(b"pdf"))]
+
+    assert [page.text for page in pages] == ["machine-readable text"]
+
+
+@pytest.mark.asyncio
+async def test_builtin_cpu_parser_falls_back_to_ocr_for_scanned_pdf():
+    parser = documentprocessing.BuiltInCPUParser(
+        StubParser("   "),
+        {"execution_mode": "service", "endpoint": "http://docling:5001"},
+    )
+    parser.docling_parser = StubParser("recognized scan")
+
+    pages = [page async for page in parser.parse(NamedBytesIO(b"pdf"))]
+
+    assert [page.text for page in pages] == ["recognized scan"]
+
+
 class FakeProfileCollection:
     def __init__(self):
         self.items = {}
@@ -56,6 +101,85 @@ class FakeProfileCollection:
 
     def insert_one(self, item):
         self.items[item["_id"]] = dict(item)
+
+
+class FakeProviderCollection:
+    def __init__(self, items=None):
+        self.items = {item["_id"]: dict(item) for item in (items or [])}
+
+    def update_one(self, query, update, upsert=False):
+        item_id = query["_id"]
+        if item_id not in self.items:
+            assert upsert
+            self.items[item_id] = dict(update.get("$setOnInsert") or {})
+        self.items[item_id].update(update.get("$set") or {})
+
+    def find_one(self, query):
+        item = self.items.get(query.get("_id"))
+        if not item:
+            return None
+        if query.get("delete_at") is None and item.get("delete_at") is not None:
+            return None
+        return item
+
+
+class EmptyReferenceCollection:
+    def find_one(self, _query):
+        return None
+
+
+def test_system_provider_upgrade_preserves_existing_provider_id_and_state(monkeypatch):
+    collection = FakeProviderCollection(
+        [
+            {
+                "_id": storage.BUILTIN_CPU_PROVIDER_ID,
+                "name": "Local text extraction",
+                "provider_type": "local_text",
+                "enabled": False,
+            },
+            {
+                "_id": "system-azure-document-intelligence",
+                "name": "Azure Document Intelligence (system)",
+                "provider_type": "azure_document_intelligence",
+                "enabled": True,
+                "system_managed": True,
+                "delete_at": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(storage, "providers_collection", collection)
+    monkeypatch.setattr(storage, "profiles_collection", EmptyReferenceCollection())
+
+    storage.ensure_system_providers(has_azure=True)
+
+    builtin = collection.items[storage.BUILTIN_CPU_PROVIDER_ID]
+    assert builtin["name"] == "Built-in Document Processor (CPU)"
+    assert builtin["provider_type"] == "builtin_cpu"
+    assert builtin["enabled"] is True
+    assert builtin["system_managed"] is True
+    azure = collection.items["system-azure-document-intelligence"]
+    assert azure["enabled"] is False
+    assert azure["delete_at"] is not None
+
+
+def test_upload_system_fallback_records_builtin_cpu_provider(monkeypatch):
+    monkeypatch.setenv("BUILTIN_DOCUMENT_PROCESSOR_ENDPOINT", "http://docling:5001")
+    monkeypatch.setattr(
+        app_module,
+        "resolve_processing_route",
+        lambda **_kwargs: {
+            "source": "system_fallback",
+            "status": "fallback",
+            "profile": None,
+            "provider": None,
+        },
+    )
+    context = {"scope": "personal"}
+
+    route = app_module._resolve_upload_route("scan.pdf", context)
+
+    assert route["provider"]["_id"] == storage.BUILTIN_CPU_PROVIDER_ID
+    assert route["provider"]["provider_type"] == "builtin_cpu"
 
 
 def test_profile_creation_is_idempotent_for_same_request_id(monkeypatch):
@@ -213,6 +337,42 @@ def test_router_uses_routing_context(monkeypatch):
 def test_docling_provider_requires_valid_service_endpoint():
     with pytest.raises(ValueError, match="HTTP"):
         storage.normalize_provider({"name": "Docling", "provider_type": "docling", "config": {"execution_mode": "service", "endpoint": "docling:5001"}})
+
+
+def test_docling_provider_encrypts_required_api_key(monkeypatch):
+    monkeypatch.setenv("APP_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    provider = storage.normalize_provider(
+        {
+            "name": "Protected Docling",
+            "provider_type": "docling",
+            "config": {
+                "execution_mode": "service",
+                "endpoint": "https://docling.example.com",
+                "auth_type": "api_key",
+            },
+            "credentials": "docling-secret",
+        }
+    )
+
+    assert provider["config"]["api_key_header"] == "X-Api-Key"
+    assert storage.decrypt_provider_credentials(provider) == "docling-secret"
+    assert storage.serialize_provider(provider)["has_credentials"] is True
+    assert "credentials_ciphertext" not in storage.serialize_provider(provider)
+
+
+def test_docling_provider_rejects_missing_api_key():
+    with pytest.raises(ValueError, match="API key is required"):
+        storage.normalize_provider(
+            {
+                "name": "Protected Docling",
+                "provider_type": "docling",
+                "config": {
+                    "execution_mode": "service",
+                    "endpoint": "https://docling.example.com",
+                    "auth_type": "api_key",
+                },
+            }
+        )
 
 
 @pytest.mark.parametrize("suffix", ["", "/", "/health", "/ready", "/docs", "/ui"])
@@ -413,6 +573,37 @@ async def test_docling_service_uses_structured_pages(monkeypatch):
 
     assert [page.page_num for page in pages] == [0, 1]
     assert [page.text.strip() for page in pages] == ["Page one", "Page two"]
+
+
+@pytest.mark.asyncio
+async def test_docling_service_sends_encrypted_api_key(monkeypatch):
+    class HeaderCapturingSession(FakeHTTPSession):
+        headers = {}
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.__class__.headers = kwargs.get("headers") or {}
+
+    monkeypatch.setenv("APP_DATA_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    provider = storage.normalize_provider(
+        {
+            "name": "Protected Docling",
+            "provider_type": "docling",
+            "config": {
+                "execution_mode": "service",
+                "endpoint": "https://docling.example.com",
+                "auth_type": "api_key",
+            },
+            "credentials": "docling-secret",
+        }
+    )
+    HeaderCapturingSession.payload = {"document": {"md_content": "protected text"}}
+    monkeypatch.setattr(documentprocessing.aiohttp, "ClientSession", HeaderCapturingSession)
+
+    pages = [page async for page in documentprocessing.DoclingParser(provider).parse(NamedBytesIO(b"pdf"))]
+
+    assert pages[0].text == "protected text"
+    assert HeaderCapturingSession.headers == {"X-Api-Key": "docling-secret"}
 
 
 @pytest.mark.asyncio

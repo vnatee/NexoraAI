@@ -49,6 +49,7 @@ import { getToken } from "../../authConfig";
 import { useNotification } from "../../utill/NotificationProvider";
 import { TeamManagement } from "../TeamManagement/TeamManagement";
 import { IntegrationManagementPage } from "./Tabs/IntegrationManagementPage";
+import { DocumentProcessingPage } from "./Tabs/DocumentProcessingPage";
 import { LLMProviderManagement } from "../LLMProviderManagement";
 import { EmbeddingProfileManagement } from "../EmbeddingProfileManagement/EmbeddingProfileManagement";
 import { AgentAuditManagement } from "../AgentAuditManagement";
@@ -245,7 +246,7 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             group: managedTeam ? "workspace" : "system",
             scope: "both",
             selfPadded: true,
-            element: <IntegrationManagementPage team={managedTeam} isSystemAdmin={is_sys_admin} />
+            element: <IntegrationManagementPage team={managedTeam} />
         },
         {
             id: "agent-api-access",
@@ -316,6 +317,16 @@ export function TeamManagementTabsDialog({ open, onClose, is_sys_admin, selectTe
             scope: "system",
             systemAdminOnly: true,
             element: <EmbeddingProfileManagement />
+        },
+        {
+            id: "document-processing",
+            label: "Document processing",
+            permission: [],
+            group: "system",
+            scope: "system",
+            systemAdminOnly: true,
+            selfPadded: true,
+            element: <DocumentProcessingPage />
         },
         {
             id: "agent-audit",

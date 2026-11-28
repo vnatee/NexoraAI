@@ -4,7 +4,7 @@ WORKDIR /source/app/frontend
 COPY app/frontend/package.json app/frontend/package-lock.json ./
 RUN npm ci
 COPY app/frontend/ ./
-RUN npm run build:memory-safe
+RUN NODE_OPTIONS=--max-old-space-size=2048 npm run build:memory-safe
 
 FROM python:3.11-slim-bookworm AS python-build
 

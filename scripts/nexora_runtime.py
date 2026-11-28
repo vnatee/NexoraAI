@@ -110,7 +110,7 @@ def compose_prefix(settings: dict[str, str], mode: str, features: set[str]) -> l
 
 
 def infra_services(mode: str) -> list[str]:
-    common = ["mongodb", "minio", "qdrant", "integration-controller"]
+    common = ["mongodb", "minio", "qdrant", "integration-controller", "docling"]
     if mode == "local-simple":
         return [*common, "ollama", "ollama-models"]
     if mode == "private-enterprise":

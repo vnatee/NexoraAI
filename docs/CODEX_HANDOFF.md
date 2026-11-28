@@ -620,8 +620,24 @@ See `docs/mail-integrations.md` and `docs/messaging-integrations.md`.
 
 ### Document processing and OCR
 
-- Management page: **Admin Management → Integrations → Document Processing &
-  OCR**, with Provider and Profile tabs.
+- The portable runtime now exposes one **Built-in Document Processor (CPU)** as
+  its system default. Machine-readable PDF uses local pypdf first; scanned PDF,
+  Office files, images, layout, and tables fall back to the isolated Docling
+  service. Docling starts with every portable runtime mode, requires no GPU,
+  and has configurable CPU/memory limits. Existing Azure behavior remains
+  available when Azure Document Intelligence is configured, while external,
+  cloud, and future GPU/VLM processors continue to use the provider boundary.
+- Legacy `Local text` is upgraded in place to the Built-in CPU provider so
+  existing references remain valid. The old auto-created Azure system provider
+  is archived when unused; Azure Document Intelligence is now added explicitly
+  by a System Administrator and existing referenced Azure profiles are kept.
+- The provider card keeps its default view compact with supported-format and
+  no-GPU summary badges. **View details** shows exact extensions and limitations
+  in a dialog. Knowledge upload now includes CSV in its file picker, matching
+  the existing backend parser.
+- Management page: **System Administration → Document processing**, with
+  Provider, Profile, and Routing Rules tabs. It is intentionally absent from
+  Team integrations because providers and credentials are platform-wide.
 - Existing Azure Document Intelligence and local pypdf behavior remain as
   system providers/fallbacks.
 - Docling Serve and optional embedded Docling adapter.

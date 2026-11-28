@@ -419,7 +419,7 @@ async def check_document_provider(provider: dict[str, Any]) -> str:
 
     provider_type = provider.get("provider_type")
     config = provider.get("config") or {}
-    if provider_type == "docling":
+    if provider_type in {"builtin_cpu", "docling"}:
         if config.get("execution_mode", "service") == "embedded":
             try:
                 import docling  # noqa: F401
@@ -428,11 +428,17 @@ async def check_document_provider(provider: dict[str, Any]) -> str:
             return "Embedded Docling is installed"
         endpoint = normalize_docling_endpoint(config.get("endpoint") or "http://docling:5001")
         health_url = f"{endpoint}/health"
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=10), headers=_auth_headers(provider)
+        ) as session:
             async with session.get(health_url) as response:
                 if response.status >= 400:
                     raise ValueError(f"Docling health check returned HTTP {response.status} from {health_url}")
-        return "Docling Serve is available"
+        return (
+            "Built-in CPU document processor is available"
+            if provider_type == "builtin_cpu"
+            else "Docling Serve is available"
+        )
     if provider_type in {"generic_ocr_api", "paddleocr"}:
         endpoint = str(config.get("endpoint") or "").rstrip("/")
         health_path = str(config.get("health_path") or "/docs")
@@ -459,8 +465,10 @@ async def check_document_provider(provider: dict[str, Any]) -> str:
 class DoclingParser(Parser):
     """Optional local document parser. The heavy dependency is loaded only when selected."""
 
-    def __init__(self, config: dict | None = None):
-        self.config = config or {}
+    def __init__(self, provider_or_config: dict | None = None):
+        value = provider_or_config or {}
+        self.provider = value if "config" in value else {"config": value}
+        self.config = self.provider.get("config") or {}
 
     async def parse(self, content: IO) -> AsyncGenerator[Page, None]:
         if self.config.get("execution_mode", "service") == "service":
@@ -495,7 +503,9 @@ class DoclingParser(Parser):
                 return response.status, await response.json(content_type=None)
 
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as session:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=300), headers=_auth_headers(self.provider)
+            ) as session:
                 status, payload = await convert(session, "json")
                 if status >= 400:
                     logger.warning(
@@ -587,6 +597,27 @@ class DoclingParser(Parser):
                 os.unlink(temporary_path)
 
 
+class BuiltInCPUParser(Parser):
+    """Use fast embedded PDF text first, then the local Docling CPU service."""
+
+    def __init__(self, local_pdf_parser: Parser, config: dict[str, Any]):
+        self.local_pdf_parser = local_pdf_parser
+        self.docling_parser = DoclingParser(config)
+
+    async def parse(self, content: IO) -> AsyncGenerator[Page, None]:
+        extension = Path(getattr(content, "name", "")).suffix.lower()
+        if extension == ".pdf":
+            content.seek(0)
+            pages = [page async for page in self.local_pdf_parser.parse(content)]
+            content.seek(0)
+            if any(str(page.text or "").strip() for page in pages):
+                for page in pages:
+                    yield page
+                return
+        async for page in self.docling_parser.parse(content):
+            yield page
+
+
 class ProcessingMetadataParser(Parser):
     """Attach only selected managed-profile metadata to normalized pages."""
 
@@ -613,7 +644,7 @@ class ManagedDocumentParser(Parser):
             config = {**(provider.get("config") or {})}
             config["extract_tables"] = profile.get("extract_tables", True)
             config["languages"] = profile.get("languages") or []
-            parser = DoclingParser(config)
+            parser = DoclingParser({**provider, "config": config})
         elif provider_type == "generic_ocr_api":
             parser = GenericOCRAPIParser(provider)
         elif provider_type == "paddleocr":
@@ -624,6 +655,8 @@ class ManagedDocumentParser(Parser):
             if extension != ".pdf":
                 raise ValueError("Local text extraction currently supports PDF files only")
             parser = self.fallback_parsers.get("local_text")
+        elif provider_type == "builtin_cpu":
+            parser = self.fallback_parsers.get("builtin_cpu")
         elif provider_type == "azure_document_intelligence":
             parser = self.fallback_parsers.get("azure_document_intelligence")
         if parser is None:

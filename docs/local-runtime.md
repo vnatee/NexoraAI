@@ -10,7 +10,7 @@ Azure Linux VM:
 - Qdrant for vector retrieval
 - Ollama with BGE-M3 embeddings and a local chat model
 - Integration Controller for System Admin-managed Azure MCP instances
-- optional Docling service for configured document-processing profiles
+- built-in CPU document processing with lightweight parsers and Docling
 
 Azure remains supported. This Compose file is one deployment option; the
 provider environment variables can still point NexoraAI at Azure OpenAI,
@@ -96,7 +96,9 @@ Set exactly one `MODE` in the ignored `.env.nexora-runtime` file:
 | `private-enterprise` | GPUStack control plane; vLLM runs on registered GPU workers | governed private production model service |
 | `external-gateway` | none | an existing MuleSoft or other enterprise AI gateway |
 
-Optional comma-separated `FEATURES` are `tls`, `ocr`, and `datadog`. The
+Optional comma-separated `FEATURES` are `tls`, `ocr`, and `datadog`. The legacy
+`ocr` switch remains accepted for configuration compatibility; the built-in CPU
+document processor now starts by default. The
 Datadog feature also requires `DATADOG_COMPOSE_FILE` to name the operator-owned
 Compose overlay. The runtime file contains only deployment selections. Keep all
 passwords, tokens, and encryption keys in the protected env file.
@@ -172,16 +174,17 @@ adding or rotating a key. The directory is mounted read-only; `*.pem` files are
 Git-ignored. Keep the signing private key exclusively in the vendor licensing
 environment. See [`licensing.md`](licensing.md).
 
-## Optional OCR service
+## Built-in CPU document processor
 
-Start Docling only when a processing profile needs it:
+Docling starts with the portable runtime and does not require a GPU. The
+application first uses lightweight extraction for machine-readable PDF and then
+uses Docling for scanned PDF, Office documents, images, layout, and tables.
 
-Set `FEATURES=ocr` (or include `ocr` in the comma-separated list), then run
-`./nexora up`.
-
-In **Admin Management → Document Processing & OCR**, configure a Docling
-provider endpoint as `http://docling:5001`. The application and Docling share
-the Compose network; do not expose the Docling port publicly.
+In **System Administration → Document processing**, use **Test** on **Built-in
+Document Processor (CPU)** to verify `http://docling:5001`. The application and
+Docling share the Compose network; do not expose the Docling port publicly.
+Large OCR workloads should use an external, cloud, or GPU-backed processor so
+they do not compete with the application VM.
 
 ## Observability readiness
 

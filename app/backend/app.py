@@ -385,6 +385,7 @@ from mongo_table_connecters.messaging_bindings import (
     normalize_messaging_binding, update_messaging_binding,
 )
 from mongo_table_connecters.document_processing import (
+    BUILTIN_CPU_PROVIDER_ID,
     delete_profile as delete_document_profile,
     delete_provider as delete_document_provider,
     delete_routing_rule as delete_document_routing_rule,
@@ -8086,8 +8087,8 @@ async def save_document_processing_provider(auth_claims: dict[str, Any]):
         if provider_id and not existing:
             raise ValueError("Document provider not found")
         requested_type = str(body.get("provider_type") or "").strip().lower()
-        if not existing and requested_type not in {"docling", "google_document_ai", "generic_ocr_api", "paddleocr"}:
-            raise ValueError("Azure and Local Text are system-managed providers")
+        if not existing and requested_type not in {"azure_document_intelligence", "docling", "google_document_ai", "generic_ocr_api", "paddleocr"}:
+            raise ValueError("Built-in CPU is a system-managed provider")
         if existing and existing.get("system_managed") and requested_type != existing.get("provider_type"):
             raise ValueError("The type of a system-managed provider cannot be changed")
         item = save_document_provider(normalize_document_provider(body, existing), provider_id)
@@ -8745,6 +8746,15 @@ def _resolve_upload_route(filename: str, routing_context: dict[str, str]) -> dic
     )
     if route.get("status") == "error":
         raise ValueError(str(route.get("reason") or "Document processing route failed"))
+    if (
+        route.get("source") == "system_fallback"
+        and os.getenv("BUILTIN_DOCUMENT_PROCESSOR_ENDPOINT")
+    ):
+        route["provider"] = {
+            "_id": BUILTIN_CPU_PROVIDER_ID,
+            "name": "Built-in Document Processor (CPU)",
+            "provider_type": "builtin_cpu",
+        }
     profile = route.get("profile") or {}
     if profile.get("_id"):
         routing_context["resolved_profile_id"] = str(profile["_id"])
@@ -14188,6 +14198,9 @@ async def setup_clients():
             local_pdf_parser=os.getenv("USE_LOCAL_PDF_PARSER", "").lower() == "true",
             local_html_parser=os.getenv("USE_LOCAL_HTML_PARSER", "").lower() == "true",
             search_images=USE_GPT4V,
+            builtin_document_processor_endpoint=os.getenv(
+                "BUILTIN_DOCUMENT_PROCESSOR_ENDPOINT"
+            ),
         )
     current_app.config[CONFIG_CHAT_ATTACHMENT_STORE] = attachment_store
     current_app.config[CONFIG_CHAT_ATTACHMENT_SCANNER] = DisabledMalwareScanner()

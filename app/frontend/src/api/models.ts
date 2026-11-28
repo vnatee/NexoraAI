@@ -1722,8 +1722,9 @@ export interface MessagingBindingData {
 }
 export interface DocumentProcessingProvider {
     _id: string; name: string;
-    provider_type: "azure_document_intelligence" | "docling" | "google_document_ai" | "generic_ocr_api" | "paddleocr" | "local_text";
+    provider_type: "azure_document_intelligence" | "builtin_cpu" | "docling" | "google_document_ai" | "generic_ocr_api" | "paddleocr" | "local_text";
     config: Record<string, unknown>; enabled: boolean; system_managed: boolean; has_credentials?: boolean;
+    display?: { summary?: string; supported_types?: string[]; badges?: string[]; limitations?: string[] };
 }
 export interface DocumentProcessingProfile {
     _id: string; name: string; provider_id: string; file_types: string[];

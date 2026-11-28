@@ -19,6 +19,7 @@ def test_private_enterprise_mode_starts_gpustack_without_ollama():
     assert str(ROOT / "docker-compose.private-llm.yml") in command
     assert str(ROOT / "docker-compose.gpustack-branding.yml") in command
     assert "gpustack" in command
+    assert "docling" in command
     assert "ollama" not in command
     assert "ollama-models" not in command
     assert "app" not in command
@@ -52,7 +53,9 @@ def test_local_simple_mode_retains_bundled_ollama():
     assert str(ROOT / "docker-compose.external-ai-runtime.yml") not in command
     assert "ollama" in command
     assert "ollama-models" in command
+    assert "docling" in command
     assert "gpustack" not in command
+    assert "docling" in command
 
 
 def test_external_gateway_mode_disables_all_bundled_model_runtimes():

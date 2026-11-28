@@ -189,8 +189,9 @@ def setup_file_processors(
     search_images: bool = False,
     use_content_understanding: bool = False,
     content_understanding_endpoint: Union[str, None] = None,
+    builtin_document_processor_endpoint: Union[str, None] = None,
 ):
-    from prepdocslib.documentprocessing import ManagedDocumentParser
+    from prepdocslib.documentprocessing import BuiltInCPUParser, ManagedDocumentParser
     sentence_text_splitter = SentenceTextSplitter()
 
     doc_int_parser: Optional[DocumentAnalysisParser] = None
@@ -216,21 +217,34 @@ def setup_file_processors(
         logger.warning("No PDF parser available")
 
     local_text_pdf_parser = LocalPdfParser()
+    builtin_cpu_parser = None
+    if builtin_document_processor_endpoint:
+        builtin_cpu_parser = BuiltInCPUParser(
+            local_text_pdf_parser,
+            {
+                "execution_mode": "service",
+                "endpoint": builtin_document_processor_endpoint,
+                "extract_tables": True,
+                "languages": ["th", "en"],
+            },
+        )
+        pdf_parser = builtin_cpu_parser
     managed_document_parser = ManagedDocumentParser(
         {
             "default": pdf_parser,
             ".pdf": pdf_parser,
             "local_text": local_text_pdf_parser,
+            "builtin_cpu": builtin_cpu_parser,
             "azure_document_intelligence": doc_int_parser,
-            ".docx": doc_int_parser,
-            ".pptx": doc_int_parser,
-            ".xlsx": doc_int_parser,
-            ".png": doc_int_parser,
-            ".jpg": doc_int_parser,
-            ".jpeg": doc_int_parser,
-            ".tiff": doc_int_parser,
-            ".bmp": doc_int_parser,
-            ".heic": doc_int_parser,
+            ".docx": builtin_cpu_parser or doc_int_parser,
+            ".pptx": builtin_cpu_parser or doc_int_parser,
+            ".xlsx": builtin_cpu_parser or doc_int_parser,
+            ".png": builtin_cpu_parser or doc_int_parser,
+            ".jpg": builtin_cpu_parser or doc_int_parser,
+            ".jpeg": builtin_cpu_parser or doc_int_parser,
+            ".tiff": builtin_cpu_parser or doc_int_parser,
+            ".bmp": builtin_cpu_parser or doc_int_parser,
+            ".heic": builtin_cpu_parser or doc_int_parser,
         }
     )
 

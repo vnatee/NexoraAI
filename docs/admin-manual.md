@@ -725,6 +725,11 @@ web ingestion. Select the correct Data Group and processing profile. **Auto —
 use routing rules** is the recommended processing default unless a specific OCR
 profile is required.
 
+The portable runtime includes **Built-in Document Processor (CPU)**. Its card
+shows a short supported-format summary; use **View details** for exact file
+types and limitations, or **Test** to verify the local processing service.
+Choose an added cloud, external, or GPU-backed provider for large OCR batches.
+
 Monitor persistent job states and failures. Deleting metadata without deleting
 the corresponding object or vector records is not an acceptable cleanup path;
 use the supported application actions.
